@@ -1,0 +1,61 @@
+[package]
+name = "nanobot-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core library for nanobot AI assistant"
+
+[features]
+default = []
+telegram = ["teloxide"]
+discord = ["serenity"]
+slack = ["tokio-tungstenite", "futures-util"]
+email = []
+all-channels = ["telegram", "discord", "slack", "email"]
+
+[dependencies]
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+futures-util = { workspace = true, optional = true }
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# HTTP
+reqwest.workspace = true
+url.workspace = true
+urlencoding = "2.1"
+
+# Logging
+tracing.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Configuration
+dirs.workspace = true
+
+# Time
+chrono.workspace = true
+
+# Cron
+cron.workspace = true
+
+# UUID
+uuid.workspace = true
+
+# Telegram (optional)
+teloxide = { workspace = true, optional = true }
+
+# Discord (optional)
+serenity = { workspace = true, optional = true }
+
+# WebSocket (optional, for Slack)
+tokio-tungstenite = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"

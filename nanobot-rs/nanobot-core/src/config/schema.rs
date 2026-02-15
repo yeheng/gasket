@@ -1,0 +1,232 @@
+//! Configuration schema
+//!
+//! Compatible with Python nanobot's config.json format
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Root configuration structure
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Config {
+    /// LLM providers configuration
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
+
+    /// Agent configuration
+    #[serde(default)]
+    pub agents: AgentsConfig,
+
+    /// Channel configurations
+    #[serde(default)]
+    pub channels: ChannelsConfig,
+
+    /// Tools configuration
+    #[serde(default)]
+    pub tools: ToolsConfig,
+}
+
+/// Provider configuration (OpenAI, OpenRouter, Anthropic, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderConfig {
+    /// API key for the provider
+    #[serde(default, alias = "apiKey")]
+    pub api_key: Option<String>,
+
+    /// API base URL (for custom endpoints)
+    #[serde(default, alias = "apiBase")]
+    pub api_base: Option<String>,
+}
+
+/// Agents configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentsConfig {
+    /// Default agent settings
+    #[serde(default)]
+    pub defaults: AgentDefaults,
+}
+
+/// Default agent settings
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentDefaults {
+    /// Model to use
+    #[serde(default)]
+    pub model: Option<String>,
+
+    /// Temperature for generation
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+
+    /// Maximum tokens to generate
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+
+    /// Maximum tool call iterations
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: u32,
+
+    /// Memory window size
+    #[serde(default = "default_memory_window")]
+    pub memory_window: usize,
+}
+
+fn default_temperature() -> f32 {
+    0.7
+}
+fn default_max_tokens() -> u32 {
+    4096
+}
+fn default_max_iterations() -> u32 {
+    20
+}
+fn default_memory_window() -> usize {
+    50
+}
+
+/// Channels configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ChannelsConfig {
+    /// Telegram channel
+    #[serde(default)]
+    pub telegram: Option<TelegramConfig>,
+
+    /// Discord channel
+    #[serde(default)]
+    pub discord: Option<DiscordConfig>,
+
+    /// Slack channel
+    #[serde(default)]
+    pub slack: Option<SlackConfig>,
+}
+
+/// Telegram channel configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Bot token
+    pub token: String,
+
+    /// Allowed user IDs
+    #[serde(default)]
+    pub allow_from: Vec<String>,
+}
+
+/// Discord channel configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscordConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Bot token
+    pub token: String,
+
+    /// Allowed user IDs
+    #[serde(default)]
+    pub allow_from: Vec<String>,
+}
+
+/// Slack channel configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackConfig {
+    /// Enable this channel
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Bot token (xoxb-...)
+    pub bot_token: String,
+
+    /// App token (xapp-...)
+    pub app_token: String,
+
+    /// Group policy: mention, open, or allowlist
+    #[serde(default)]
+    pub group_policy: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Tools configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolsConfig {
+    /// Restrict file operations to workspace
+    #[serde(default, alias = "restrictToWorkspace")]
+    pub restrict_to_workspace: bool,
+
+    /// MCP servers
+    #[serde(default)]
+    pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Exec tool configuration
+    #[serde(default)]
+    pub exec: ExecToolConfig,
+}
+
+/// MCP server configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Command to run (for stdio transport)
+    #[serde(default)]
+    pub command: Option<String>,
+
+    /// Arguments for the command
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+
+    /// URL for HTTP transport
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// Exec tool configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecToolConfig {
+    /// Default timeout in seconds
+    #[serde(default = "default_exec_timeout")]
+    pub timeout: u64,
+}
+
+fn default_exec_timeout() -> u64 {
+    120
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_empty_config() {
+        let json = "{}";
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.providers.is_empty());
+    }
+
+    #[test]
+    fn test_parse_provider_config() {
+        let json = r#"{
+            "providers": {
+                "openrouter": {
+                    "api_key": "sk-or-v1-xxx"
+                }
+            },
+            "agents": {
+                "defaults": {
+                    "model": "anthropic/claude-opus-4-5"
+                }
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.providers.get("openrouter").unwrap().api_key,
+            Some("sk-or-v1-xxx".to_string())
+        );
+        assert_eq!(
+            config.agents.defaults.model,
+            Some("anthropic/claude-opus-4-5".to_string())
+        );
+    }
+}

@@ -1,0 +1,53 @@
+[package]
+name = "nanobot-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CLI for nanobot AI assistant"
+
+[[bin]]
+name = "nanobot"
+path = "src/main.rs"
+
+[features]
+default = ["markdown", "all-channels"]
+markdown = ["termimad"]
+telegram = ["nanobot-core/telegram"]
+discord = ["nanobot-core/discord"]
+slack = ["nanobot-core/slack"]
+email = ["nanobot-core/email"]
+all-channels = ["nanobot-core/all-channels"]
+
+[dependencies]
+nanobot-core = { path = "../nanobot-core" }
+
+# Async
+tokio.workspace = true
+futures = "0.3"
+
+# CLI
+clap.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Serialization
+serde_json.workspace = true
+
+# Configuration
+dirs.workspace = true
+
+# Terminal
+colored = "3"
+
+# REPL
+reedline = "0.38"
+nu-ansi-term = "0.50"
+
+# Markdown rendering (optional)
+termimad = { version = "0.31", optional = true }

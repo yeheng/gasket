@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["nanobot-core", "nanobot-cli"]
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

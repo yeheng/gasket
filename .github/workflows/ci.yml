@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nanobot-rs/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'nanobot-rs/**'
+      - '.github/workflows/ci.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nanobot-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Check formatting
+        run: cd nanobot-rs && cargo fmt --all -- --check
+      
+      - name: Run clippy
+        run: cd nanobot-rs && cargo clippy --all-features -- -D warnings
+      
+      - name: Run tests
+        run: cd nanobot-rs && cargo test --all-features
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nanobot-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Build release
+        run: cd nanobot-rs && cargo build --release --all-features
+      
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanobot-linux
+          path: nanobot-rs/target/release/nanobot
+
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nanobot-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Build release
+        run: cd nanobot-rs && cargo build --release --all-features
+      
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanobot-macos
+          path: nanobot-rs/target/release/nanobot
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Build docs
+        run: cd nanobot-rs && cargo doc --no-deps --all-features
+      
+      - name: Upload docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs
+          path: nanobot-rs/target/doc
