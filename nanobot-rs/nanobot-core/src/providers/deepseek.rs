@@ -135,6 +135,8 @@ impl LlmProvider for DeepSeekProvider {
 
         let body = self.build_request(request);
 
+        debug!("[deepseek] POST {}", url);
+
         let response = self
             .client
             .post(&url)
@@ -142,12 +144,22 @@ impl LlmProvider for DeepSeekProvider {
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
             .await?;
 
-        self.parse_response(response)
+        let status = response.status();
+        debug!("[deepseek] response status: {}", status);
+
+        let response_text = response.text().await?;
+        debug!("[deepseek] response body:\n{}", response_text);
+
+        if !status.is_success() {
+            anyhow::bail!("DeepSeek API error: {} - {}", status, response_text);
+        }
+
+        let response_value: Value = serde_json::from_str(&response_text)
+            .map_err(|e| anyhow!("DeepSeek API response parse error: {} | body: {}", e, response_text))?;
+
+        self.parse_response(response_value)
     }
 }
 

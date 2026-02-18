@@ -471,7 +471,7 @@ async fn test_provider_trait() {
 async fn test_openrouter_provider() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAICompatibleProvider::openrouter("sk-or-test", "anthropic/claude-sonnet-4");
+    let provider = OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
 
     assert_eq!(provider.name(), "openrouter");
     assert_eq!(provider.default_model(), "anthropic/claude-sonnet-4");
@@ -481,7 +481,7 @@ async fn test_openrouter_provider() {
 async fn test_anthropic_provider() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAICompatibleProvider::anthropic("sk-ant-test", "claude-sonnet-4-20250514");
+    let provider = OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
 
     assert_eq!(provider.name(), "anthropic");
     assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");

@@ -67,10 +67,10 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create an OpenRouter provider
-    pub fn openrouter(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
+    pub fn openrouter(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
         Self::new(ProviderConfig {
             name: "openrouter".to_string(),
-            api_base: "https://openrouter.ai/api/v1".to_string(),
+            api_base: api_base.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
             api_key: api_key.into(),
             default_model: default_model.into(),
             extra_headers: HashMap::new(),
@@ -78,10 +78,10 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create an Anthropic provider (via OpenAI-compatible endpoint)
-    pub fn anthropic(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
+    pub fn anthropic(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
         Self::new(ProviderConfig {
             name: "anthropic".to_string(),
-            api_base: "https://api.anthropic.com/v1".to_string(),
+            api_base: api_base.unwrap_or_else(|| "https://api.anthropic.com/v1".to_string()),
             api_key: api_key.into(),
             default_model: default_model.into(),
             extra_headers: HashMap::new(),
@@ -89,10 +89,10 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a DashScope (阿里云通义千问) provider
-    pub fn dashscope(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
+    pub fn dashscope(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
         Self::new(ProviderConfig {
             name: "dashscope".to_string(),
-            api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            api_base: api_base.unwrap_or_else(|| "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string()),
             api_key: api_key.into(),
             default_model: default_model.into(),
             extra_headers: HashMap::new(),
@@ -100,10 +100,10 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a Moonshot AI (Kimi) provider
-    pub fn moonshot(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
+    pub fn moonshot(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
         Self::new(ProviderConfig {
             name: "moonshot".to_string(),
-            api_base: "https://api.moonshot.cn/v1".to_string(),
+            api_base: api_base.unwrap_or_else(|| "https://api.moonshot.cn/v1".to_string()),
             api_key: api_key.into(),
             default_model: default_model.into(),
             extra_headers: HashMap::new(),
@@ -122,14 +122,14 @@ impl OpenAICompatibleProvider {
     }
 
     /// Create a MiniMax provider
-    pub fn minimax(api_key: impl Into<String>, default_model: impl Into<String>, group_id: Option<String>) -> Self {
+    pub fn minimax(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>, group_id: Option<String>) -> Self {
         let mut extra_headers = HashMap::new();
         if let Some(gid) = group_id {
             extra_headers.insert("X-Group-Id".to_string(), gid);
         }
         Self::new(ProviderConfig {
             name: "minimax".to_string(),
-            api_base: "https://api.minimax.chat/v1".to_string(),
+            api_base: api_base.unwrap_or_else(|| "https://api.minimax.chat/v1".to_string()),
             api_key: api_key.into(),
             default_model: default_model.into(),
             extra_headers,
@@ -168,7 +168,12 @@ impl LlmProvider for OpenAICompatibleProvider {
             max_tokens: request.max_tokens,
         };
 
-        debug!("Sending request to {} API: {}", self.config.name, url);
+        debug!(
+            "[{}] POST {} | request body:\n{}",
+            self.config.name,
+            url,
+            serde_json::to_string_pretty(&openai_request).unwrap_or_default()
+        );
 
         let mut req = self
             .client
@@ -183,18 +188,22 @@ impl LlmProvider for OpenAICompatibleProvider {
 
         let response = req.json(&openai_request).send().await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await?;
+        let status = response.status();
+        debug!("[{}] response status: {}", self.config.name, status);
+
+        let body = response.text().await?;
+        debug!(
+            "[{}] response body:\n{}",
+            self.config.name,
+            body
+        );
+
+        if !status.is_success() {
             anyhow::bail!("{} API error: {} - {}", self.config.name, status, body);
         }
 
-        let api_response: OpenAICompatibleResponse = response.json().await?;
-        debug!(
-            "Received response from {} with {} choices",
-            self.config.name,
-            api_response.choices.len()
-        );
+        let api_response: OpenAICompatibleResponse = serde_json::from_str(&body)
+            .map_err(|e| anyhow::anyhow!("{} API response parse error: {} | body: {}", self.config.name, e, body))?;
 
         let choice = api_response
             .choices
@@ -306,21 +315,21 @@ mod tests {
 
     #[test]
     fn test_openrouter_provider() {
-        let provider = OpenAICompatibleProvider::openrouter("sk-or-test", "anthropic/claude-sonnet-4");
+        let provider = OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
     }
 
     #[test]
     fn test_anthropic_provider() {
-        let provider = OpenAICompatibleProvider::anthropic("sk-ant-test", "claude-sonnet-4-20250514");
+        let provider = OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
     }
 
     #[test]
     fn test_dashscope_provider() {
-        let provider = OpenAICompatibleProvider::dashscope("test-key", "qwen-max");
+        let provider = OpenAICompatibleProvider::dashscope("test-key", None, "qwen-max");
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
         assert_eq!(provider.api_base(), "https://dashscope.aliyuncs.com/compatible-mode/v1");
@@ -328,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_moonshot_provider() {
-        let provider = OpenAICompatibleProvider::moonshot("test-key", "moonshot-v1-8k");
+        let provider = OpenAICompatibleProvider::moonshot("test-key", None, "moonshot-v1-8k");
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.api_base(), "https://api.moonshot.cn/v1");
     }
@@ -343,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_minimax_provider() {
-        let provider = OpenAICompatibleProvider::minimax("test-key", "abab6.5-chat", Some("group123".to_string()));
+        let provider = OpenAICompatibleProvider::minimax("test-key", None, "abab6.5-chat", Some("group123".to_string()));
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
     }

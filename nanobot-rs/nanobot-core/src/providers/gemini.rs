@@ -175,18 +175,30 @@ impl LlmProvider for GeminiProvider {
 
         let body = self.build_gemini_request(request);
 
+        debug!("[gemini] POST {}", url);
+
         let response = self
             .client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
             .await?;
 
-        self.parse_gemini_response(response)
+        let status = response.status();
+        debug!("[gemini] response status: {}", status);
+
+        let response_text = response.text().await?;
+        debug!("[gemini] response body:\n{}", response_text);
+
+        if !status.is_success() {
+            anyhow::bail!("Gemini API error: {} - {}", status, response_text);
+        }
+
+        let response_value: Value = serde_json::from_str(&response_text)
+            .map_err(|e| anyhow!("Gemini API response parse error: {} | body: {}", e, response_text))?;
+
+        self.parse_gemini_response(response_value)
     }
 }
 

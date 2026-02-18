@@ -405,10 +405,107 @@ async fn cmd_gateway() -> Result<()> {
     Ok(())
 }
 
-/// Find a configured provider
+/// Parse model spec in `provider_id/model_id` format.
+///
+/// Examples:
+///   "deepseek/deepseek-chat"  → ("deepseek", "deepseek-chat")
+///   "zhipu/glm-4"             → ("zhipu", "glm-4")
+///   "deepseek-chat"           → (None, "deepseek-chat")
+///   "openrouter/anthropic/claude-sonnet-4" → ("openrouter", "anthropic/claude-sonnet-4")
+///
+/// The first path segment is treated as the provider id only if it matches
+/// a known provider name. Otherwise the whole string is the model id.
+fn parse_model_spec(spec: &str) -> (Option<&str>, &str) {
+    const KNOWN_PROVIDERS: &[&str] = &[
+        "deepseek",
+        "openrouter",
+        "openai",
+        "anthropic",
+        "zhipu",
+        "dashscope",
+        "moonshot",
+        "minimax",
+    ];
+
+    if let Some(pos) = spec.find('/') {
+        let prefix = &spec[..pos];
+        if KNOWN_PROVIDERS.contains(&prefix) {
+            return (Some(prefix), &spec[pos + 1..]);
+        }
+    }
+    (None, spec)
+}
+
+/// Build a provider instance from its name and config.
+fn build_provider(
+    name: &str,
+    api_key: &str,
+    provider_config: &nanobot_core::config::ProviderConfig,
+    model: &str,
+) -> Arc<dyn LlmProvider> {
+    match name {
+        "deepseek" => {
+            let p = if let Some(base) = &provider_config.api_base {
+                DeepSeekProvider::with_api_base(api_key.to_string(), base.clone())
+            } else {
+                DeepSeekProvider::new(api_key.to_string())
+            };
+            Arc::new(p.with_model(model.to_string()))
+        }
+        "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(api_key, provider_config.api_base.clone(), model)),
+        "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(api_key, provider_config.api_base.clone(), model)),
+        "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(api_key, provider_config.api_base.clone(), model)),
+        "dashscope" => Arc::new(OpenAICompatibleProvider::dashscope(api_key, provider_config.api_base.clone(), model)),
+        "moonshot" => Arc::new(OpenAICompatibleProvider::moonshot(api_key, provider_config.api_base.clone(), model)),
+        "minimax" => Arc::new(OpenAICompatibleProvider::minimax(api_key, provider_config.api_base.clone(), model, None)),
+        _ => Arc::new(OpenAICompatibleProvider::openai(
+            api_key,
+            provider_config.api_base.clone(),
+            model,
+        )),
+    }
+}
+
+/// Find a configured provider.
+///
+/// The model field supports `provider_id/model_id` format to select a
+/// specific provider. For example:
+///   - `"deepseek/deepseek-chat"` → use the deepseek provider with model deepseek-chat
+///   - `"zhipu/glm-4"`           → use the zhipu provider with model glm-4
+///   - `"deepseek-chat"`          → legacy behaviour, pick the first provider with an API key
 fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
-    // Try providers in order of preference
-    // Include Chinese providers: zhipu, dashscope, moonshot, minimax
+    let raw_model = config
+        .agents
+        .defaults
+        .model
+        .clone()
+        .unwrap_or_else(|| "gpt-4o".to_string());
+
+    let (explicit_provider, model_id) = parse_model_spec(&raw_model);
+
+    // If the user specified a provider prefix, use that provider directly.
+    if let Some(provider_name) = explicit_provider {
+        let provider_config = config
+            .providers
+            .get(provider_name)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Provider '{}' specified in model '{}' is not configured in providers section",
+                provider_name, raw_model
+            ))?;
+
+        let api_key = provider_config
+            .api_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!(
+                "Provider '{}' has no API key configured",
+                provider_name
+            ))?;
+
+        let provider = build_provider(provider_name, api_key, provider_config, model_id);
+        return Ok((provider, model_id.to_string()));
+    }
+
+    // No explicit provider — fall back to trying providers in order of preference.
     let provider_order = [
         "deepseek",
         "openrouter",
@@ -423,36 +520,8 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
     for name in &provider_order {
         if let Some(provider_config) = config.providers.get(*name) {
             if let Some(api_key) = &provider_config.api_key {
-                let model = config
-                    .agents
-                    .defaults
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "gpt-4o".to_string());
-
-                let provider: Arc<dyn LlmProvider> = match *name {
-                    "deepseek" => {
-                        let p = if let Some(base) = &provider_config.api_base {
-                            DeepSeekProvider::with_api_base(api_key.clone(), base.clone())
-                        } else {
-                            DeepSeekProvider::new(api_key.clone())
-                        };
-                        Arc::new(p.with_model(model.clone()))
-                    }
-                    "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(api_key, &model)),
-                    "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(api_key, &model)),
-                    "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(api_key, None, &model)),
-                    "dashscope" => Arc::new(OpenAICompatibleProvider::dashscope(api_key, &model)),
-                    "moonshot" => Arc::new(OpenAICompatibleProvider::moonshot(api_key, &model)),
-                    "minimax" => Arc::new(OpenAICompatibleProvider::minimax(api_key, &model, None)),
-                    _ => Arc::new(OpenAICompatibleProvider::openai(
-                        api_key,
-                        provider_config.api_base.clone(),
-                        &model,
-                    )),
-                };
-
-                return Ok((provider, model));
+                let provider = build_provider(name, api_key, provider_config, model_id);
+                return Ok((provider, model_id.to_string()));
             }
         }
     }
