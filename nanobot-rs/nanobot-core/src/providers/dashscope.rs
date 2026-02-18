@@ -21,43 +21,13 @@ impl DashScopeProvider {
     ///
     /// # Arguments
     /// * `api_key` - DashScope API key
-    /// * `default_model` - Optional default model (defaults to qwen-plus)
-    pub fn new(api_key: impl Into<String>, default_model: Option<String>) -> Self {
+    /// * `default_model` - Default model to use (required)
+    pub fn new(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            default_model: default_model.unwrap_or_else(|| "qwen-plus".to_string()),
+            default_model: default_model.into(),
         }
-    }
-
-    /// Create provider with Qwen-Turbo model (fast, cost-effective)
-    pub fn qwen_turbo(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("qwen-turbo".to_string()))
-    }
-
-    /// Create provider with Qwen-Plus model (balanced)
-    pub fn qwen_plus(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("qwen-plus".to_string()))
-    }
-
-    /// Create provider with Qwen-Max model (most capable)
-    pub fn qwen_max(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("qwen-max".to_string()))
-    }
-
-    /// Create provider with Qwen-Max-LongContext model (supports long context)
-    pub fn qwen_max_longcontext(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("qwen-max-longcontext".to_string()))
-    }
-
-    /// Create provider with Qwen-VL-Plus model (vision-language)
-    pub fn qwen_vl_plus(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("qwen-vl-plus".to_string()))
-    }
-
-    /// Create provider with Qwen-VL-Max model (vision-language, most capable)
-    pub fn qwen_vl_max(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("qwen-vl-max".to_string()))
     }
 
     const API_BASE: &'static str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -195,52 +165,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dashscope_provider_creation() {
-        let provider = DashScopeProvider::new("test-api-key", None);
-        assert_eq!(provider.name(), "dashscope");
-        assert_eq!(provider.default_model(), "qwen-plus");
-    }
-
-    #[test]
     fn test_dashscope_provider_custom_model() {
-        let provider = DashScopeProvider::new("test-key", Some("qwen-max".to_string()));
+        let provider = DashScopeProvider::new("test-key", "qwen-max");
         assert_eq!(provider.default_model(), "qwen-max");
-    }
-
-    #[test]
-    fn test_dashscope_qwen_turbo() {
-        let provider = DashScopeProvider::qwen_turbo("test-key");
-        assert_eq!(provider.default_model(), "qwen-turbo");
-    }
-
-    #[test]
-    fn test_dashscope_qwen_plus() {
-        let provider = DashScopeProvider::qwen_plus("test-key");
-        assert_eq!(provider.default_model(), "qwen-plus");
-    }
-
-    #[test]
-    fn test_dashscope_qwen_max() {
-        let provider = DashScopeProvider::qwen_max("test-key");
-        assert_eq!(provider.default_model(), "qwen-max");
-    }
-
-    #[test]
-    fn test_dashscope_qwen_max_longcontext() {
-        let provider = DashScopeProvider::qwen_max_longcontext("test-key");
-        assert_eq!(provider.default_model(), "qwen-max-longcontext");
-    }
-
-    #[test]
-    fn test_dashscope_qwen_vl_plus() {
-        let provider = DashScopeProvider::qwen_vl_plus("test-key");
-        assert_eq!(provider.default_model(), "qwen-vl-plus");
-    }
-
-    #[test]
-    fn test_dashscope_qwen_vl_max() {
-        let provider = DashScopeProvider::qwen_vl_max("test-key");
-        assert_eq!(provider.default_model(), "qwen-vl-max");
     }
 
     #[test]

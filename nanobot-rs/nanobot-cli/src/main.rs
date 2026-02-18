@@ -410,16 +410,16 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
                     .unwrap_or_else(|| "gpt-4o".to_string());
 
                 let provider: Arc<dyn LlmProvider> = match *name {
-                    "openrouter" => Arc::new(OpenAIProvider::openrouter(api_key)),
-                    "anthropic" => Arc::new(OpenAIProvider::anthropic(api_key)),
-                    "zhipu" => Arc::new(ZhipuProvider::new(api_key, None, Some(model.clone()))),
-                    "dashscope" => Arc::new(DashScopeProvider::new(api_key, Some(model.clone()))),
-                    "moonshot" => Arc::new(MoonshotProvider::new(api_key, Some(model.clone()))),
-                    "minimax" => Arc::new(MiniMaxProvider::new(api_key, Some(model.clone()))),
+                    "openrouter" => Arc::new(OpenAIProvider::openrouter(api_key, &model)),
+                    "anthropic" => Arc::new(OpenAIProvider::anthropic(api_key, &model)),
+                    "zhipu" => Arc::new(ZhipuProvider::new(api_key, None, &model)),
+                    "dashscope" => Arc::new(DashScopeProvider::new(api_key, &model)),
+                    "moonshot" => Arc::new(MoonshotProvider::new(api_key, &model)),
+                    "minimax" => Arc::new(MiniMaxProvider::new(api_key, &model)),
                     _ => Arc::new(OpenAIProvider::new(
                         api_key,
                         provider_config.api_base.clone(),
-                        Some(model.clone()),
+                        &model,
                     )),
                 };
 

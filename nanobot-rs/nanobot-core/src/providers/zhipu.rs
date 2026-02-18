@@ -22,36 +22,29 @@ impl ZhipuProvider {
     ///
     /// # Arguments
     /// * `api_key` - Zhipu AI JWT token
-    /// * `default_model` - Optional default model (defaults to GLM-5)
+    /// * `default_api_base` - Optional API base URL
+    /// * `default_model` - Default model to use (required)
     pub fn new(
         api_key: impl Into<String>,
         default_api_base: Option<String>,
-        default_model: Option<String>,
+        default_model: impl Into<String>,
     ) -> Self {
         Self {
             api_base: default_api_base.unwrap_or_else(|| Self::API_BASE.to_string()),
             client: Client::new(),
             api_key: api_key.into(),
-            default_model: default_model.unwrap_or_else(|| "GLM-5".to_string()),
+            default_model: default_model.into(),
         }
     }
 
     /// Create provider with GLM-5-Plus model
     pub fn glm_5(api_key: impl Into<String>) -> Self {
-        Self::new(
-            api_key,
-            Some(Self::API_BASE.to_string()),
-            Some("GLM-5".to_string()),
-        )
+        Self::new(api_key, None, "GLM-5")
     }
 
-    /// Create provider with GLM-5-Plus model
+    /// Create provider with GLM-4.7 model
     pub fn glm_4_7(api_key: impl Into<String>) -> Self {
-        Self::new(
-            api_key,
-            Some(Self::API_BASE.to_string()),
-            Some("GLM-4.7".to_string()),
-        )
+        Self::new(api_key, None, "GLM-4.7")
     }
 
     const API_BASE: &'static str = "https://open.bigmodel.cn/api/paas/v4";
@@ -190,15 +183,9 @@ mod tests {
 
     #[test]
     fn test_zhipu_provider_creation() {
-        let provider = ZhipuProvider::new("test-jwt-token", None, None);
+        let provider = ZhipuProvider::new("test-jwt-token", None, "GLM-5");
         assert_eq!(provider.name(), "zhipu");
         assert_eq!(provider.default_model(), "GLM-5");
-    }
-
-    #[test]
-    fn test_zhipu_provider_custom_model() {
-        let provider = ZhipuProvider::new("test-token", None, Some("GLM-5-plus".to_string()));
-        assert_eq!(provider.default_model(), "GLM-5-plus");
     }
 
     #[test]

@@ -17,34 +17,39 @@ pub struct OpenAIProvider {
 
 impl OpenAIProvider {
     /// Create a new OpenAI provider
+    ///
+    /// # Arguments
+    /// * `api_key` - API key
+    /// * `api_base` - Optional API base URL (defaults to OpenAI)
+    /// * `default_model` - Default model to use (required)
     pub fn new(
         api_key: impl Into<String>,
         api_base: Option<String>,
-        default_model: Option<String>,
+        default_model: impl Into<String>,
     ) -> Self {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
             api_base: api_base.unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-            default_model: default_model.unwrap_or_else(|| "gpt-4o".to_string()),
+            default_model: default_model.into(),
         }
     }
 
     /// Create an OpenRouter provider
-    pub fn openrouter(api_key: impl Into<String>) -> Self {
+    pub fn openrouter(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::new(
             api_key,
             Some("https://openrouter.ai/api/v1".to_string()),
-            Some("anthropic/claude-sonnet-4".to_string()),
+            model,
         )
     }
 
     /// Create an Anthropic provider (via OpenAI-compatible endpoint)
-    pub fn anthropic(api_key: impl Into<String>) -> Self {
+    pub fn anthropic(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::new(
             api_key,
             Some("https://api.anthropic.com/v1".to_string()),
-            Some("claude-sonnet-4-20250514".to_string()),
+            model,
         )
     }
 }
@@ -182,21 +187,21 @@ mod tests {
 
     #[test]
     fn test_provider_creation() {
-        let provider = OpenAIProvider::new("test-key", None, None);
+        let provider = OpenAIProvider::new("test-key", None, "gpt-4o");
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.default_model(), "gpt-4o");
     }
 
     #[test]
     fn test_openrouter_provider() {
-        let provider = OpenAIProvider::openrouter("sk-or-test");
+        let provider = OpenAIProvider::openrouter("sk-or-test", "anthropic/claude-sonnet-4");
         assert_eq!(provider.api_base, "https://openrouter.ai/api/v1");
         assert_eq!(provider.default_model(), "anthropic/claude-sonnet-4");
     }
 
     #[test]
     fn test_anthropic_provider() {
-        let provider = OpenAIProvider::anthropic("sk-ant-test");
+        let provider = OpenAIProvider::anthropic("sk-ant-test", "claude-sonnet-4-20250514");
         assert_eq!(provider.api_base, "https://api.anthropic.com/v1");
         assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
     }
@@ -206,7 +211,7 @@ mod tests {
         let provider = OpenAIProvider::new(
             "custom-key",
             Some("https://custom.api.com/v1".to_string()),
-            Some("custom-model".to_string()),
+            "custom-model",
         );
         assert_eq!(provider.api_base, "https://custom.api.com/v1");
         assert_eq!(provider.default_model(), "custom-model");

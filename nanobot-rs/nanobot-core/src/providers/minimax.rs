@@ -11,11 +11,6 @@ use super::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall};
 
 /// MiniMax AI provider
 ///
-/// MiniMax offers various models including:
-/// - abab6.5-chat: Latest flagship model
-/// - abab6.5s-chat: Faster, more cost-effective
-/// - abab5.5-chat: Previous generation model
-/// - abab5.5s-chat: Lightweight version
 pub struct MiniMaxProvider {
     api_base: String,
     client: Client,
@@ -32,14 +27,14 @@ impl MiniMaxProvider {
     ///
     /// # Arguments
     /// * `api_key` - MiniMax API key
-    /// * `default_model` - Optional default model (defaults to abab6.5-chat)
-    pub fn new(api_key: impl Into<String>, default_model: Option<String>) -> Self {
+    /// * `default_model` - Default model to use (required)
+    pub fn new(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
         Self {
             api_base: Self::API_BASE.to_string(),
             client: Client::new(),
             api_key: api_key.into(),
             group_id: None,
-            default_model: default_model.unwrap_or_else(|| "abab6.5-chat".to_string()),
+            default_model: default_model.into(),
         }
     }
 
@@ -49,27 +44,6 @@ impl MiniMaxProvider {
         self
     }
 
-    /// Create provider with abab6.5-chat model (flagship)
-    pub fn abab6_5(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("abab6.5-chat".to_string()))
-    }
-
-    /// Create provider with abab6.5s-chat model (fast)
-    pub fn abab6_5s(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("abab6.5s-chat".to_string()))
-    }
-
-    /// Create provider with abab5.5-chat model
-    pub fn abab5_5(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("abab5.5-chat".to_string()))
-    }
-
-    /// Create provider with abab5.5s-chat model (lightweight)
-    pub fn abab5_5s(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("abab5.5s-chat".to_string()))
-    }
-
-    /// Get the group ID if set
     pub fn group_id(&self) -> Option<&str> {
         self.group_id.as_deref()
     }
@@ -225,38 +199,20 @@ mod tests {
 
     #[test]
     fn test_minimax_provider_creation() {
-        let provider = MiniMaxProvider::new("test-api-key", None);
+        let provider = MiniMaxProvider::new("test-api-key", "abab6.5-chat");
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
     }
 
     #[test]
     fn test_minimax_provider_custom_model() {
-        let provider = MiniMaxProvider::new("test-key", Some("abab5.5s-chat".to_string()));
+        let provider = MiniMaxProvider::new("test-key", "abab5.5s-chat");
         assert_eq!(provider.default_model(), "abab5.5s-chat");
     }
 
     #[test]
-    fn test_minimax_abab6_5() {
-        let provider = MiniMaxProvider::abab6_5("test-key");
-        assert_eq!(provider.default_model(), "abab6.5-chat");
-    }
-
-    #[test]
-    fn test_minimax_abab6_5s() {
-        let provider = MiniMaxProvider::abab6_5s("test-key");
-        assert_eq!(provider.default_model(), "abab6.5s-chat");
-    }
-
-    #[test]
-    fn test_minimax_abab5_5() {
-        let provider = MiniMaxProvider::abab5_5("test-key");
-        assert_eq!(provider.default_model(), "abab5.5-chat");
-    }
-
-    #[test]
     fn test_minimax_with_group_id() {
-        let provider = MiniMaxProvider::new("test-key", None).with_group_id("group123");
+        let provider = MiniMaxProvider::new("test-key", "M2.1").with_group_id("group123");
         assert_eq!(provider.group_id(), Some("group123"));
     }
 

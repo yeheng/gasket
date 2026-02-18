@@ -21,28 +21,13 @@ impl MoonshotProvider {
     ///
     /// # Arguments
     /// * `api_key` - Moonshot AI API key
-    /// * `default_model` - Optional default model (defaults to moonshot-v1-8k)
-    pub fn new(api_key: impl Into<String>, default_model: Option<String>) -> Self {
+    /// * `default_model` - Default model to use (required)
+    pub fn new(api_key: impl Into<String>, default_model: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            default_model: default_model.unwrap_or_else(|| "moonshot-v1-8k".to_string()),
+            default_model: default_model.into(),
         }
-    }
-
-    /// Create provider with Moonshot V1 8K context model
-    pub fn moonshot_v1_8k(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("moonshot-v1-8k".to_string()))
-    }
-
-    /// Create provider with Moonshot V1 32K context model
-    pub fn moonshot_v1_32k(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("moonshot-v1-32k".to_string()))
-    }
-
-    /// Create provider with Moonshot V1 128K context model (longest context)
-    pub fn moonshot_v1_128k(api_key: impl Into<String>) -> Self {
-        Self::new(api_key, Some("moonshot-v1-128k".to_string()))
     }
 
     const API_BASE: &'static str = "https://api.moonshot.cn/v1";
@@ -181,41 +166,14 @@ mod tests {
 
     #[test]
     fn test_moonshot_provider_creation() {
-        let provider = MoonshotProvider::new("test-api-key", None);
+        let provider = MoonshotProvider::new("test-api-key", "moonshot-v1-8k");
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.default_model(), "moonshot-v1-8k");
     }
 
     #[test]
-    fn test_moonshot_provider_custom_model() {
-        let provider = MoonshotProvider::new("test-key", Some("moonshot-v1-128k".to_string()));
-        assert_eq!(provider.default_model(), "moonshot-v1-128k");
-    }
-
-    #[test]
-    fn test_moonshot_v1_8k() {
-        let provider = MoonshotProvider::moonshot_v1_8k("test-key");
-        assert_eq!(provider.default_model(), "moonshot-v1-8k");
-    }
-
-    #[test]
-    fn test_moonshot_v1_32k() {
-        let provider = MoonshotProvider::moonshot_v1_32k("test-key");
-        assert_eq!(provider.default_model(), "moonshot-v1-32k");
-    }
-
-    #[test]
-    fn test_moonshot_v1_128k() {
-        let provider = MoonshotProvider::moonshot_v1_128k("test-key");
-        assert_eq!(provider.default_model(), "moonshot-v1-128k");
-    }
-
-    #[test]
     fn test_moonshot_api_base() {
-        assert_eq!(
-            MoonshotProvider::API_BASE,
-            "https://api.moonshot.cn/v1"
-        );
+        assert_eq!(MoonshotProvider::API_BASE, "https://api.moonshot.cn/v1");
     }
 
     #[test]
