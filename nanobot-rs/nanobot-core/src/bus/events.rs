@@ -2,12 +2,43 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Channel type enum — enforces compile-time checks on channel names.
+///
+/// Using an enum instead of a bare `String` means the compiler catches typos
+/// like `"teelgram"` that would silently fail at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelType {
+    Telegram,
+    Discord,
+    Slack,
+    Email,
+    DingTalk,
+    Feishu,
+    Cli,
+}
+
+impl fmt::Display for ChannelType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ChannelType::Telegram => write!(f, "telegram"),
+            ChannelType::Discord => write!(f, "discord"),
+            ChannelType::Slack => write!(f, "slack"),
+            ChannelType::Email => write!(f, "email"),
+            ChannelType::DingTalk => write!(f, "dingtalk"),
+            ChannelType::Feishu => write!(f, "feishu"),
+            ChannelType::Cli => write!(f, "cli"),
+        }
+    }
+}
 
 /// Inbound message from a channel
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InboundMessage {
-    /// Source channel (telegram, discord, etc.)
-    pub channel: String,
+    /// Source channel
+    pub channel: ChannelType,
 
     /// Sender ID
     pub sender_id: String,
@@ -42,7 +73,7 @@ impl InboundMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboundMessage {
     /// Target channel
-    pub channel: String,
+    pub channel: ChannelType,
 
     /// Target chat ID
     pub chat_id: String,

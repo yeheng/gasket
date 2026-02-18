@@ -7,7 +7,7 @@ use tracing::{debug, info};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::MessageBus;
+use crate::bus::{ChannelType, MessageBus};
 
 /// Telegram channel configuration
 #[derive(Debug, Clone)]
@@ -58,7 +58,7 @@ impl TelegramChannel {
 
                         // Publish to bus
                         let inbound = InboundMessage {
-                            channel: "telegram".to_string(),
+                            channel: ChannelType::Telegram,
                             sender_id: user_id_str,
                             chat_id: chat_id.to_string(),
                             content: text.to_string(),

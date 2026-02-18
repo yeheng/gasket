@@ -7,7 +7,12 @@ use tokio::sync::Mutex;
 
 use super::events::{InboundMessage, OutboundMessage};
 
-/// Message bus for routing messages between channels and agent
+/// Message bus for routing messages between channels and agent.
+///
+/// The bus owns the sender halves (cloneable) and allows the receiver halves
+/// to be taken once via `take_inbound_receiver` / `take_outbound_receiver`.
+/// This avoids wrapping `Receiver` in `Mutex` for ongoing consumption — the
+/// single consumer takes ownership and reads from it directly.
 #[derive(Clone)]
 pub struct MessageBus {
     inbound_tx: Sender<InboundMessage>,
@@ -37,11 +42,13 @@ impl MessageBus {
         }
     }
 
-    /// Consume an inbound message
-    pub async fn consume_inbound(&self) -> Option<InboundMessage> {
-        let mut rx_guard = self.inbound_rx.lock().await;
-        let rx = rx_guard.as_mut()?;
-        rx.recv().await
+    /// Take ownership of the inbound receiver.
+    ///
+    /// This can only be called once — the single consumer (e.g. AgentLoop)
+    /// takes the receiver and reads from it in its own loop. Returns `None`
+    /// if the receiver was already taken.
+    pub async fn take_inbound_receiver(&self) -> Option<Receiver<InboundMessage>> {
+        self.inbound_rx.lock().await.take()
     }
 
     /// Publish an outbound message
@@ -51,11 +58,13 @@ impl MessageBus {
         }
     }
 
-    /// Consume an outbound message
-    pub async fn consume_outbound(&self) -> Option<OutboundMessage> {
-        let mut rx_guard = self.outbound_rx.lock().await;
-        let rx = rx_guard.as_mut()?;
-        rx.recv().await
+    /// Take ownership of the outbound receiver.
+    ///
+    /// This can only be called once — the single consumer (e.g. ChannelManager)
+    /// takes the receiver and reads from it in its own loop. Returns `None`
+    /// if the receiver was already taken.
+    pub async fn take_outbound_receiver(&self) -> Option<Receiver<OutboundMessage>> {
+        self.outbound_rx.lock().await.take()
     }
 
     /// Get a sender for inbound messages

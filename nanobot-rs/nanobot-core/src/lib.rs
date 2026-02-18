@@ -25,7 +25,7 @@ pub mod tools;
 
 pub use config::Config;
 pub use providers::{
-    DeepSeekProvider, GeminiProvider, LlmProvider, OpenAIProvider, ProviderMetadata,
+    DeepSeekProvider, GeminiProvider, LlmProvider, OpenAICompatibleProvider, ProviderMetadata,
     ProviderRegistry,
 };
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};

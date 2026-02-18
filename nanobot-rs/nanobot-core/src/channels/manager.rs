@@ -8,13 +8,13 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use super::base::Channel;
-use crate::bus::events::OutboundMessage;
+use crate::bus::events::{ChannelType, OutboundMessage};
 use crate::bus::MessageBus;
 
 /// Manager for coordinating multiple channels
 #[allow(dead_code)]
 pub struct ChannelManager {
-    channels: Arc<RwLock<HashMap<String, Box<dyn Channel>>>>,
+    channels: Arc<RwLock<HashMap<ChannelType, Box<dyn Channel>>>>,
     bus: MessageBus,
 }
 
@@ -28,20 +28,20 @@ impl ChannelManager {
     }
 
     /// Register a channel
-    pub async fn register(&self, name: &str, channel: Box<dyn Channel>) {
+    pub async fn register(&self, channel_type: ChannelType, channel: Box<dyn Channel>) {
         let mut channels = self.channels.write().await;
-        info!("Registering channel: {}", name);
-        channels.insert(name.to_string(), channel);
+        info!("Registering channel: {}", channel_type);
+        channels.insert(channel_type, channel);
     }
 
     /// Start all registered channels
     pub async fn start_all(&self) -> Result<()> {
         let channels = self.channels.read().await;
-        for (name, _channel) in channels.iter() {
-            info!("Starting channel: {}", name);
+        for (channel_type, _channel) in channels.iter() {
+            info!("Starting channel: {}", channel_type);
             // Note: We can't mutate channels while holding the read lock
             // In production, we'd use a different pattern
-            debug!("Channel {} ready", name);
+            debug!("Channel {} ready", channel_type);
         }
         Ok(())
     }
@@ -49,8 +49,8 @@ impl ChannelManager {
     /// Stop all channels
     pub async fn stop_all(&self) -> Result<()> {
         let channels = self.channels.read().await;
-        for (name, _) in channels.iter() {
-            info!("Stopping channel: {}", name);
+        for (channel_type, _) in channels.iter() {
+            info!("Stopping channel: {}", channel_type);
         }
         Ok(())
     }

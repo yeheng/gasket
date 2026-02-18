@@ -24,7 +24,7 @@ async fn test_agent_initialization() {
     };
 
     let provider =
-        nanobot_core::providers::OpenAIProvider::new("test-key", None, "gpt-4o");
+        nanobot_core::providers::OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
 
     let agent = nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config);
 
@@ -51,13 +51,13 @@ async fn test_agent_config_default() {
 
 #[tokio::test]
 async fn test_message_bus() {
-    use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::events::{ChannelType, InboundMessage};
     use nanobot_core::bus::MessageBus;
 
     let bus = MessageBus::new(10);
 
     let inbound = InboundMessage {
-        channel: "test".to_string(),
+        channel: ChannelType::Cli,
         sender_id: "user1".to_string(),
         chat_id: "chat1".to_string(),
         content: "Hello".to_string(),
@@ -68,19 +68,20 @@ async fn test_message_bus() {
 
     bus.publish_inbound(inbound.clone()).await;
 
-    let received = bus.consume_inbound().await;
+    let mut rx = bus.take_inbound_receiver().await.unwrap();
+    let received = rx.recv().await;
     assert!(received.is_some());
     let received = received.unwrap();
     assert_eq!(received.content, "Hello");
-    assert_eq!(received.channel, "test");
+    assert_eq!(received.channel, ChannelType::Cli);
 }
 
 #[tokio::test]
 async fn test_message_bus_session_key() {
-    use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::events::{ChannelType, InboundMessage};
 
     let msg = InboundMessage {
-        channel: "telegram".to_string(),
+        channel: ChannelType::Telegram,
         sender_id: "user123".to_string(),
         chat_id: "chat456".to_string(),
         content: "Test".to_string(),
@@ -94,16 +95,16 @@ async fn test_message_bus_session_key() {
 
 #[tokio::test]
 async fn test_outbound_message() {
-    use nanobot_core::bus::events::OutboundMessage;
+    use nanobot_core::bus::events::{ChannelType, OutboundMessage};
 
     let outbound = OutboundMessage {
-        channel: "discord".to_string(),
+        channel: ChannelType::Discord,
         chat_id: "channel789".to_string(),
         content: "Response".to_string(),
         metadata: Some(serde_json::json!({"thread_ts": "12345"})),
     };
 
-    assert_eq!(outbound.channel, "discord");
+    assert_eq!(outbound.channel, ChannelType::Discord);
     assert_eq!(outbound.chat_id, "channel789");
     assert!(outbound.metadata.is_some());
 }
@@ -458,9 +459,9 @@ async fn test_cron_tool_schema() {
 #[tokio::test]
 async fn test_provider_trait() {
     use nanobot_core::providers::LlmProvider;
-    use nanobot_core::providers::OpenAIProvider;
+    use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAIProvider::new("test-key", None, "gpt-4o");
+    let provider = OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
 
     assert_eq!(provider.name(), "openai");
     assert_eq!(provider.default_model(), "gpt-4o");
@@ -468,21 +469,21 @@ async fn test_provider_trait() {
 
 #[tokio::test]
 async fn test_openrouter_provider() {
-    use nanobot_core::providers::OpenAIProvider;
+    use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAIProvider::openrouter("sk-or-test", "anthropic/claude-sonnet-4");
+    let provider = OpenAICompatibleProvider::openrouter("sk-or-test", "anthropic/claude-sonnet-4");
 
-    assert_eq!(provider.name(), "openai");
+    assert_eq!(provider.name(), "openrouter");
     assert_eq!(provider.default_model(), "anthropic/claude-sonnet-4");
 }
 
 #[tokio::test]
 async fn test_anthropic_provider() {
-    use nanobot_core::providers::OpenAIProvider;
+    use nanobot_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAIProvider::anthropic("sk-ant-test", "claude-sonnet-4-20250514");
+    let provider = OpenAICompatibleProvider::anthropic("sk-ant-test", "claude-sonnet-4-20250514");
 
-    assert_eq!(provider.name(), "openai");
+    assert_eq!(provider.name(), "anthropic");
     assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");
 }
 
@@ -654,7 +655,7 @@ async fn test_exec_tool_echo() {
     assert_eq!(tool.name(), "exec");
     assert_eq!(
         tool.description(),
-        "Execute a shell command in the workspace directory"
+        "Execute a shell command in the workspace directory. Dangerous commands (rm -rf /, access to /etc/shadow, etc.) are blocked."
     );
 
     let args = serde_json::json!({
@@ -899,13 +900,13 @@ async fn test_cron_tool_unknown_action() {
 
 #[tokio::test]
 async fn test_message_bus_outbound() {
-    use nanobot_core::bus::events::OutboundMessage;
+    use nanobot_core::bus::events::{ChannelType, OutboundMessage};
     use nanobot_core::bus::MessageBus;
 
     let bus = MessageBus::new(10);
 
     let outbound = OutboundMessage {
-        channel: "test".to_string(),
+        channel: ChannelType::Cli,
         chat_id: "chat1".to_string(),
         content: "Response".to_string(),
         metadata: None,
@@ -913,7 +914,8 @@ async fn test_message_bus_outbound() {
 
     bus.publish_outbound(outbound.clone()).await;
 
-    let received = bus.consume_outbound().await;
+    let mut rx = bus.take_outbound_receiver().await.unwrap();
+    let received = rx.recv().await;
     assert!(received.is_some());
     let received = received.unwrap();
     assert_eq!(received.content, "Response");
@@ -921,7 +923,7 @@ async fn test_message_bus_outbound() {
 
 #[tokio::test]
 async fn test_message_bus_senders() {
-    use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::events::{ChannelType, InboundMessage};
     use nanobot_core::bus::MessageBus;
 
     let bus = MessageBus::new(10);
@@ -930,7 +932,7 @@ async fn test_message_bus_senders() {
     let _ = bus.outbound_sender();
 
     let msg = InboundMessage {
-        channel: "test".to_string(),
+        channel: ChannelType::Cli,
         sender_id: "user1".to_string(),
         chat_id: "chat1".to_string(),
         content: "Hello".to_string(),
@@ -941,7 +943,8 @@ async fn test_message_bus_senders() {
 
     inbound_sender.send(msg).await.unwrap();
 
-    let received = bus.consume_inbound().await;
+    let mut rx = bus.take_inbound_receiver().await.unwrap();
+    let received = rx.recv().await;
     assert!(received.is_some());
 }
 

@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{Tool, ToolError, ToolResult};
+use crate::bus::events::ChannelType;
 use crate::bus::{MessageBus, OutboundMessage};
 
 /// Message tool for sending messages to specific channels
@@ -22,7 +23,7 @@ impl MessageTool {
 #[derive(Debug, Deserialize)]
 struct MessageParams {
     /// Target channel (e.g., "telegram", "discord", "slack")
-    channel: String,
+    channel: ChannelType,
 
     /// Target chat ID
     chat_id: String,
@@ -48,7 +49,7 @@ impl Tool for MessageTool {
                 "channel": {
                     "type": "string",
                     "description": "Target channel (e.g., 'telegram', 'discord', 'slack', 'email')",
-                    "enum": ["telegram", "discord", "slack", "email"]
+                    "enum": ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "cli"]
                 },
                 "chat_id": {
                     "type": "string",
@@ -68,8 +69,9 @@ impl Tool for MessageTool {
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         // Create outbound message
+        let channel_name = params.channel.to_string();
         let message = OutboundMessage {
-            channel: params.channel.clone(),
+            channel: params.channel,
             chat_id: params.chat_id.clone(),
             content: params.content.clone(),
             metadata: Default::default(),
@@ -80,7 +82,7 @@ impl Tool for MessageTool {
 
         Ok(format!(
             "Message sent successfully to {}:{}",
-            params.channel, params.chat_id
+            channel_name, params.chat_id
         ))
     }
 }

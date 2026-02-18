@@ -11,9 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 use nanobot_core::agent::{AgentConfig, AgentLoop};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
-use nanobot_core::providers::{
-    DashScopeProvider, LlmProvider, MiniMaxProvider, MoonshotProvider, OpenAIProvider, ZhipuProvider,
-};
+use nanobot_core::providers::{LlmProvider, OpenAICompatibleProvider};
 
 /// 🐈 nanobot - A lightweight AI assistant
 #[derive(Parser)]
@@ -312,30 +310,32 @@ async fn cmd_gateway() -> Result<()> {
             let agent_clone = agent.clone();
             let bus_clone = bus.clone();
 
+            // Take the inbound receiver once — single consumer owns it
+            let mut inbound_rx = bus.take_inbound_receiver().await
+                .expect("Inbound receiver already taken");
+
             let task = tokio::spawn(async move {
                 // Start a task to process inbound messages
                 let agent_for_handler = agent_clone.clone();
                 let bus_for_handler = bus_clone.clone();
 
                 tokio::spawn(async move {
-                    loop {
-                        if let Some(msg) = bus_for_handler.consume_inbound().await {
-                            match agent_for_handler
-                                .process_direct(&msg.content, &msg.session_key())
-                                .await
-                            {
-                                Ok(response) => {
-                                    let outbound = nanobot_core::bus::events::OutboundMessage {
-                                        channel: msg.channel,
-                                        chat_id: msg.chat_id,
-                                        content: response,
-                                        metadata: None,
-                                    };
-                                    bus_for_handler.publish_outbound(outbound).await;
-                                }
-                                Err(e) => {
-                                    tracing::error!("Error processing message: {}", e);
-                                }
+                    while let Some(msg) = inbound_rx.recv().await {
+                        match agent_for_handler
+                            .process_direct(&msg.content, &msg.session_key())
+                            .await
+                        {
+                            Ok(response) => {
+                                let outbound = nanobot_core::bus::events::OutboundMessage {
+                                    channel: msg.channel,
+                                    chat_id: msg.chat_id,
+                                    content: response,
+                                    metadata: None,
+                                };
+                                bus_for_handler.publish_outbound(outbound).await;
+                            }
+                            Err(e) => {
+                                tracing::error!("Error processing message: {}", e);
                             }
                         }
                     }
@@ -410,13 +410,13 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
                     .unwrap_or_else(|| "gpt-4o".to_string());
 
                 let provider: Arc<dyn LlmProvider> = match *name {
-                    "openrouter" => Arc::new(OpenAIProvider::openrouter(api_key, &model)),
-                    "anthropic" => Arc::new(OpenAIProvider::anthropic(api_key, &model)),
-                    "zhipu" => Arc::new(ZhipuProvider::new(api_key, None, &model)),
-                    "dashscope" => Arc::new(DashScopeProvider::new(api_key, &model)),
-                    "moonshot" => Arc::new(MoonshotProvider::new(api_key, &model)),
-                    "minimax" => Arc::new(MiniMaxProvider::new(api_key, &model)),
-                    _ => Arc::new(OpenAIProvider::new(
+                    "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(api_key, &model)),
+                    "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(api_key, &model)),
+                    "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(api_key, None, &model)),
+                    "dashscope" => Arc::new(OpenAICompatibleProvider::dashscope(api_key, &model)),
+                    "moonshot" => Arc::new(OpenAICompatibleProvider::moonshot(api_key, &model)),
+                    "minimax" => Arc::new(OpenAICompatibleProvider::minimax(api_key, &model, None)),
+                    _ => Arc::new(OpenAICompatibleProvider::openai(
                         api_key,
                         provider_config.api_base.clone(),
                         &model,
