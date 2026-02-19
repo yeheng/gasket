@@ -9,9 +9,9 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
 
-use nanobot_core::agent::{AgentConfig, AgentLoop};
+use nanobot_core::agent::{AgentConfig, AgentDependencies, AgentLoop};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
-use nanobot_core::providers::{DeepSeekProvider, LlmProvider, OpenAICompatibleProvider};
+use nanobot_core::providers::{LlmProvider, OpenAICompatibleProvider};
 
 /// 🐈 nanobot - A lightweight AI assistant
 #[derive(Parser)]
@@ -185,6 +185,29 @@ async fn cmd_status() -> Result<()> {
     Ok(())
 }
 
+/// Build AgentConfig from the config file, applying defaults for zero-valued fields.
+fn build_agent_config(config: &Config) -> AgentConfig {
+    let defaults = AgentConfig::default();
+    AgentConfig {
+        model: String::new(), // caller overrides with resolved model
+        max_iterations: match config.agents.defaults.max_iterations {
+            0 => defaults.max_iterations,
+            v => v,
+        },
+        temperature: config.agents.defaults.temperature,
+        max_tokens: match config.agents.defaults.max_tokens {
+            0 => defaults.max_tokens,
+            v => v,
+        },
+        memory_window: match config.agents.defaults.memory_window {
+            0 => defaults.memory_window,
+            v => v,
+        },
+        restrict_to_workspace: config.tools.restrict_to_workspace,
+        max_tool_result_chars: defaults.max_tool_result_chars,
+    }
+}
+
 async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Result<()> {
     // Enable debug logging if requested
     if logs {
@@ -202,27 +225,19 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
     // Find a provider
     let (provider, model) = find_provider(&config)?;
 
-    // Create agent — treat 0 as "use default"
-    let defaults = AgentConfig::default();
-    let agent_config = AgentConfig {
-        model,
-        max_iterations: match config.agents.defaults.max_iterations {
-            0 => defaults.max_iterations,
-            v => v,
-        },
-        temperature: config.agents.defaults.temperature,
-        max_tokens: match config.agents.defaults.max_tokens {
-            0 => defaults.max_tokens,
-            v => v,
-        },
-        memory_window: match config.agents.defaults.memory_window {
-            0 => defaults.memory_window,
-            v => v,
-        },
-        restrict_to_workspace: config.tools.restrict_to_workspace,
+    // Create agent config
+    let mut agent_config = build_agent_config(&config);
+    agent_config.model = model;
+
+    // Build dependencies (CLI mode: no bus/cron, but support web tools)
+    let deps = AgentDependencies {
+        bus: None,
+        cron_service: None,
+        brave_api_key: config.tools.web.brave_api_key.clone(),
+        mcp_tools: Vec::new(),
     };
 
-    let agent = AgentLoop::new(provider, workspace, agent_config);
+    let agent = AgentLoop::with_dependencies(provider, workspace, agent_config, deps);
     let render_md = !no_markdown;
 
     match message {
@@ -320,36 +335,137 @@ async fn cmd_gateway() -> Result<()> {
     println!("🐈 Starting gateway...\n");
 
     // Create message bus — receivers are split out at creation time, no Mutex needed
-    #[allow(unused_variables)]
     let (bus, mut inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(100);
+    let bus = Arc::new(bus);
 
-    // Create agent
+    // Create cron service
+    let cron_service = Arc::new(nanobot_core::cron::CronService::new(workspace.clone()));
+
+    // Create agent with all dependencies
     let (provider, model) = find_provider(&config)?;
-    let defaults = AgentConfig::default();
-    let agent_config = AgentConfig {
-        model,
-        max_iterations: match config.agents.defaults.max_iterations {
-            0 => defaults.max_iterations,
-            v => v,
-        },
-        temperature: config.agents.defaults.temperature,
-        max_tokens: match config.agents.defaults.max_tokens {
-            0 => defaults.max_tokens,
-            v => v,
-        },
-        memory_window: match config.agents.defaults.memory_window {
-            0 => defaults.memory_window,
-            v => v,
-        },
-        restrict_to_workspace: config.tools.restrict_to_workspace,
+    let mut agent_config = build_agent_config(&config);
+    agent_config.model = model;
+
+    // Start MCP servers (if configured)
+    let mcp_tools = if !config.tools.mcp_servers.is_empty() {
+        println!("Starting MCP servers...");
+        let (_mcp_manager, tools) =
+            nanobot_core::mcp::start_mcp_servers(&config.tools.mcp_servers).await;
+        println!("  {} MCP tools loaded", tools.len());
+        tools
+    } else {
+        Vec::new()
     };
 
-    #[allow(unused_variables)]
-    let agent = Arc::new(AgentLoop::new(provider, workspace, agent_config));
+    let deps = AgentDependencies {
+        bus: Some(bus.clone()),
+        cron_service: Some(cron_service.clone()),
+        brave_api_key: config.tools.web.brave_api_key.clone(),
+        mcp_tools,
+    };
+
+    let agent = Arc::new(AgentLoop::with_dependencies(
+        provider, workspace.clone(), agent_config, deps,
+    ));
 
     // Track running tasks
     #[allow(unused_mut)]
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // --- Channel manager + outbound router ---
+    let channel_manager = Arc::new(nanobot_core::channels::ChannelManager::new(bus.clone()));
+    tasks.push(channel_manager.spawn_outbound_router(outbound_rx));
+
+    // --- Inbound message handler ---
+    {
+        let agent_for_handler = agent.clone();
+        let bus_for_handler = bus.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(msg) = inbound_rx.recv().await {
+                let agent_clone = agent_for_handler.clone();
+                let bus_clone = bus_for_handler.clone();
+                // Process each message concurrently
+                tokio::spawn(async move {
+                    match agent_clone
+                        .process_direct(&msg.content, &msg.session_key())
+                        .await
+                    {
+                        Ok(response) => {
+                            let outbound = nanobot_core::bus::events::OutboundMessage {
+                                channel: msg.channel,
+                                chat_id: msg.chat_id,
+                                content: response,
+                                metadata: None,
+                            };
+                            bus_clone.publish_outbound(outbound).await;
+                        }
+                        Err(e) => {
+                            tracing::error!("Error processing message: {}", e);
+                        }
+                    }
+                });
+            }
+        }));
+    }
+
+    // --- Heartbeat service ---
+    {
+        let heartbeat =
+            nanobot_core::heartbeat::HeartbeatService::new(workspace.clone());
+        let bus_for_heartbeat = bus.clone();
+        tasks.push(tokio::spawn(async move {
+            heartbeat
+                .run(|task_text| {
+                    let bus_inner = bus_for_heartbeat.clone();
+                    tokio::spawn(async move {
+                        let inbound = nanobot_core::bus::events::InboundMessage {
+                            channel: nanobot_core::bus::events::ChannelType::Cli,
+                            sender_id: "heartbeat".to_string(),
+                            chat_id: "heartbeat".to_string(),
+                            content: task_text,
+                            media: None,
+                            metadata: None,
+                            timestamp: chrono::Utc::now(),
+                        };
+                        bus_inner.publish_inbound(inbound).await;
+                    });
+                })
+                .await;
+        }));
+    }
+
+    // --- Cron checking loop ---
+    {
+        let cron_svc = cron_service.clone();
+        let bus_for_cron = bus.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let due = cron_svc.get_due_jobs().await;
+                for job in due {
+                    tracing::info!("Cron job due: {} ({})", job.name, job.id);
+                    let channel = job
+                        .channel
+                        .as_deref()
+                        .and_then(|c| serde_json::from_value(serde_json::json!(c)).ok())
+                        .unwrap_or(nanobot_core::bus::events::ChannelType::Cli);
+                    let chat_id = job.chat_id.clone().unwrap_or_else(|| "cron".to_string());
+                    let inbound = nanobot_core::bus::events::InboundMessage {
+                        channel,
+                        sender_id: "cron".to_string(),
+                        chat_id,
+                        content: job.message.clone(),
+                        media: None,
+                        metadata: None,
+                        timestamp: chrono::Utc::now(),
+                    };
+                    bus_for_cron.publish_inbound(inbound).await;
+                    cron_svc.mark_job_run(&job.id).await;
+                }
+            }
+        }));
+    }
 
     // Start Telegram if configured
     #[cfg(feature = "telegram")]
@@ -363,39 +479,12 @@ async fn cmd_gateway() -> Result<()> {
             };
 
             let telegram_channel =
-                nanobot_core::channels::telegram::TelegramChannel::new(telegram_cfg, bus.clone());
-
-            let agent_clone = agent.clone();
-            let bus_clone = bus.clone();
+                nanobot_core::channels::telegram::TelegramChannel::new(
+                    telegram_cfg,
+                    (*bus).clone(),
+                );
 
             let task = tokio::spawn(async move {
-                // Start a task to process inbound messages
-                let agent_for_handler = agent_clone.clone();
-                let bus_for_handler = bus_clone.clone();
-
-                tokio::spawn(async move {
-                    while let Some(msg) = inbound_rx.recv().await {
-                        match agent_for_handler
-                            .process_direct(&msg.content, &msg.session_key())
-                            .await
-                        {
-                            Ok(response) => {
-                                let outbound = nanobot_core::bus::events::OutboundMessage {
-                                    channel: msg.channel,
-                                    chat_id: msg.chat_id,
-                                    content: response,
-                                    metadata: None,
-                                };
-                                bus_for_handler.publish_outbound(outbound).await;
-                            }
-                            Err(e) => {
-                                tracing::error!("Error processing message: {}", e);
-                            }
-                        }
-                    }
-                });
-
-                // This will block
                 let _ = telegram_channel.start().await;
             });
 
@@ -415,7 +504,10 @@ async fn cmd_gateway() -> Result<()> {
             };
 
             let discord_channel =
-                nanobot_core::channels::discord::DiscordChannel::new(discord_cfg, bus.clone());
+                nanobot_core::channels::discord::DiscordChannel::new(
+                    discord_cfg,
+                    (*bus).clone(),
+                );
 
             let task = tokio::spawn(async move {
                 let _ = discord_channel.start().await;
@@ -478,14 +570,7 @@ fn build_provider(
     model: &str,
 ) -> Arc<dyn LlmProvider> {
     match name {
-        "deepseek" => {
-            let p = if let Some(base) = &provider_config.api_base {
-                DeepSeekProvider::with_api_base(api_key.to_string(), base.clone())
-            } else {
-                DeepSeekProvider::new(api_key.to_string())
-            };
-            Arc::new(p.with_model(model.to_string()))
-        }
+        "deepseek" => Arc::new(OpenAICompatibleProvider::deepseek(api_key, provider_config.api_base.clone(), model)),
         "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(api_key, provider_config.api_base.clone(), model)),
         "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(api_key, provider_config.api_base.clone(), model)),
         "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(api_key, provider_config.api_base.clone(), model)),

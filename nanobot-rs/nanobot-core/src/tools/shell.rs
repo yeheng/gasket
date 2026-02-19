@@ -126,8 +126,8 @@ impl Tool for ExecTool {
 
     fn parameters(&self) -> Value {
         simple_schema(&[
-            ("command", "string", true),
-            ("description", "string", false),
+            ("command", "string", true, "Shell command to execute"),
+            ("description", "string", false, "Brief description of what the command does"),
         ])
     }
 

@@ -49,9 +49,9 @@ impl Tool for ReadFileTool {
 
     fn parameters(&self) -> Value {
         simple_schema(&[
-            ("absolute_path", "string", true),
-            ("offset", "number", false),
-            ("limit", "number", false),
+            ("absolute_path", "string", true, "Absolute path to the file to read"),
+            ("offset", "number", false, "Line offset to start reading from (0-based)"),
+            ("limit", "number", false, "Maximum number of lines to read"),
         ])
     }
 
@@ -118,7 +118,7 @@ impl Tool for WriteFileTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("file_path", "string", true), ("content", "string", true)])
+        simple_schema(&[("file_path", "string", true, "Path to the file to write"), ("content", "string", true, "Content to write to the file")])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -263,7 +263,7 @@ impl Tool for ListDirTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("path", "string", true)])
+        simple_schema(&[("path", "string", true, "Absolute path to the directory to list")])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {

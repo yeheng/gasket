@@ -1,12 +1,16 @@
 //! MCP (Model Context Protocol) client implementation
+//!
+//! Implements JSON-RPC 2.0 over stdio for communicating with MCP servers.
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, info, warn};
 
 /// MCP tool definition
@@ -14,6 +18,7 @@ use tracing::{debug, info, warn};
 pub struct McpTool {
     pub name: String,
     pub description: Option<String>,
+    #[serde(rename = "inputSchema")]
     pub input_schema: Option<Value>,
 }
 
@@ -25,7 +30,10 @@ pub struct McpServerConfig {
     pub env: Option<HashMap<String, String>>,
 }
 
-/// MCP client for communicating with a server
+/// Pending requests awaiting responses
+type PendingRequests = Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>;
+
+/// MCP client for communicating with a server via JSON-RPC over stdio
 pub struct McpClient {
     name: String,
     config: McpServerConfig,
@@ -33,6 +41,7 @@ pub struct McpClient {
     stdin: Option<ChildStdin>,
     tools: Vec<McpTool>,
     request_id: u64,
+    pending: PendingRequests,
 }
 
 impl McpClient {
@@ -45,10 +54,11 @@ impl McpClient {
             stdin: None,
             tools: Vec::new(),
             request_id: 0,
+            pending: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Start the MCP server process
+    /// Start the MCP server process and initialize
     pub async fn start(&mut self) -> anyhow::Result<()> {
         info!("Starting MCP server: {}", self.name);
 
@@ -68,9 +78,45 @@ impl McpClient {
         let mut child = cmd.spawn()?;
 
         let stdin = child.stdin.take().expect("Failed to open stdin");
-        let _stdout = child.stdout.take().expect("Failed to open stdout");
+        let stdout = child.stdout.take().expect("Failed to open stdout");
 
         self.stdin = Some(stdin);
+
+        // Spawn a task to read stdout and dispatch responses
+        let pending = self.pending.clone();
+        let server_name = self.name.clone();
+        tokio::spawn(async move {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    continue;
+                }
+
+                debug!("[MCP:{}] stdout: {}", server_name, &line[..line.len().min(200)]);
+
+                match serde_json::from_str::<Value>(&line) {
+                    Ok(msg) => {
+                        if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
+                            // This is a response — find the pending request
+                            let mut pending = pending.lock().await;
+                            if let Some(tx) = pending.remove(&id) {
+                                let _ = tx.send(msg);
+                            }
+                        }
+                        // Notifications (no id) are logged but not dispatched
+                    }
+                    Err(e) => {
+                        debug!("[MCP:{}] non-JSON line: {} ({})", server_name, &line[..line.len().min(80)], e);
+                    }
+                }
+            }
+
+            debug!("[MCP:{}] stdout reader exited", server_name);
+        });
+
         self.process = Some(child);
 
         // Initialize connection
@@ -79,10 +125,20 @@ impl McpClient {
         // List available tools
         self.list_tools().await?;
 
+        info!(
+            "MCP server {} ready with {} tools",
+            self.name,
+            self.tools.len()
+        );
         Ok(())
     }
 
-    async fn send_request(&mut self, method: &str, params: Option<Value>) -> anyhow::Result<Value> {
+    /// Send a JSON-RPC request and wait for the response
+    async fn send_request(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> anyhow::Result<Value> {
         let id = self.request_id;
         self.request_id += 1;
 
@@ -90,20 +146,69 @@ impl McpClient {
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
-            "params": params.unwrap_or(Value::Null)
+            "params": params.unwrap_or(Value::Object(serde_json::Map::new()))
         });
 
         let request_str = serde_json::to_string(&request)?;
-        debug!("MCP request: {}", request_str);
+        debug!("[MCP:{}] → {}", self.name, &request_str[..request_str.len().min(200)]);
 
+        // Register pending request
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(id, tx);
+
+        // Write to stdin
         if let Some(ref mut stdin) = self.stdin {
             stdin.write_all(request_str.as_bytes()).await?;
             stdin.write_all(b"\n").await?;
             stdin.flush().await?;
+        } else {
+            anyhow::bail!("MCP server {} stdin not available", self.name);
         }
 
-        // Read response (simplified - in production, use proper async read)
-        Ok(Value::Null)
+        // Wait for response with timeout
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            rx,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("MCP server {} timed out on method '{}'", self.name, method))?
+        .map_err(|_| anyhow::anyhow!("MCP server {} dropped response channel", self.name))?;
+
+        // Check for JSON-RPC error
+        if let Some(err) = response.get("error") {
+            let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let message = err
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error");
+            anyhow::bail!("MCP server {} error ({}): {}", self.name, code, message);
+        }
+
+        Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    /// Send a JSON-RPC notification (no response expected)
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<Value>,
+    ) -> anyhow::Result<()> {
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params.unwrap_or(Value::Object(serde_json::Map::new()))
+        });
+
+        let notification_str = serde_json::to_string(&notification)?;
+        debug!("[MCP:{}] notification → {}", self.name, method);
+
+        if let Some(ref mut stdin) = self.stdin {
+            stdin.write_all(notification_str.as_bytes()).await?;
+            stdin.write_all(b"\n").await?;
+            stdin.flush().await?;
+        }
+
+        Ok(())
     }
 
     async fn initialize(&mut self) -> anyhow::Result<()> {
@@ -116,17 +221,41 @@ impl McpClient {
             }
         });
 
-        self.send_request("initialize", Some(params)).await?;
-        self.send_request("notifications/initialized", None).await?;
+        let result = self.send_request("initialize", Some(params)).await?;
+        debug!("[MCP:{}] initialized: {:?}", self.name, result);
+
+        // Send initialized notification
+        self.send_notification("notifications/initialized", None).await?;
 
         info!("MCP server {} initialized", self.name);
         Ok(())
     }
 
     async fn list_tools(&mut self) -> anyhow::Result<()> {
-        // In production, this would parse the response
-        // For now, just log that we're ready
-        debug!("Requesting tool list from MCP server {}", self.name);
+        let result = self.send_request("tools/list", None).await?;
+
+        // Parse tools from response
+        if let Some(tools_array) = result.get("tools").and_then(|v| v.as_array()) {
+            self.tools = tools_array
+                .iter()
+                .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                .collect();
+
+            info!(
+                "[MCP:{}] discovered {} tools",
+                self.name,
+                self.tools.len()
+            );
+            for tool in &self.tools {
+                debug!(
+                    "[MCP:{}] tool: {} — {}",
+                    self.name,
+                    tool.name,
+                    tool.description.as_deref().unwrap_or("(no description)")
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -135,14 +264,35 @@ impl McpClient {
         &self.tools
     }
 
-    /// Call a tool
-    pub async fn call_tool(&mut self, name: &str, arguments: Value) -> anyhow::Result<Value> {
+    /// Call a tool on this server
+    pub async fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: Value,
+    ) -> anyhow::Result<String> {
         let params = serde_json::json!({
             "name": name,
             "arguments": arguments
         });
 
-        self.send_request("tools/call", Some(params)).await
+        let result = self.send_request("tools/call", Some(params)).await?;
+
+        // Extract text content from the result
+        if let Some(content) = result.get("content").and_then(|v| v.as_array()) {
+            let text: Vec<&str> = content
+                .iter()
+                .filter_map(|item| {
+                    if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        item.get("text").and_then(|v| v.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            Ok(text.join("\n"))
+        } else {
+            Ok(serde_json::to_string_pretty(&result)?)
+        }
     }
 
     /// Stop the MCP server
@@ -186,7 +336,8 @@ impl McpManager {
         Ok(())
     }
 
-    /// Get all available tools
+    /// Get all available tools across all servers.
+    /// Returns `(server_name, tool)` pairs.
     pub fn get_all_tools(&self) -> Vec<(&str, &McpTool)> {
         let mut tools = Vec::new();
         for (server_name, client) in &self.clients {
@@ -203,11 +354,11 @@ impl McpManager {
         server: &str,
         name: &str,
         arguments: Value,
-    ) -> anyhow::Result<Value> {
+    ) -> anyhow::Result<String> {
         if let Some(client) = self.clients.get_mut(server) {
             client.call_tool(name, arguments).await
         } else {
-            anyhow::bail!("MCP server {} not found", server);
+            anyhow::bail!("MCP server '{}' not found", server);
         }
     }
 
@@ -224,4 +375,138 @@ impl Default for McpManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ---------------------------------------------------------------------------
+// MCP Tool Bridge — adapts MCP tools to the `Tool` trait
+// ---------------------------------------------------------------------------
+
+use async_trait::async_trait;
+use crate::tools::{Tool, ToolError};
+
+/// A bridge that wraps an MCP tool as an `impl Tool` so it can be registered
+/// in the `ToolRegistry` alongside native tools.
+///
+/// Because MCP tool calls require `&mut McpManager`, the manager is shared
+/// through `Arc<Mutex<_>>`.
+pub struct McpToolBridge {
+    /// MCP server name
+    server_name: String,
+    /// Tool name on the MCP server
+    tool_name: String,
+    /// Tool description
+    description: String,
+    /// JSON Schema for input parameters
+    input_schema: Value,
+    /// Shared reference to the MCP manager
+    manager: Arc<tokio::sync::Mutex<McpManager>>,
+}
+
+impl McpToolBridge {
+    /// Create a new MCP tool bridge
+    pub fn new(
+        server_name: String,
+        tool: &McpTool,
+        manager: Arc<tokio::sync::Mutex<McpManager>>,
+    ) -> Self {
+        Self {
+            server_name,
+            tool_name: tool.name.clone(),
+            description: tool
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("MCP tool: {}", tool.name)),
+            input_schema: tool
+                .input_schema
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({"type": "object"})),
+            manager,
+        }
+    }
+
+    /// Prefixed name used for registration (avoids collisions with native tools).
+    /// Format: `mcp__{server}__{tool}`
+    pub fn prefixed_name(&self) -> String {
+        format!("mcp__{}_{}", self.server_name, self.tool_name)
+    }
+}
+
+#[async_trait]
+impl Tool for McpToolBridge {
+    fn name(&self) -> &str {
+        // We return the prefixed name via a leaked &str trick.
+        // This is safe because Tool instances live for the lifetime of the agent.
+        // Alternatively, we store the prefixed_name and return a reference.
+        // We'll use the stored field approach instead.
+        &self.tool_name // We'll use the raw name; dedup is handled at registration
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters(&self) -> Value {
+        self.input_schema.clone()
+    }
+
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let mut manager = self.manager.lock().await;
+        manager
+            .call_tool(&self.server_name, &self.tool_name, args)
+            .await
+            .map_err(|e| ToolError::ExecutionError(e.to_string()))
+    }
+}
+
+/// Start all configured MCP servers and return bridge tools for registration.
+///
+/// This function:
+/// 1. Parses MCP server configs from the config schema
+/// 2. Starts all servers via `McpManager`
+/// 3. Returns a list of `Box<dyn Tool>` adapters ready for `ToolRegistry::register()`
+pub async fn start_mcp_servers(
+    configs: &std::collections::HashMap<String, crate::config::McpServerConfig>,
+) -> (Arc<tokio::sync::Mutex<McpManager>>, Vec<Box<dyn Tool>>) {
+    let mut manager = McpManager::new();
+
+    for (name, cfg) in configs {
+        if let Some(command) = &cfg.command {
+            let mcp_cfg = McpServerConfig {
+                command: command.clone(),
+                args: cfg.args.clone().unwrap_or_default(),
+                env: None,
+            };
+            manager.add_server(name.clone(), mcp_cfg);
+        } else {
+            warn!("MCP server '{}' has no command configured, skipping", name);
+        }
+    }
+
+    if let Err(e) = manager.start_all().await {
+        warn!("Error starting MCP servers: {}", e);
+    }
+
+    // Collect tool metadata before wrapping manager
+    let tool_info: Vec<(String, McpTool)> = manager
+        .get_all_tools()
+        .iter()
+        .map(|(server, tool)| (server.to_string(), (*tool).clone()))
+        .collect();
+
+    let manager = Arc::new(tokio::sync::Mutex::new(manager));
+
+    let tools: Vec<Box<dyn Tool>> = tool_info
+        .iter()
+        .map(|(server, tool)| {
+            Box::new(McpToolBridge::new(
+                server.clone(),
+                tool,
+                manager.clone(),
+            )) as Box<dyn Tool>
+        })
+        .collect();
+
+    info!("MCP bridge: {} tools ready from {} servers", tools.len(), configs.len());
+
+    (manager, tools)
 }

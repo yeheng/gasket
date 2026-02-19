@@ -81,7 +81,11 @@ impl ContextBuilder {
         self
     }
 
-    /// Build the message list for an LLM request
+    /// Build the message list for an LLM request.
+    ///
+    /// When the history exceeds `recent_window` messages, older messages are
+    /// condensed to save tokens: only the first 100 characters of each old
+    /// message are kept, prefixed with its role.
     pub fn build_messages(
         &self,
         history: Vec<SessionMessage>,
@@ -108,11 +112,23 @@ impl ContextBuilder {
         }
         messages.push(ChatMessage::system(system_content));
 
-        // History
-        for msg in history {
+        // History — apply progressive trimming.
+        // Keep the most recent RECENT_KEEP messages verbatim; condense older ones.
+        const RECENT_KEEP: usize = 10;
+        let total = history.len();
+        let trim_boundary = total.saturating_sub(RECENT_KEEP);
+
+        for (i, msg) in history.iter().enumerate() {
+            let content = if i < trim_boundary {
+                // Condense: keep only first 100 chars
+                truncate_content(&msg.content, 100)
+            } else {
+                msg.content.clone()
+            };
+
             match msg.role.as_str() {
-                "user" => messages.push(ChatMessage::user(&msg.content)),
-                "assistant" => messages.push(ChatMessage::assistant(&msg.content)),
+                "user" => messages.push(ChatMessage::user(&content)),
+                "assistant" => messages.push(ChatMessage::assistant(&content)),
                 _ => {}
             }
         }
@@ -158,3 +174,16 @@ impl ContextBuilder {
 const DEFAULT_INSTRUCTIONS: &str = r#"You have access to tools for reading files, writing files, editing files, listing directories, and executing shell commands.
 
 Be concise and helpful. When using tools, explain what you're doing before and after the tool call."#;
+
+/// Truncate text to `max_chars`, appending "..." if shortened.
+fn truncate_content(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    // Find a safe char boundary
+    let mut end = max_chars;
+    while !text.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
+}

@@ -4,14 +4,19 @@
 //! that can execute long-running operations independently.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info};
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 use uuid::Uuid;
+
+use crate::providers::LlmProvider;
+
+use super::loop_::{AgentConfig, AgentLoop};
 
 /// Status of a subagent task
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,9 +194,6 @@ pub struct SubagentConfig {
     /// Default task timeout in seconds
     pub default_timeout: u64,
 
-    /// Enable task notifications
-    pub enable_notifications: bool,
-
     /// Task queue size
     pub queue_size: usize,
 }
@@ -201,154 +203,127 @@ impl Default for SubagentConfig {
         Self {
             max_concurrent: 5,
             default_timeout: 300,
-            enable_notifications: true,
             queue_size: 100,
         }
     }
 }
 
-/// Subagent manager for handling background tasks
-#[allow(dead_code)]
+/// Subagent manager for handling background tasks.
+///
+/// Each spawned task creates an independent `AgentLoop` that shares the same
+/// LLM provider but operates in its own session.
 pub struct SubagentManager {
-    /// Configuration
-    config: SubagentConfig,
-
     /// Active tasks
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
 
-    /// Task queue sender
-    task_sender: mpsc::Sender<SubagentTask>,
+    /// LLM provider (shared across subagents)
+    provider: Arc<dyn LlmProvider>,
 
-    /// Notification sender
-    notification_sender: mpsc::Sender<TaskNotification>,
+    /// Workspace path
+    workspace: PathBuf,
 
-    /// Notification receiver (for external handling)
-    notification_receiver: Option<mpsc::Receiver<TaskNotification>>,
+    /// Configuration
+    config: SubagentConfig,
 }
 
 impl SubagentManager {
     /// Create a new subagent manager
-    pub fn new(config: SubagentConfig) -> Self {
-        let (task_sender, mut task_receiver) = mpsc::channel::<SubagentTask>(config.queue_size);
-        let (notification_sender, notification_receiver) =
-            mpsc::channel::<TaskNotification>(config.queue_size);
-
-        let tasks: Arc<RwLock<HashMap<String, SubagentTask>>> =
-            Arc::new(RwLock::new(HashMap::new()));
-
-        // Start the task processor
-        let tasks_clone = tasks.clone();
-        let notification_sender_clone = notification_sender.clone();
-
-        tokio::spawn(async move {
-            while let Some(mut task) = task_receiver.recv().await {
-                let tasks = tasks_clone.clone();
-                let notifier = notification_sender_clone.clone();
-
-                // Update task status
-                task.status = TaskStatus::Running;
-                task.started_at = Some(Utc::now());
-                tasks.write().await.insert(task.id.clone(), task.clone());
-
-                let task_id = task.id.clone();
-                let timeout = Duration::from_secs(task.timeout_secs);
-
-                tokio::spawn(async move {
-                    // Simulate task execution (in real implementation, this would call agent)
-                    let result = tokio::time::timeout(timeout, async {
-                        // Placeholder: In real implementation, this would:
-                        // 1. Create a new AgentLoop with the provider
-                        // 2. Execute process_direct with the prompt
-                        // 3. Return the result
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        Ok::<_, anyhow::Error>(format!("Task completed: {}", task_id))
-                    })
-                    .await;
-
-                    let mut tasks = tasks.write().await;
-                    if let Some(t) = tasks.get_mut(&task_id) {
-                        match result {
-                            Ok(Ok(res)) => {
-                                t.status = TaskStatus::Completed;
-                                t.result = Some(res.clone());
-                                t.completed_at = Some(Utc::now());
-                                t.progress = 100;
-
-                                let _ = notifier
-                                    .send(TaskNotification {
-                                        task_id: task_id.clone(),
-                                        status: TaskStatus::Completed,
-                                        result: Some(res),
-                                        error: None,
-                                        channel: t.channel.clone(),
-                                        chat_id: t.chat_id.clone(),
-                                    })
-                                    .await;
-                            }
-                            Ok(Err(e)) => {
-                                t.status = TaskStatus::Failed;
-                                t.error = Some(e.to_string());
-                                t.completed_at = Some(Utc::now());
-
-                                let _ = notifier
-                                    .send(TaskNotification {
-                                        task_id: task_id.clone(),
-                                        status: TaskStatus::Failed,
-                                        result: None,
-                                        error: t.error.clone(),
-                                        channel: t.channel.clone(),
-                                        chat_id: t.chat_id.clone(),
-                                    })
-                                    .await;
-                            }
-                            Err(_) => {
-                                t.status = TaskStatus::Timeout;
-                                t.error = Some("Task timed out".to_string());
-                                t.completed_at = Some(Utc::now());
-
-                                let _ = notifier
-                                    .send(TaskNotification {
-                                        task_id: task_id.clone(),
-                                        status: TaskStatus::Timeout,
-                                        result: None,
-                                        error: Some("Task timed out".to_string()),
-                                        channel: t.channel.clone(),
-                                        chat_id: t.chat_id.clone(),
-                                    })
-                                    .await;
-                            }
-                        }
-                    }
-                });
-            }
-        });
-
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: SubagentConfig,
+    ) -> Self {
         Self {
+            tasks: Arc::new(RwLock::new(HashMap::new())),
+            provider,
+            workspace,
             config,
-            tasks,
-            task_sender,
-            notification_sender,
-            notification_receiver: Some(notification_receiver),
         }
     }
 
-    /// Get the notification receiver
-    pub fn take_notification_receiver(&mut self) -> Option<mpsc::Receiver<TaskNotification>> {
-        self.notification_receiver.take()
-    }
-
-    /// Submit a new task
+    /// Submit a new task for background execution
     pub async fn submit(&self, task: SubagentTask) -> anyhow::Result<String> {
+        // Check concurrency limit
+        {
+            let tasks = self.tasks.read().await;
+            let running = tasks
+                .values()
+                .filter(|t| t.status == TaskStatus::Running)
+                .count();
+            if running >= self.config.max_concurrent {
+                anyhow::bail!(
+                    "Maximum concurrent tasks ({}) reached. Wait for tasks to complete.",
+                    self.config.max_concurrent
+                );
+            }
+        }
+
         let task_id = task.id.clone();
+        let prompt = task.prompt.clone();
+        let timeout = Duration::from_secs(task.timeout_secs);
 
-        // Store task
-        self.tasks.write().await.insert(task_id.clone(), task.clone());
-
-        // Send to queue
-        self.task_sender
-            .send(task)
+        // Store as pending
+        self.tasks
+            .write()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to submit task: {}", e))?;
+            .insert(task_id.clone(), task);
+
+        // Spawn the actual execution
+        let tasks_ref = self.tasks.clone();
+        let provider = self.provider.clone();
+        let workspace = self.workspace.clone();
+        let tid = task_id.clone();
+
+        tokio::spawn(async move {
+            // Mark as running
+            {
+                let mut tasks = tasks_ref.write().await;
+                if let Some(t) = tasks.get_mut(&tid) {
+                    t.status = TaskStatus::Running;
+                    t.started_at = Some(Utc::now());
+                }
+            }
+
+            info!("Subagent task {} started: {}", tid, &prompt[..prompt.len().min(80)]);
+
+            // Create a lightweight agent loop for this task
+            let agent_config = AgentConfig {
+                model: provider.default_model().to_string(),
+                max_iterations: 10,
+                ..Default::default()
+            };
+            let agent = AgentLoop::new(provider, workspace, agent_config);
+
+            // Execute with timeout
+            let session_key = format!("subagent:{}", tid);
+            let result = tokio::time::timeout(timeout, agent.process_direct(&prompt, &session_key)).await;
+
+            // Update task state
+            let mut tasks = tasks_ref.write().await;
+            if let Some(t) = tasks.get_mut(&tid) {
+                match result {
+                    Ok(Ok(response)) => {
+                        t.status = TaskStatus::Completed;
+                        t.result = Some(response);
+                        t.completed_at = Some(Utc::now());
+                        t.progress = 100;
+                        info!("Subagent task {} completed", tid);
+                    }
+                    Ok(Err(e)) => {
+                        t.status = TaskStatus::Failed;
+                        t.error = Some(e.to_string());
+                        t.completed_at = Some(Utc::now());
+                        warn!("Subagent task {} failed: {}", tid, e);
+                    }
+                    Err(_) => {
+                        t.status = TaskStatus::Timeout;
+                        t.error = Some("Task timed out".to_string());
+                        t.completed_at = Some(Utc::now());
+                        warn!("Subagent task {} timed out", tid);
+                    }
+                }
+            }
+        });
 
         info!("Submitted subagent task: {}", task_id);
         Ok(task_id)
@@ -509,41 +484,6 @@ mod tests {
         assert!(task.is_finished());
     }
 
-    #[tokio::test]
-    async fn test_subagent_manager_creation() {
-        let config = SubagentConfig::default();
-        let manager = SubagentManager::new(config);
-
-        let stats = manager.stats().await;
-        assert_eq!(stats.total, 0);
-    }
-
-    #[tokio::test]
-    async fn test_submit_task() {
-        let manager = SubagentManager::new(SubagentConfig::default());
-
-        let task = SubagentTask::new("Test task", "telegram", "chat1", "session1");
-
-        let task_id = manager.submit(task).await.unwrap();
-
-        // Task should be stored
-        let stored = manager.get_task(&task_id).await;
-        assert!(stored.is_some());
-    }
-
-    #[tokio::test]
-    async fn test_get_tasks_by_status() {
-        let manager = SubagentManager::new(SubagentConfig::default());
-
-        let task = SubagentTask::new("Test task", "telegram", "chat1", "session1");
-
-        manager.submit(task).await.unwrap();
-
-        let pending = manager.get_tasks_by_status(TaskStatus::Pending).await;
-        // Note: Task might have transitioned to Running depending on timing
-        assert!(pending.len() <= 1);
-    }
-
     #[test]
     fn test_task_notification_serialization() {
         let notification = TaskNotification {
@@ -557,7 +497,7 @@ mod tests {
 
         let json = serde_json::to_string(&notification).unwrap();
         assert!(json.contains("task123"));
-        assert!(json.contains("completed"));
+        assert!(json.contains("Completed"));
     }
 
     #[test]

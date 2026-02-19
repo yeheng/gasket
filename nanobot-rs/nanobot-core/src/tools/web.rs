@@ -36,7 +36,7 @@ impl Tool for WebSearchTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("query", "string", true), ("count", "number", false)])
+        simple_schema(&[("query", "string", true, "Search query string"), ("count", "number", false, "Number of results to return (default 5)")])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -175,7 +175,7 @@ impl Tool for WebFetchTool {
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[("url", "string", true), ("prompt", "string", false)])
+        simple_schema(&[("url", "string", true, "URL of the web page to fetch"), ("prompt", "string", false, "Optional prompt describing what to extract from the page")])
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
@@ -222,18 +222,7 @@ impl Tool for WebFetchTool {
 
         // Simple text extraction for HTML
         let text = if content_type.contains("text/html") {
-            // Basic HTML tag removal
-            let text = body
-                .replace("<script[^>]*>.*?</script>", "")
-                .replace("<style[^>]*>.*?</style>", "")
-                .replace("<[^>]+>", " ")
-                .replace("&nbsp;", " ")
-                .replace("&amp;", "&")
-                .replace("&lt;", "<")
-                .replace("&gt;", ">");
-
-            // Collapse whitespace
-            text.split_whitespace().collect::<Vec<_>>().join(" ")
+            strip_html(&body)
         } else {
             body
         };
@@ -253,6 +242,107 @@ impl Tool for WebFetchTool {
 
         Ok(truncated)
     }
+}
+
+/// Strip HTML tags and decode common entities.
+///
+/// Removes `<script>` and `<style>` blocks entirely, strips all other tags,
+/// decodes common HTML entities, and collapses whitespace.
+fn strip_html(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let chars: Vec<char> = html.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_script = false;
+    let mut in_style = false;
+
+    while i < len {
+        // Check for opening <script or <style tags
+        if chars[i] == '<' {
+            // Try to match <script or </script>
+            let rest: String = chars[i..std::cmp::min(i + 10, len)].iter().collect();
+            let rest_lower = rest.to_lowercase();
+
+            if rest_lower.starts_with("<script") {
+                in_script = true;
+                // Skip to closing >
+                while i < len && chars[i] != '>' {
+                    i += 1;
+                }
+                i += 1; // skip '>'
+                continue;
+            }
+
+            if rest_lower.starts_with("</script") {
+                in_script = false;
+                while i < len && chars[i] != '>' {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+
+            if rest_lower.starts_with("<style") {
+                in_style = true;
+                while i < len && chars[i] != '>' {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+
+            if rest_lower.starts_with("</style") {
+                in_style = false;
+                while i < len && chars[i] != '>' {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+
+            // Skip any other tag
+            if !in_script && !in_style {
+                while i < len && chars[i] != '>' {
+                    i += 1;
+                }
+                i += 1;
+                result.push(' ');
+                continue;
+            }
+        }
+
+        if in_script || in_style {
+            i += 1;
+            continue;
+        }
+
+        // Decode HTML entities
+        if chars[i] == '&' {
+            let entity_end = chars[i..std::cmp::min(i + 10, len)]
+                .iter()
+                .position(|&c| c == ';');
+            if let Some(end) = entity_end {
+                let entity: String = chars[i..i + end + 1].iter().collect();
+                match entity.as_str() {
+                    "&nbsp;" => result.push(' '),
+                    "&amp;" => result.push('&'),
+                    "&lt;" => result.push('<'),
+                    "&gt;" => result.push('>'),
+                    "&quot;" => result.push('"'),
+                    "&#39;" | "&apos;" => result.push('\''),
+                    _ => result.push_str(&entity),
+                }
+                i += end + 1;
+                continue;
+            }
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    // Collapse whitespace
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // URL encoding helper

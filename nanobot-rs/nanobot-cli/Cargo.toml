@@ -39,6 +39,9 @@ anyhow.workspace = true
 # Serialization
 serde_json.workspace = true
 
+# Time
+chrono.workspace = true
+
 # Configuration
 dirs.workspace = true
 

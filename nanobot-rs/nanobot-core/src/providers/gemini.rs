@@ -69,15 +69,45 @@ impl GeminiProvider {
                     }));
                 }
                 "assistant" => {
-                    contents.push(json!({
-                        "role": "model",
-                        "parts": [{"text": msg.content.unwrap_or_default()}]
-                    }));
+                    let mut parts = Vec::new();
+                    if let Some(text) = &msg.content {
+                        if !text.is_empty() {
+                            parts.push(json!({"text": text}));
+                        }
+                    }
+                    // Include function calls from assistant messages
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        for tc in tool_calls {
+                            parts.push(json!({
+                                "functionCall": {
+                                    "name": tc.function.name,
+                                    "args": tc.function.arguments
+                                }
+                            }));
+                        }
+                    }
+                    if !parts.is_empty() {
+                        contents.push(json!({
+                            "role": "model",
+                            "parts": parts
+                        }));
+                    }
                 }
                 "tool" => {
-                    // Gemini has different function calling format
-                    // For simplicity, we'll skip tool responses for now
-                    debug!("Skipping tool response message");
+                    // Gemini function call response format
+                    let tool_name = msg.name.as_deref().unwrap_or("unknown");
+                    let result_text = msg.content.unwrap_or_default();
+                    contents.push(json!({
+                        "role": "function",
+                        "parts": [{
+                            "functionResponse": {
+                                "name": tool_name,
+                                "response": {
+                                    "content": result_text
+                                }
+                            }
+                        }]
+                    }));
                 }
                 _ => {}
             }
@@ -104,6 +134,25 @@ impl GeminiProvider {
 
         if !generation_config.as_object().unwrap().is_empty() {
             body["generationConfig"] = generation_config;
+        }
+
+        // Add tool declarations if provided
+        if let Some(tools) = &request.tools {
+            if !tools.is_empty() {
+                let function_declarations: Vec<Value> = tools
+                    .iter()
+                    .map(|t| {
+                        json!({
+                            "name": t.function.name,
+                            "description": t.function.description,
+                            "parameters": t.function.parameters
+                        })
+                    })
+                    .collect();
+                body["tools"] = json!([{
+                    "function_declarations": function_declarations
+                }]);
+            }
         }
 
         debug!(
@@ -135,17 +184,42 @@ impl GeminiProvider {
         }
 
         let first_candidate = &candidates[0];
-        let content = first_candidate["content"]["parts"][0]["text"]
-            .as_str()
-            .map(|s| s.to_string());
+        let parts = first_candidate["content"]["parts"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
 
-        // Gemini function calling would be parsed here
-        // For simplicity, we'll skip it for now
+        // Parse text content and function calls from parts
+        let mut text_parts = Vec::new();
+        let mut tool_calls = Vec::new();
+
+        for (i, part) in parts.iter().enumerate() {
+            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                text_parts.push(text.to_string());
+            }
+            if let Some(fc) = part.get("functionCall") {
+                let name = fc["name"].as_str().unwrap_or("").to_string();
+                let args = fc.get("args").cloned().unwrap_or(json!({}));
+                tool_calls.push(crate::providers::ToolCall::new(
+                    format!("call_{}", i),
+                    name,
+                    args,
+                ));
+            }
+        }
+
+        let content = if text_parts.is_empty() {
+            None
+        } else {
+            Some(text_parts.join(""))
+        };
+
+        let has_tool_calls = !tool_calls.is_empty();
 
         Ok(ChatResponse {
             content,
-            tool_calls: vec![],
-            has_tool_calls: false,
+            tool_calls,
+            has_tool_calls,
             reasoning_content: None,
         })
     }

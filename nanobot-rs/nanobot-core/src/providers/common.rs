@@ -136,6 +136,17 @@ impl OpenAICompatibleProvider {
         })
     }
 
+    /// Create a DeepSeek provider (OpenAI-compatible, supports `reasoning_content`)
+    pub fn deepseek(api_key: impl Into<String>, api_base: Option<String>, default_model: impl Into<String>) -> Self {
+        Self::new(ProviderConfig {
+            name: "deepseek".to_string(),
+            api_base: api_base.unwrap_or_else(|| "https://api.deepseek.com/v1".to_string()),
+            api_key: api_key.into(),
+            default_model: default_model.into(),
+            extra_headers: HashMap::new(),
+        })
+    }
+
     /// Get the provider name
     pub fn provider_name(&self) -> &str {
         &self.config.name
@@ -232,7 +243,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             content: choice.message.content,
             tool_calls,
             has_tool_calls,
-            reasoning_content: None,
+            reasoning_content: choice.message.reasoning_content,
         })
     }
 }
@@ -270,6 +281,8 @@ struct OpenAICompatibleChoice {
 struct OpenAICompatibleMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OpenAICompatibleToolCall>>,
+    /// DeepSeek R1 models return chain-of-thought here
+    reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

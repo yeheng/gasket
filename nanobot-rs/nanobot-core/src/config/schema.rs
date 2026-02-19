@@ -141,6 +141,10 @@ pub struct SlackConfig {
     /// App token (xapp-...)
     pub app_token: String,
 
+    /// Allowed user IDs
+    #[serde(default, alias = "allowFrom")]
+    pub allow_from: Vec<String>,
+
     /// Group policy: mention, open, or allowlist
     #[serde(default)]
     pub group_policy: Option<String>,
@@ -157,6 +161,10 @@ pub struct ToolsConfig {
     #[serde(default, alias = "restrictToWorkspace")]
     pub restrict_to_workspace: bool,
 
+    /// Web tools configuration
+    #[serde(default)]
+    pub web: WebToolsConfig,
+
     /// MCP servers
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
@@ -164,6 +172,14 @@ pub struct ToolsConfig {
     /// Exec tool configuration
     #[serde(default)]
     pub exec: ExecToolConfig,
+}
+
+/// Web tools configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebToolsConfig {
+    /// Brave Search API key for web_search tool
+    #[serde(default, alias = "braveApiKey")]
+    pub brave_api_key: Option<String>,
 }
 
 /// MCP server configuration

@@ -38,17 +38,19 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: Value) -> ToolResult;
 }
 
-/// Helper to create a simple JSON schema for tool parameters
-pub fn simple_schema(properties: &[(&str, &str, bool)]) -> Value {
+/// Helper to create a simple JSON schema for tool parameters.
+///
+/// Each entry is `(name, type, required, description)`.
+pub fn simple_schema(properties: &[(&str, &str, bool, &str)]) -> Value {
     let mut props = serde_json::Map::new();
     let mut required = Vec::new();
 
-    for (name, type_desc, is_required) in properties {
+    for (name, type_desc, is_required, description) in properties {
         props.insert(
             name.to_string(),
             serde_json::json!({
                 "type": type_desc,
-                "description": name
+                "description": description
             }),
         );
         if *is_required {

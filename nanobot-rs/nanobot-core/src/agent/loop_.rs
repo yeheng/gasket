@@ -8,11 +8,14 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::agent::context::ContextBuilder;
 use crate::agent::memory::MemoryStore;
+use crate::bus::MessageBus;
+use crate::cron::CronService;
 use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
 use crate::session::SessionManager;
 use crate::skills::{SkillsLoader, SkillsRegistry};
 use crate::tools::{
-    EditFileTool, ExecTool, ListDirTool, ReadFileTool, ToolRegistry, WriteFileTool,
+    CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
+    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 /// Agent loop configuration
@@ -23,6 +26,8 @@ pub struct AgentConfig {
     pub max_tokens: u32,
     pub memory_window: usize,
     pub restrict_to_workspace: bool,
+    /// Maximum characters for tool result output (0 = unlimited)
+    pub max_tool_result_chars: usize,
 }
 
 impl Default for AgentConfig {
@@ -34,6 +39,32 @@ impl Default for AgentConfig {
             max_tokens: 4096,
             memory_window: 50,
             restrict_to_workspace: false,
+            max_tool_result_chars: 8000,
+        }
+    }
+}
+
+/// Optional dependencies for AgentLoop that enable additional tools.
+///
+/// When provided, the corresponding tools are registered automatically.
+pub struct AgentDependencies {
+    /// Message bus for the `send_message` tool
+    pub bus: Option<Arc<MessageBus>>,
+    /// Cron service for the `cron` tool
+    pub cron_service: Option<Arc<CronService>>,
+    /// Brave Search API key for the `web_search` tool
+    pub brave_api_key: Option<String>,
+    /// Pre-started MCP tool bridges (created via `mcp::start_mcp_servers`)
+    pub mcp_tools: Vec<Box<dyn crate::tools::Tool>>,
+}
+
+impl Default for AgentDependencies {
+    fn default() -> Self {
+        Self {
+            bus: None,
+            cron_service: None,
+            brave_api_key: None,
+            mcp_tools: Vec::new(),
         }
     }
 }
@@ -52,11 +83,21 @@ pub struct AgentLoop {
 impl AgentLoop {
     /// Create a new agent loop
     pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: AgentConfig) -> Self {
+        Self::with_dependencies(provider, workspace, config, AgentDependencies::default())
+    }
+
+    /// Create a new agent loop with optional dependencies for extra tools
+    pub fn with_dependencies(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        deps: AgentDependencies,
+    ) -> Self {
         let memory = MemoryStore::new(workspace.clone());
         let sessions = SessionManager::new(workspace.clone());
         let mut tools = ToolRegistry::new();
 
-        // Register default tools
+        // Register filesystem tools
         let allowed_dir = if config.restrict_to_workspace {
             Some(workspace.clone())
         } else {
@@ -67,11 +108,35 @@ impl AgentLoop {
         tools.register(Box::new(WriteFileTool::new(allowed_dir.clone())));
         tools.register(Box::new(EditFileTool::new(allowed_dir.clone())));
         tools.register(Box::new(ListDirTool::new(allowed_dir)));
+
+        // Register shell tool
         tools.register(Box::new(ExecTool::new(
             workspace.clone(),
             std::time::Duration::from_secs(120),
             config.restrict_to_workspace,
         )));
+
+        // Register web tools
+        tools.register(Box::new(WebFetchTool::new()));
+        tools.register(Box::new(WebSearchTool::new(deps.brave_api_key)));
+
+        // Register spawn tool
+        tools.register(Box::new(SpawnTool::new()));
+
+        // Register message tool (requires bus)
+        if let Some(bus) = &deps.bus {
+            tools.register(Box::new(MessageTool::new(bus.clone())));
+        }
+
+        // Register cron tool (requires cron service)
+        if let Some(cron_service) = &deps.cron_service {
+            tools.register(Box::new(CronTool::new(cron_service.clone())));
+        }
+
+        // Register MCP tool bridges
+        for mcp_tool in deps.mcp_tools {
+            tools.register(mcp_tool);
+        }
 
         // Load skills
         let skills_context = Self::load_skills(&workspace);
@@ -222,6 +287,7 @@ impl AgentLoop {
         let mut iteration = 0;
         let mut final_content = None;
         let mut tools_used = Vec::new();
+        let max_result_chars = self.config.max_tool_result_chars;
 
         while iteration < self.config.max_iterations {
             iteration += 1;
@@ -238,11 +304,22 @@ impl AgentLoop {
             let response = self.provider.chat(request).await?;
 
             if response.has_tool_calls {
-                // Add assistant message with tool calls
-                messages.push(ChatMessage::assistant_with_tools(
+                // Add assistant message with tool calls (via ContextBuilder)
+                messages = self.context.add_assistant_message(
+                    messages,
                     response.content.clone(),
-                    response.tool_calls.clone(),
-                ));
+                    response
+                        .tool_calls
+                        .iter()
+                        .map(|tc| serde_json::to_value(tc).unwrap_or_default())
+                        .collect(),
+                    response.reasoning_content.clone(),
+                );
+                // Re-add the tool_calls on the last assistant message so the
+                // provider can see them in the next request
+                if let Some(last) = messages.last_mut() {
+                    last.tool_calls = Some(response.tool_calls.clone());
+                }
 
                 // Execute each tool call
                 for tool_call in &response.tool_calls {
@@ -260,22 +337,27 @@ impl AgentLoop {
                         )
                         .await;
 
-                    let result_str = match result {
+                    let mut result_str = match result {
                         Ok(r) => r,
                         Err(e) => format!("Error: {}", e),
                     };
 
-                    messages.push(ChatMessage::tool_result(
-                        &tool_call.id,
-                        &tool_call.function.name,
+                    // Truncate tool result to save tokens
+                    if max_result_chars > 0 && result_str.len() > max_result_chars {
+                        result_str.truncate(max_result_chars);
+                        result_str.push_str("\n\n[... truncated]");
+                    }
+
+                    messages = self.context.add_tool_result(
+                        messages,
+                        tool_call.id.clone(),
+                        tool_call.function.name.clone(),
                         result_str,
-                    ));
+                    );
                 }
 
-                // Add a user message to prompt continuation
-                messages.push(ChatMessage::user(
-                    "Reflect on the results and decide next steps.",
-                ));
+                // No reflection message — the LLM already has the tool results
+                // and will decide next steps on its own.
             } else {
                 final_content = response.content;
                 break;

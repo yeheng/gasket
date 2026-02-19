@@ -21,6 +21,7 @@ async fn test_agent_initialization() {
         max_tokens: 1024,
         memory_window: 20,
         restrict_to_workspace: true,
+        max_tool_result_chars: 8000,
     };
 
     let provider =
@@ -206,7 +207,7 @@ async fn test_tool_registry_multiple() {
 async fn test_simple_schema() {
     use nanobot_core::tools::simple_schema;
 
-    let schema = simple_schema(&[("path", "string", true), ("limit", "number", false)]);
+    let schema = simple_schema(&[("path", "string", true, "File path"), ("limit", "number", false, "Max results")]);
 
     assert_eq!(schema["type"], "object");
     assert!(schema["properties"]["path"].is_object());
@@ -410,26 +411,20 @@ async fn test_spawn_tool() {
 }
 
 #[tokio::test]
-async fn test_task_manager() {
-    use nanobot_core::tools::{SpawnRequest, TaskManager};
+async fn test_subagent_task() {
+    use nanobot_core::agent::subagent::{SubagentTask, TaskStatus};
 
-    let mut manager = TaskManager::new();
+    let task = SubagentTask::new(
+        "Test task",
+        "telegram",
+        "chat123",
+        "session:telegram:chat123",
+    );
 
-    let request = SpawnRequest {
-        task: "Test task".to_string(),
-        timeout: Some(60),
-        channel: "telegram".to_string(),
-        chat_id: "chat123".to_string(),
-    };
-
-    let task_id = manager.add_task(request);
-    assert!(!task_id.is_empty());
-
-    let active = manager.active_tasks();
-    assert_eq!(active.len(), 1);
-
-    let removed = manager.remove_task(&task_id);
-    assert!(removed);
+    assert!(!task.id.is_empty());
+    assert_eq!(task.prompt, "Test task");
+    assert_eq!(task.status, TaskStatus::Pending);
+    assert!(!task.is_finished());
 }
 
 // =============================================================================
@@ -713,66 +708,75 @@ async fn test_exec_tool_default() {
 // =============================================================================
 
 #[tokio::test]
-async fn test_spawn_tool_execute() {
+async fn test_spawn_tool_execute_no_manager() {
     use nanobot_core::tools::SpawnTool;
     use nanobot_core::Tool;
 
     let tool = SpawnTool::new();
 
     let args = serde_json::json!({
+        "action": "run",
         "task": "Test background task"
     });
 
+    // Without a manager, spawn should return an error
     let result = tool.execute(args).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap().contains("Background task started"));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not available"));
 }
 
 #[tokio::test]
-async fn test_spawn_tool_with_timeout() {
+async fn test_spawn_tool_list_no_manager() {
     use nanobot_core::tools::SpawnTool;
     use nanobot_core::Tool;
 
     let tool = SpawnTool::new();
 
     let args = serde_json::json!({
-        "task": "Task with custom timeout",
-        "timeout": 600
-    });
-
-    let result = tool.execute(args).await;
-    assert!(result.is_ok());
-    assert!(result.unwrap().contains("Background task started"));
-}
-
-#[tokio::test]
-async fn test_spawn_tool_empty_task() {
-    use nanobot_core::tools::SpawnTool;
-    use nanobot_core::Tool;
-
-    let tool = SpawnTool::new();
-
-    let args = serde_json::json!({
-        "task": ""
+        "action": "list"
     });
 
     let result = tool.execute(args).await;
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Task description is required"));
 }
 
 #[tokio::test]
-async fn test_spawn_tool_set_context() {
+async fn test_spawn_tool_empty_task_no_manager() {
     use nanobot_core::tools::SpawnTool;
+    use nanobot_core::Tool;
 
-    let mut tool = SpawnTool::new();
-    tool.set_context("telegram".to_string(), "chat123".to_string());
+    let tool = SpawnTool::new();
 
-    // Context is set (internal state, verified by no panic)
-    assert_eq!(tool.name(), "spawn");
+    let args = serde_json::json!({
+        "action": "run",
+        "task": ""
+    });
+
+    // Without manager it hits the "not available" error first
+    let result = tool.execute(args).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_spawn_tool_without_manager() {
+    use nanobot_core::tools::SpawnTool;
+    use nanobot_core::Tool;
+
+    let tool = SpawnTool::new();
+
+    // Spawn should fail gracefully without a manager
+    let result = tool
+        .execute(serde_json::json!({
+            "action": "run",
+            "task": "do something"
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("not available"));
 }
 
 // =============================================================================
