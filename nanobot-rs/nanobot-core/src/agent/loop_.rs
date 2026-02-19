@@ -1,15 +1,16 @@
 //! Agent loop: the core processing engine
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::agent::context::ContextBuilder;
 use crate::agent::memory::MemoryStore;
 use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
 use crate::session::SessionManager;
+use crate::skills::{SkillsLoader, SkillsRegistry};
 use crate::tools::{
     EditFileTool, ExecTool, ListDirTool, ReadFileTool, ToolRegistry, WriteFileTool,
 };
@@ -51,7 +52,6 @@ pub struct AgentLoop {
 impl AgentLoop {
     /// Create a new agent loop
     pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: AgentConfig) -> Self {
-        let context = ContextBuilder::new(workspace.clone());
         let memory = MemoryStore::new(workspace.clone());
         let sessions = SessionManager::new(workspace.clone());
         let mut tools = ToolRegistry::new();
@@ -73,6 +73,13 @@ impl AgentLoop {
             config.restrict_to_workspace,
         )));
 
+        // Load skills
+        let skills_context = Self::load_skills(&workspace);
+
+        // Build context with skills
+        let context = ContextBuilder::new(workspace.clone())
+            .with_skills_context(skills_context);
+
         Self {
             provider,
             context,
@@ -82,6 +89,81 @@ impl AgentLoop {
             config,
             workspace,
         }
+    }
+
+    /// Load skills from builtin and user directories
+    fn load_skills(workspace: &Path) -> Option<String> {
+        let user_skills_dir = workspace.join("skills");
+
+        // Locate builtin skills: try relative to the executable, then a few common fallbacks
+        let builtin_skills_dir = Self::find_builtin_skills_dir();
+
+        let builtin_dir = match builtin_skills_dir {
+            Some(dir) => dir,
+            None => {
+                debug!("Built-in skills directory not found, loading user skills only");
+                // Still try loading user skills
+                if !user_skills_dir.exists() {
+                    debug!("No skills directories found");
+                    return None;
+                }
+                PathBuf::from("/nonexistent")
+            }
+        };
+
+        let loader = SkillsLoader::new(user_skills_dir, builtin_dir);
+        match SkillsRegistry::from_loader(loader) {
+            Ok(registry) => {
+                let summary = registry.generate_context_summary();
+                if summary.is_empty() {
+                    info!("No skills loaded");
+                    None
+                } else {
+                    info!(
+                        "Loaded {} skills ({} available)",
+                        registry.len(),
+                        registry.list_available().len()
+                    );
+                    Some(summary)
+                }
+            }
+            Err(e) => {
+                warn!("Failed to load skills: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Find the builtin skills directory
+    fn find_builtin_skills_dir() -> Option<PathBuf> {
+        // Try relative to the executable
+        if let Ok(exe) = std::env::current_exe() {
+            // dev build: target/debug/nanobot → nanobot-core/skills/
+            if let Some(project_root) = exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+                let candidate = project_root.join("nanobot-core").join("skills");
+                if candidate.exists() {
+                    debug!("Found builtin skills at {:?}", candidate);
+                    return Some(candidate);
+                }
+            }
+        }
+
+        // Try current working directory
+        if let Ok(cwd) = std::env::current_dir() {
+            let candidate = cwd.join("nanobot-core").join("skills");
+            if candidate.exists() {
+                debug!("Found builtin skills at {:?}", candidate);
+                return Some(candidate);
+            }
+            // Also try if we're inside nanobot-core
+            let candidate = cwd.join("skills");
+            if candidate.exists() {
+                debug!("Found builtin skills at {:?}", candidate);
+                return Some(candidate);
+            }
+        }
+
+        None
     }
 
     /// Get the model name

@@ -1,7 +1,7 @@
 //! Base traits and types for LLM providers
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, Deserializer};
 
 /// LLM Provider trait
 #[async_trait]
@@ -202,8 +202,34 @@ pub struct FunctionCall {
     /// Function name
     pub name: String,
 
-    /// Function arguments (as JSON string in API, parsed for convenience)
+    /// Function arguments — stored as `serde_json::Value` for internal use,
+    /// but serialized as a JSON **string** (as required by OpenAI-compatible APIs).
+    #[serde(serialize_with = "serialize_args_as_string", deserialize_with = "deserialize_args_from_string_or_object")]
     pub arguments: serde_json::Value,
+}
+
+/// Serialize `serde_json::Value` as a JSON string (e.g. `"{\"path\": \".\"}"`)
+fn serialize_args_as_string<S>(value: &serde_json::Value, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let s = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    serializer.serialize_str(&s)
+}
+
+/// Deserialize arguments from either a JSON string or an inline object.
+/// The API returns a string, but we also accept an object for flexibility.
+fn deserialize_args_from_string_or_object<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    match raw {
+        serde_json::Value::String(s) => {
+            serde_json::from_str(&s).map_err(serde::de::Error::custom)
+        }
+        other => Ok(other),
+    }
 }
 
 /// Chat completion response

@@ -2,28 +2,82 @@
 
 use std::path::PathBuf;
 
+use tracing::{debug, warn};
+
 use crate::providers::ChatMessage;
 use crate::session::SessionMessage;
 
+/// Bootstrap files loaded into the system prompt (same as Python version)
+const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
+
 /// Context builder for constructing prompts
-#[allow(dead_code)]
 pub struct ContextBuilder {
     workspace: PathBuf,
     system_prompt: String,
+    skills_context: Option<String>,
 }
 
 impl ContextBuilder {
     /// Create a new context builder
+    ///
+    /// Loads bootstrap files (AGENTS.md, SOUL.md, USER.md, TOOLS.md) from the
+    /// workspace directory. Falls back to a minimal default prompt if none exist.
     pub fn new(workspace: PathBuf) -> Self {
+        let system_prompt = Self::build_system_prompt(&workspace);
         Self {
             workspace,
-            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            system_prompt,
+            skills_context: None,
         }
+    }
+
+    /// Build system prompt from workspace bootstrap files
+    fn build_system_prompt(workspace: &PathBuf) -> String {
+        let mut parts = Vec::new();
+
+        // Identity header
+        parts.push(format!(
+            "You are nanobot 🐈, a personal AI assistant.\n\nWorking directory: {}",
+            workspace.display()
+        ));
+
+        // Load bootstrap files
+        let mut loaded_any = false;
+        for filename in BOOTSTRAP_FILES {
+            let file_path = workspace.join(filename);
+            if file_path.exists() {
+                match std::fs::read_to_string(&file_path) {
+                    Ok(content) => {
+                        if !content.trim().is_empty() {
+                            debug!("Loaded bootstrap file: {}", filename);
+                            parts.push(format!("## {}\n\n{}", filename, content.trim()));
+                            loaded_any = true;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to read bootstrap file {:?}: {}", file_path, e);
+                    }
+                }
+            }
+        }
+
+        if !loaded_any {
+            // Fallback: use minimal default instructions
+            parts.push(DEFAULT_INSTRUCTIONS.to_string());
+        }
+
+        parts.join("\n\n")
     }
 
     /// Set a custom system prompt
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
+        self
+    }
+
+    /// Set skills context summary
+    pub fn with_skills_context(mut self, context: Option<String>) -> Self {
+        self.skills_context = context;
         self
     }
 
@@ -44,6 +98,12 @@ impl ContextBuilder {
             if !mem.is_empty() {
                 system_content.push_str("\n\n## Long-term Memory\n");
                 system_content.push_str(mem);
+            }
+        }
+        if let Some(skills) = &self.skills_context {
+            if !skills.is_empty() {
+                system_content.push_str("\n\n# Skills\n\n");
+                system_content.push_str(skills);
             }
         }
         messages.push(ChatMessage::system(system_content));
@@ -73,8 +133,6 @@ impl ContextBuilder {
     ) -> Vec<ChatMessage> {
         let mut result = messages;
 
-        // For now, just add the content as an assistant message
-        // Tool calls will be handled separately in the agent loop
         if let Some(c) = content {
             result.push(ChatMessage::assistant(c));
         }
@@ -96,11 +154,7 @@ impl ContextBuilder {
     }
 }
 
-/// Default system prompt
-const DEFAULT_SYSTEM_PROMPT: &str = r#"You are nanobot, a helpful AI assistant.
+/// Fallback instructions when no bootstrap files exist
+const DEFAULT_INSTRUCTIONS: &str = r#"You have access to tools for reading files, writing files, editing files, listing directories, and executing shell commands.
 
-You have access to tools for reading files, writing files, editing files, listing directories, and executing shell commands.
-
-Be concise and helpful. When using tools, explain what you're doing before and after the tool call.
-
-Working directory: {{workspace}}"#;
+Be concise and helpful. When using tools, explain what you're doing before and after the tool call."#;
