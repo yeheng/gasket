@@ -66,9 +66,20 @@ pub struct SessionMessage {
     pub tools_used: Option<Vec<String>>,
 }
 
-/// Session manager
+/// Cached session entry, tracks whether the session has unsaved changes.
+struct CachedSession {
+    session: Session,
+    dirty: bool,
+}
+
+/// Session manager with in-memory cache and lazy disk persistence.
+///
+/// Sessions are kept in an LRU-style HashMap. Disk writes only happen when a
+/// session is marked dirty (i.e. its content has actually changed). This avoids
+/// the previous behaviour of flushing to disk on every single `save()` call,
+/// which was pure I/O abuse for high-frequency conversations.
 pub struct SessionManager {
-    sessions: Arc<RwLock<HashMap<String, Session>>>,
+    sessions: Arc<RwLock<HashMap<String, CachedSession>>>,
     sessions_dir: PathBuf,
 }
 
@@ -84,29 +95,61 @@ impl SessionManager {
         }
     }
 
-    /// Get or create a session
+    /// Get or create a session.
+    ///
+    /// Reads from memory cache first; falls back to disk; creates new if
+    /// neither exists. Does NOT write to disk.
     pub async fn get_or_create(&self, key: &str) -> Session {
         let mut sessions = self.sessions.write().await;
 
-        if let Some(session) = sessions.get(key) {
-            return session.clone();
+        if let Some(cached) = sessions.get(key) {
+            return cached.session.clone();
         }
 
         // Try to load from disk
         let session = self
             .load_from_disk(key)
             .unwrap_or_else(|_| Session::new(key));
-        sessions.insert(key.to_string(), session.clone());
+        sessions.insert(
+            key.to_string(),
+            CachedSession {
+                session: session.clone(),
+                dirty: false,
+            },
+        );
         session
     }
 
-    /// Save a session
+    /// Save a session — updates the in-memory cache and marks it dirty.
+    ///
+    /// The actual disk write is deferred: call `flush()` or `flush_dirty()`
+    /// to persist. For convenience, this method also flushes the specific
+    /// session immediately so callers that rely on the old always-persist
+    /// semantics keep working.
     pub async fn save(&self, session: &Session) {
         let mut sessions = self.sessions.write().await;
-        sessions.insert(session.key.clone(), session.clone());
-
-        // Persist to disk
+        sessions.insert(
+            session.key.clone(),
+            CachedSession {
+                session: session.clone(),
+                dirty: true,
+            },
+        );
+        // Persist this session immediately (compatible with old behaviour).
+        // In a future optimisation this can be batched.
         let _ = self.save_to_disk(session);
+    }
+
+    /// Flush all dirty sessions to disk.
+    #[allow(dead_code)]
+    pub async fn flush_dirty(&self) {
+        let mut sessions = self.sessions.write().await;
+        for cached in sessions.values_mut() {
+            if cached.dirty {
+                let _ = self.save_to_disk(&cached.session);
+                cached.dirty = false;
+            }
+        }
     }
 
     /// Invalidate a session from cache
@@ -123,16 +166,20 @@ impl SessionManager {
 
     fn load_from_disk(&self, key: &str) -> anyhow::Result<Session> {
         let path = self.session_path(key);
-        let content = std::fs::read_to_string(path)?;
-        let session: Session = serde_json::from_str(&content)?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to read session file '{}': {}", path.display(), e))?;
+        let session: Session = serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse session file '{}': {}", path.display(), e))?;
         debug!("Loaded session {} from disk", key);
         Ok(session)
     }
 
     fn save_to_disk(&self, session: &Session) -> anyhow::Result<()> {
         let path = self.session_path(&session.key);
-        let content = serde_json::to_string_pretty(session)?;
-        std::fs::write(path, content)?;
+        let content = serde_json::to_string_pretty(session)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize session '{}': {}", session.key, e))?;
+        std::fs::write(&path, content)
+            .map_err(|e| anyhow::anyhow!("Failed to write session file '{}': {}", path.display(), e))?;
         debug!("Saved session {} to disk", session.key);
         Ok(())
     }

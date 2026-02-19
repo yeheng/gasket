@@ -213,7 +213,10 @@ fn serialize_args_as_string<S>(value: &serde_json::Value, serializer: S) -> Resu
 where
     S: Serializer,
 {
-    let s = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    let s = serde_json::to_string(value).unwrap_or_else(|e| {
+        tracing::warn!("Failed to serialize tool call arguments: {}", e);
+        "{}".to_string()
+    });
     serializer.serialize_str(&s)
 }
 

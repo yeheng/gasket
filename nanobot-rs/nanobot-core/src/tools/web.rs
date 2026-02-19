@@ -74,13 +74,13 @@ impl Tool for WebSearchTool {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Request failed: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Web search request to Brave API failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(ToolError::ExecutionError(format!(
-                "API error: {} - {}",
+                "Brave Search API error (status {}): {}",
                 status, body
             )));
         }
@@ -88,7 +88,7 @@ impl Tool for WebSearchTool {
         let search_response: BraveSearchResponse = response
             .json()
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Parse error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to parse Brave Search API response: {}", e)))?;
 
         // Format results
         let mut result = String::new();
@@ -197,12 +197,13 @@ impl Tool for WebFetchTool {
             .header("User-Agent", "Mozilla/5.0 (compatible; nanobot/2.0)")
             .send()
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Request failed: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to fetch URL '{}': {}", args.url, e)))?;
 
         if !response.status().is_success() {
             return Err(ToolError::ExecutionError(format!(
-                "HTTP error: {}",
-                response.status()
+                "HTTP error {} when fetching '{}'",
+                response.status(),
+                args.url
             )));
         }
 
@@ -217,7 +218,7 @@ impl Tool for WebFetchTool {
         let body = response
             .text()
             .await
-            .map_err(|e| ToolError::ExecutionError(format!("Read error: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to read response body from '{}': {}", args.url, e)))?;
 
         // Simple text extraction for HTML
         let text = if content_type.contains("text/html") {

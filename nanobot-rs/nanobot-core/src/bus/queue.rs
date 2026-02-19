@@ -1,38 +1,43 @@
 //! Message bus for inter-component communication
 
-use std::sync::Arc;
-
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::sync::Mutex;
 
 use super::events::{InboundMessage, OutboundMessage};
 
 /// Message bus for routing messages between channels and agent.
 ///
-/// The bus owns the sender halves (cloneable) and allows the receiver halves
-/// to be taken once via `take_inbound_receiver` / `take_outbound_receiver`.
-/// This avoids wrapping `Receiver` in `Mutex` for ongoing consumption — the
-/// single consumer takes ownership and reads from it directly.
+/// The bus owns only the sender halves (cloneable). Receivers are returned
+/// separately from `new()` and should be moved directly to their consumers
+/// — no Mutex, no Option, no Arc needed for the receive side.
 #[derive(Clone)]
 pub struct MessageBus {
     inbound_tx: Sender<InboundMessage>,
     outbound_tx: Sender<OutboundMessage>,
-    inbound_rx: Arc<Mutex<Option<Receiver<InboundMessage>>>>,
-    outbound_rx: Arc<Mutex<Option<Receiver<OutboundMessage>>>>,
 }
 
 impl MessageBus {
-    /// Create a new message bus
-    pub fn new(buffer_size: usize) -> Self {
+    /// Create a new message bus, returning the bus (senders only) plus the two receivers.
+    ///
+    /// The caller must move each `Receiver` to its single consumer at
+    /// initialization time. This avoids wrapping receivers in `Arc<Mutex<Option<…>>>`.
+    pub fn new(
+        buffer_size: usize,
+    ) -> (
+        Self,
+        Receiver<InboundMessage>,
+        Receiver<OutboundMessage>,
+    ) {
         let (inbound_tx, inbound_rx) = channel(buffer_size);
         let (outbound_tx, outbound_rx) = channel(buffer_size);
 
-        Self {
-            inbound_tx,
-            inbound_rx: Arc::new(Mutex::new(Some(inbound_rx))),
-            outbound_tx,
-            outbound_rx: Arc::new(Mutex::new(Some(outbound_rx))),
-        }
+        (
+            Self {
+                inbound_tx,
+                outbound_tx,
+            },
+            inbound_rx,
+            outbound_rx,
+        )
     }
 
     /// Publish an inbound message
@@ -42,15 +47,6 @@ impl MessageBus {
         }
     }
 
-    /// Take ownership of the inbound receiver.
-    ///
-    /// This can only be called once — the single consumer (e.g. AgentLoop)
-    /// takes the receiver and reads from it in its own loop. Returns `None`
-    /// if the receiver was already taken.
-    pub async fn take_inbound_receiver(&self) -> Option<Receiver<InboundMessage>> {
-        self.inbound_rx.lock().await.take()
-    }
-
     /// Publish an outbound message
     pub async fn publish_outbound(&self, msg: OutboundMessage) {
         if let Err(e) = self.outbound_tx.send(msg).await {
@@ -58,21 +54,12 @@ impl MessageBus {
         }
     }
 
-    /// Take ownership of the outbound receiver.
-    ///
-    /// This can only be called once — the single consumer (e.g. ChannelManager)
-    /// takes the receiver and reads from it in its own loop. Returns `None`
-    /// if the receiver was already taken.
-    pub async fn take_outbound_receiver(&self) -> Option<Receiver<OutboundMessage>> {
-        self.outbound_rx.lock().await.take()
-    }
-
-    /// Get a sender for inbound messages
+    /// Get a cloneable sender for inbound messages
     pub fn inbound_sender(&self) -> Sender<InboundMessage> {
         self.inbound_tx.clone()
     }
 
-    /// Get a sender for outbound messages
+    /// Get a cloneable sender for outbound messages
     pub fn outbound_sender(&self) -> Sender<OutboundMessage> {
         self.outbound_tx.clone()
     }
@@ -80,6 +67,14 @@ impl MessageBus {
 
 impl Default for MessageBus {
     fn default() -> Self {
-        Self::new(100)
+        let (bus, _, _) = Self::new(100);
+        bus
     }
 }
+
+/// Convenience type alias for the tuple returned by `MessageBus::new()`.
+pub type MessageBusComponents = (
+    MessageBus,
+    Receiver<InboundMessage>,
+    Receiver<OutboundMessage>,
+);

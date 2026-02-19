@@ -319,9 +319,9 @@ async fn cmd_gateway() -> Result<()> {
 
     println!("🐈 Starting gateway...\n");
 
-    // Create message bus
+    // Create message bus — receivers are split out at creation time, no Mutex needed
     #[allow(unused_variables)]
-    let bus = nanobot_core::bus::MessageBus::new(100);
+    let (bus, mut inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(100);
 
     // Create agent
     let (provider, model) = find_provider(&config)?;
@@ -367,10 +367,6 @@ async fn cmd_gateway() -> Result<()> {
 
             let agent_clone = agent.clone();
             let bus_clone = bus.clone();
-
-            // Take the inbound receiver once — single consumer owns it
-            let mut inbound_rx = bus.take_inbound_receiver().await
-                .expect("Inbound receiver already taken");
 
             let task = tokio::spawn(async move {
                 // Start a task to process inbound messages

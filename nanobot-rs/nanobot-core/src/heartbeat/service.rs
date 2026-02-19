@@ -46,7 +46,13 @@ impl HeartbeatService {
             return Vec::new();
         }
 
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to read heartbeat file '{}': {}", path.display(), e);
+                return Vec::new();
+            }
+        };
         content
             .lines()
             .filter_map(|line| {

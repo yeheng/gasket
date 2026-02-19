@@ -342,7 +342,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let bus = MessageBus::new(10);
+        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
         let channel = FeishuChannel::new(config, bus);
 
         assert_eq!(channel.name(), "feishu");

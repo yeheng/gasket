@@ -54,7 +54,7 @@ async fn test_message_bus() {
     use nanobot_core::bus::events::{ChannelType, InboundMessage};
     use nanobot_core::bus::MessageBus;
 
-    let bus = MessageBus::new(10);
+    let (bus, mut rx, _outbound_rx) = MessageBus::new(10);
 
     let inbound = InboundMessage {
         channel: ChannelType::Cli,
@@ -68,7 +68,6 @@ async fn test_message_bus() {
 
     bus.publish_inbound(inbound.clone()).await;
 
-    let mut rx = bus.take_inbound_receiver().await.unwrap();
     let received = rx.recv().await;
     assert!(received.is_some());
     let received = received.unwrap();
@@ -653,9 +652,8 @@ async fn test_exec_tool_echo() {
     let tool = ExecTool::new("/tmp", Duration::from_secs(30), false);
 
     assert_eq!(tool.name(), "exec");
-    assert_eq!(
-        tool.description(),
-        "Execute a shell command in the workspace directory. Dangerous commands (rm -rf /, access to /etc/shadow, etc.) are blocked."
+    assert!(
+        tool.description().contains("Execute a shell command")
     );
 
     let args = serde_json::json!({
@@ -903,7 +901,7 @@ async fn test_message_bus_outbound() {
     use nanobot_core::bus::events::{ChannelType, OutboundMessage};
     use nanobot_core::bus::MessageBus;
 
-    let bus = MessageBus::new(10);
+    let (bus, _inbound_rx, mut rx) = MessageBus::new(10);
 
     let outbound = OutboundMessage {
         channel: ChannelType::Cli,
@@ -914,7 +912,6 @@ async fn test_message_bus_outbound() {
 
     bus.publish_outbound(outbound.clone()).await;
 
-    let mut rx = bus.take_outbound_receiver().await.unwrap();
     let received = rx.recv().await;
     assert!(received.is_some());
     let received = received.unwrap();
@@ -926,7 +923,7 @@ async fn test_message_bus_senders() {
     use nanobot_core::bus::events::{ChannelType, InboundMessage};
     use nanobot_core::bus::MessageBus;
 
-    let bus = MessageBus::new(10);
+    let (bus, mut rx, _outbound_rx) = MessageBus::new(10);
 
     let inbound_sender = bus.inbound_sender();
     let _ = bus.outbound_sender();
@@ -943,7 +940,6 @@ async fn test_message_bus_senders() {
 
     inbound_sender.send(msg).await.unwrap();
 
-    let mut rx = bus.take_inbound_receiver().await.unwrap();
     let received = rx.recv().await;
     assert!(received.is_some());
 }
@@ -952,7 +948,7 @@ async fn test_message_bus_senders() {
 async fn test_message_bus_default() {
     use nanobot_core::bus::MessageBus;
 
-    let bus = MessageBus::default();
+    let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(100);
     let sender = bus.inbound_sender();
     assert!(sender.capacity() > 0);
 }

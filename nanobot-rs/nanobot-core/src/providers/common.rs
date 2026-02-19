@@ -172,7 +172,8 @@ impl LlmProvider for OpenAICompatibleProvider {
             "[{}] POST {} | request body:\n{}",
             self.config.name,
             url,
-            serde_json::to_string_pretty(&openai_request).unwrap_or_default()
+            serde_json::to_string_pretty(&openai_request)
+                .unwrap_or_else(|e| format!("<failed to serialize request: {}>", e))
         );
 
         let mut req = self

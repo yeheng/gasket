@@ -303,7 +303,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let bus = MessageBus::new(10);
+        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
         let channel = DingTalkChannel::new(config, bus);
 
         assert_eq!(channel.name(), "dingtalk");
@@ -318,7 +318,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let bus = MessageBus::new(10);
+        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
         let channel = DingTalkChannel::new(config, bus);
 
         let url = channel.get_signed_webhook_url();

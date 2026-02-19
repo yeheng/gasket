@@ -72,7 +72,7 @@ impl Tool for ReadFileTool {
         debug!("Reading file: {:?}", path);
 
         let content = std::fs::read_to_string(&path)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file '{}': {}", path.display(), e)))?;
 
         // Handle offset and limit
         let result = if args.offset.is_some() || args.limit.is_some() {
@@ -137,12 +137,12 @@ impl Tool for WriteFileTool {
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                ToolError::ExecutionError(format!("Failed to create directories: {}", e))
+                ToolError::ExecutionError(format!("Failed to create directories for '{}': {}", parent.display(), e))
             })?;
         }
 
         std::fs::write(&path, &args.content)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to write file: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to write file '{}': {}", path.display(), e)))?;
 
         Ok(format!(
             "Successfully wrote {} bytes to {}",
@@ -215,7 +215,7 @@ impl Tool for EditFileTool {
         debug!("Editing file: {:?} - {}", path, args.instruction);
 
         let content = std::fs::read_to_string(&path)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to read file '{}' for editing: {}", path.display(), e)))?;
 
         // Check uniqueness
         let count = content.matches(&args.old_string).count();
@@ -234,7 +234,7 @@ impl Tool for EditFileTool {
         let new_content = content.replace(&args.old_string, &args.new_string);
 
         std::fs::write(&path, new_content)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to write file: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to write edited file '{}': {}", path.display(), e)))?;
 
         Ok(format!("Successfully edited {}", args.file_path))
     }
@@ -279,7 +279,7 @@ impl Tool for ListDirTool {
         debug!("Listing directory: {:?}", path);
 
         let entries = std::fs::read_dir(&path)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to read directory: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to read directory '{}': {}", path.display(), e)))?;
 
         let mut result = String::new();
         for entry in entries {

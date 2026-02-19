@@ -94,8 +94,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_tool_creation() {
-        let bus = std::sync::Arc::new(MessageBus::new(10));
-        let tool = MessageTool::new(bus);
+        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
+        let tool = MessageTool::new(std::sync::Arc::new(bus));
 
         assert_eq!(tool.name(), "send_message");
         assert!(tool.description().contains("Send a message"));
@@ -103,8 +103,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_tool_parameters() {
-        let bus = std::sync::Arc::new(MessageBus::new(10));
-        let tool = MessageTool::new(bus);
+        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
+        let tool = MessageTool::new(std::sync::Arc::new(bus));
 
         let params = tool.parameters();
         assert!(params["properties"]["channel"].is_object());
@@ -114,7 +114,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_message() {
-        let bus = std::sync::Arc::new(MessageBus::new(10));
+        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
+        let bus = std::sync::Arc::new(bus);
         let tool = MessageTool::new(bus.clone());
 
         let params = serde_json::json!({
@@ -133,8 +134,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_parameters() {
-        let bus = std::sync::Arc::new(MessageBus::new(10));
-        let tool = MessageTool::new(bus);
+        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
+        let tool = MessageTool::new(std::sync::Arc::new(bus));
 
         let params = serde_json::json!({
             "channel": "telegram"
