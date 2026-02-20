@@ -50,24 +50,22 @@ impl DeepSeekProvider {
     }
 
     /// Build chat completion request
-    fn build_request(&self, request: ChatRequest) -> Value {
-        let body = serde_json::to_value(&request).unwrap();
-
-        // Add DeepSeek-specific parameters if needed
-        // DeepSeek API is fully OpenAI-compatible
+    fn build_request(&self, request: ChatRequest) -> Result<Value> {
+        let body = serde_json::to_value(&request)
+            .map_err(|e| anyhow!("Failed to serialize DeepSeek request: {}", e))?;
 
         debug!(
             "DeepSeek request: {}",
-            serde_json::to_string_pretty(&body).unwrap()
+            serde_json::to_string_pretty(&body).unwrap_or_else(|_| "<serialization error>".to_string())
         );
-        body
+        Ok(body)
     }
 
     /// Parse chat completion response
     fn parse_response(&self, response: Value) -> Result<ChatResponse> {
         debug!(
             "DeepSeek response: {}",
-            serde_json::to_string_pretty(&response).unwrap()
+            serde_json::to_string_pretty(&response).unwrap_or_else(|_| "<serialization error>".to_string())
         );
 
         // DeepSeek uses OpenAI-compatible response format
@@ -133,7 +131,7 @@ impl LlmProvider for DeepSeekProvider {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.api_base);
 
-        let body = self.build_request(request);
+        let body = self.build_request(request)?;
 
         debug!("[deepseek] POST {}", url);
 
@@ -201,7 +199,7 @@ mod tests {
             max_tokens: Some(100),
         };
 
-        let body = provider.build_request(request);
+        let body = provider.build_request(request).unwrap();
 
         assert_eq!(body["model"], "deepseek-chat");
         // Use approximate comparison for floating point

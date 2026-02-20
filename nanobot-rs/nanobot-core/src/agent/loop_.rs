@@ -7,6 +7,7 @@ use anyhow::Result;
 use tracing::{debug, info, instrument, warn};
 
 use crate::agent::context::ContextBuilder;
+use crate::agent::executor::ToolExecutor;
 use crate::agent::memory::MemoryStore;
 use crate::bus::MessageBus;
 use crate::cron::CronService;
@@ -82,17 +83,25 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     /// Create a new agent loop
-    pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: AgentConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workspace bootstrap files exist but cannot be read.
+    pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: AgentConfig) -> Result<Self> {
         Self::with_dependencies(provider, workspace, config, AgentDependencies::default())
     }
 
     /// Create a new agent loop with optional dependencies for extra tools
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workspace bootstrap files exist but cannot be read.
     pub fn with_dependencies(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
         deps: AgentDependencies,
-    ) -> Self {
+    ) -> Result<Self> {
         let memory = MemoryStore::new(workspace.clone());
         let sessions = SessionManager::new(workspace.clone());
         let mut tools = ToolRegistry::new();
@@ -142,10 +151,10 @@ impl AgentLoop {
         let skills_context = Self::load_skills(&workspace);
 
         // Build context with skills
-        let context = ContextBuilder::new(workspace.clone())
+        let context = ContextBuilder::new(workspace.clone())?
             .with_skills_context(skills_context);
 
-        Self {
+        Ok(Self {
             provider,
             context,
             memory,
@@ -153,7 +162,7 @@ impl AgentLoop {
             tools,
             config,
             workspace,
-        }
+        })
     }
 
     /// Load skills from builtin and user directories
@@ -287,7 +296,7 @@ impl AgentLoop {
         let mut iteration = 0;
         let mut final_content = None;
         let mut tools_used = Vec::new();
-        let max_result_chars = self.config.max_tool_result_chars;
+        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
 
         while iteration < self.config.max_iterations {
             iteration += 1;
@@ -321,38 +330,15 @@ impl AgentLoop {
                     last.tool_calls = Some(response.tool_calls.clone());
                 }
 
-                // Execute each tool call
-                for tool_call in &response.tool_calls {
-                    tools_used.push(tool_call.function.name.clone());
-                    info!(
-                        "Tool call: {}({:?})",
-                        tool_call.function.name, tool_call.function.arguments
-                    );
-
-                    let result = self
-                        .tools
-                        .execute(
-                            &tool_call.function.name,
-                            tool_call.function.arguments.clone(),
-                        )
-                        .await;
-
-                    let mut result_str = match result {
-                        Ok(r) => r,
-                        Err(e) => format!("Error: {}", e),
-                    };
-
-                    // Truncate tool result to save tokens
-                    if max_result_chars > 0 && result_str.len() > max_result_chars {
-                        result_str.truncate(max_result_chars);
-                        result_str.push_str("\n\n[... truncated]");
-                    }
-
+                // Execute each tool call via ToolExecutor
+                let results = executor.execute_batch(&response.tool_calls).await;
+                for result in results {
+                    tools_used.push(result.tool_name.clone());
                     messages = self.context.add_tool_result(
                         messages,
-                        tool_call.id.clone(),
-                        tool_call.function.name.clone(),
-                        result_str,
+                        result.tool_call_id,
+                        result.tool_name,
+                        result.output,
                     );
                 }
 

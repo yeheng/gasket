@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 use nanobot_core::agent::{AgentConfig, AgentDependencies, AgentLoop};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
-use nanobot_core::providers::{LlmProvider, OpenAICompatibleProvider};
+use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 
 /// 🐈 nanobot - A lightweight AI assistant
 #[derive(Parser)]
@@ -237,7 +237,8 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
         mcp_tools: Vec::new(),
     };
 
-    let agent = AgentLoop::with_dependencies(provider, workspace, agent_config, deps);
+    let agent = AgentLoop::with_dependencies(provider, workspace, agent_config, deps)
+        .context("Failed to initialize agent (check workspace bootstrap files)")?;
     let render_md = !no_markdown;
 
     match message {
@@ -366,7 +367,7 @@ async fn cmd_gateway() -> Result<()> {
 
     let agent = Arc::new(AgentLoop::with_dependencies(
         provider, workspace.clone(), agent_config, deps,
-    ));
+    ).context("Failed to initialize agent (check workspace bootstrap files)")?);
 
     // Track running tasks
     #[allow(unused_mut)]
@@ -531,37 +532,6 @@ async fn cmd_gateway() -> Result<()> {
     Ok(())
 }
 
-/// Parse model spec in `provider_id/model_id` format.
-///
-/// Examples:
-///   "deepseek/deepseek-chat"  → ("deepseek", "deepseek-chat")
-///   "zhipu/glm-4"             → ("zhipu", "glm-4")
-///   "deepseek-chat"           → (None, "deepseek-chat")
-///   "openrouter/anthropic/claude-sonnet-4" → ("openrouter", "anthropic/claude-sonnet-4")
-///
-/// The first path segment is treated as the provider id only if it matches
-/// a known provider name. Otherwise the whole string is the model id.
-fn parse_model_spec(spec: &str) -> (Option<&str>, &str) {
-    const KNOWN_PROVIDERS: &[&str] = &[
-        "deepseek",
-        "openrouter",
-        "openai",
-        "anthropic",
-        "zhipu",
-        "dashscope",
-        "moonshot",
-        "minimax",
-    ];
-
-    if let Some(pos) = spec.find('/') {
-        let prefix = &spec[..pos];
-        if KNOWN_PROVIDERS.contains(&prefix) {
-            return (Some(prefix), &spec[pos + 1..]);
-        }
-    }
-    (None, spec)
-}
-
 /// Build a provider instance from its name and config.
 fn build_provider(
     name: &str,
@@ -587,8 +557,8 @@ fn build_provider(
 
 /// Find a configured provider.
 ///
-/// The model field supports `provider_id/model_id` format to select a
-/// specific provider. For example:
+/// The model field supports `provider_id/model_id` format (parsed via
+/// `ModelSpec`) to select a specific provider. For example:
 ///   - `"deepseek/deepseek-chat"` → use the deepseek provider with model deepseek-chat
 ///   - `"zhipu/glm-4"`           → use the zhipu provider with model glm-4
 ///   - `"deepseek-chat"`          → legacy behaviour, pick the first provider with an API key
@@ -600,16 +570,17 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
         .clone()
         .unwrap_or_else(|| "gpt-4o".to_string());
 
-    let (explicit_provider, model_id) = parse_model_spec(&raw_model);
+    // Parse once into a strongly-typed ModelSpec
+    let spec: ModelSpec = raw_model.parse().expect("ModelSpec::from_str is infallible");
 
     // If the user specified a provider prefix, use that provider directly.
-    if let Some(provider_name) = explicit_provider {
+    if let Some(provider_name) = spec.provider() {
         let provider_config = config
             .providers
             .get(provider_name)
             .ok_or_else(|| anyhow::anyhow!(
                 "Provider '{}' specified in model '{}' is not configured in providers section",
-                provider_name, raw_model
+                provider_name, spec
             ))?;
 
         let api_key = provider_config
@@ -620,8 +591,8 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
                 provider_name
             ))?;
 
-        let provider = build_provider(provider_name, api_key, provider_config, model_id);
-        return Ok((provider, model_id.to_string()));
+        let provider = build_provider(provider_name, api_key, provider_config, spec.model());
+        return Ok((provider, spec.model().to_string()));
     }
 
     // No explicit provider — fall back to trying providers in order of preference.
@@ -639,8 +610,8 @@ fn find_provider(config: &Config) -> Result<(Arc<dyn LlmProvider>, String)> {
     for name in &provider_order {
         if let Some(provider_config) = config.providers.get(*name) {
             if let Some(api_key) = &provider_config.api_key {
-                let provider = build_provider(name, api_key, provider_config, model_id);
-                return Ok((provider, model_id.to_string()));
+                let provider = build_provider(name, api_key, provider_config, spec.model());
+                return Ok((provider, spec.model().to_string()));
             }
         }
     }

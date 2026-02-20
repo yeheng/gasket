@@ -88,8 +88,7 @@ impl FeishuChannel {
         self.access_token = Some(token_response.tenant_access_token);
 
         info!("Obtained Feishu tenant access token");
-        // Safe to unwrap because we just set it above
-        Ok(self.access_token.as_ref().unwrap())
+        Ok(self.access_token.as_ref().expect("access_token was just set on the line above"))
     }
 
     /// Handle incoming webhook event

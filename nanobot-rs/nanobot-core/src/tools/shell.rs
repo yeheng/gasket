@@ -58,11 +58,14 @@ impl ExecTool {
         self
     }
 
-    /// Validate that a resolved path is still inside the workspace.
+    /// Validate that the workspace directory is resolvable.
     ///
     /// Uses `std::fs::canonicalize` so that symlinks and `..` components are
-    /// resolved at the OS level — no string heuristics.
-    fn validate_workspace_access(&self, command: &str) -> Result<(), String> {
+    /// resolved at the OS level. We intentionally do NOT parse the command
+    /// string — the shell is Turing-complete, so string-based heuristics
+    /// (e.g. matching `cd /`) provide false security. Real containment
+    /// requires an actual sandbox (Docker, bubblewrap, etc.).
+    fn validate_workspace_access(&self) -> Result<(), String> {
         if !self.restrict_to_workspace {
             return Ok(());
         }
@@ -75,32 +78,10 @@ impl ExecTool {
             )
         })?;
 
-        // Resolve the working directory itself — if it escapes, reject.
-        // We intentionally do NOT try to parse the command string to extract
-        // paths. That approach is fundamentally broken for the same reason
-        // blacklists are broken: the shell is Turing-complete.
-        //
-        // Instead, we set `current_dir` to the workspace and rely on
-        // filesystem-level restrictions where possible.
         debug!(
             "Workspace restriction active: commands run in {:?}",
             canonical_workspace
         );
-
-        // Simple heuristic — warn about obvious absolute-path access outside
-        // workspace but do NOT treat this as a hard block. Real containment
-        // requires a sandbox (Docker, bubblewrap, etc.).
-        if command.contains("cd /") {
-            let workspace_str = canonical_workspace.to_string_lossy().to_lowercase();
-            let normalised = command.to_lowercase();
-            if normalised.contains("cd /") && !normalised.contains(&format!("cd {}", workspace_str))
-            {
-                warn!(
-                    "Command may navigate outside workspace: {}",
-                    command
-                );
-            }
-        }
 
         Ok(())
     }
@@ -119,9 +100,9 @@ impl Tool for ExecTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in the workspace directory. \
-         This tool must be explicitly enabled; no string-based \
-         blacklist is applied — use a real sandbox for untrusted input."
+        "UNSAFE: Execute an arbitrary shell command in the workspace directory. \
+         No sandboxing is applied — the user is responsible for the consequences. \
+         Use a real sandbox (Docker, bubblewrap) for untrusted input."
     }
 
     fn parameters(&self) -> Value {
@@ -150,7 +131,7 @@ impl Tool for ExecTool {
         }
 
         // Workspace containment (best-effort, uses canonicalize)
-        if let Err(reason) = self.validate_workspace_access(&args.command) {
+        if let Err(reason) = self.validate_workspace_access() {
             warn!("Workspace validation failed: {} ({})", args.command, reason);
             return Err(ToolError::ExecutionError(reason));
         }

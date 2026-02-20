@@ -27,7 +27,7 @@ async fn test_agent_initialization() {
     let provider =
         nanobot_core::providers::OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
 
-    let agent = nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config);
+    let agent = nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config).unwrap();
 
     assert_eq!(agent.model(), "gpt-4o");
     assert_eq!(agent.workspace(), &workspace);
@@ -648,7 +648,7 @@ async fn test_exec_tool_echo() {
 
     assert_eq!(tool.name(), "exec");
     assert!(
-        tool.description().contains("Execute a shell command")
+        tool.description().contains("Execute an arbitrary shell command")
     );
 
     let args = serde_json::json!({
@@ -1212,7 +1212,7 @@ async fn test_session_get_history() {
 async fn test_context_builder_new() {
     use nanobot_core::agent::context::ContextBuilder;
 
-    let builder = ContextBuilder::new(PathBuf::from("/tmp/workspace"));
+    let builder = ContextBuilder::new(PathBuf::from("/tmp/workspace")).unwrap();
     let messages = builder.build_messages(vec![], "test", None, "test", "chat1");
     assert!(!messages.is_empty());
 }
@@ -1222,7 +1222,7 @@ async fn test_context_builder_with_system_prompt() {
     use nanobot_core::agent::context::ContextBuilder;
 
     let builder =
-        ContextBuilder::new(PathBuf::from("/tmp")).with_system_prompt("Custom system prompt");
+        ContextBuilder::new(PathBuf::from("/tmp")).unwrap().with_system_prompt("Custom system prompt");
 
     let messages = builder.build_messages(vec![], "Hello", None, "test", "chat1");
     assert_eq!(messages[0].role, "system");
@@ -1238,7 +1238,7 @@ async fn test_context_builder_build_messages() {
     use nanobot_core::agent::context::ContextBuilder;
     use nanobot_core::session::SessionMessage;
 
-    let builder = ContextBuilder::new(PathBuf::from("/tmp"));
+    let builder = ContextBuilder::new(PathBuf::from("/tmp")).unwrap();
 
     let history = vec![
         SessionMessage {
@@ -1282,7 +1282,7 @@ async fn test_context_builder_add_assistant_message() {
     use nanobot_core::agent::context::ContextBuilder;
     use nanobot_core::providers::ChatMessage;
 
-    let builder = ContextBuilder::new(PathBuf::from("/tmp"));
+    let builder = ContextBuilder::new(PathBuf::from("/tmp")).unwrap();
 
     let messages = vec![ChatMessage::user("Hello")];
     let updated =
@@ -1297,7 +1297,7 @@ async fn test_context_builder_add_tool_result() {
     use nanobot_core::agent::context::ContextBuilder;
     use nanobot_core::providers::ChatMessage;
 
-    let builder = ContextBuilder::new(PathBuf::from("/tmp"));
+    let builder = ContextBuilder::new(PathBuf::from("/tmp")).unwrap();
 
     let messages = vec![ChatMessage::user("Read the file")];
     let updated = builder.add_tool_result(

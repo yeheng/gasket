@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::providers::ChatMessage;
 use crate::session::SessionMessage;
@@ -18,21 +18,30 @@ pub struct ContextBuilder {
 }
 
 impl ContextBuilder {
-    /// Create a new context builder
+    /// Create a new context builder.
     ///
     /// Loads bootstrap files (AGENTS.md, SOUL.md, USER.md, TOOLS.md) from the
     /// workspace directory. Falls back to a minimal default prompt if none exist.
-    pub fn new(workspace: PathBuf) -> Self {
-        let system_prompt = Self::build_system_prompt(&workspace);
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a bootstrap file **exists** but cannot be read
+    /// (permission denied, I/O error, etc.). A missing file is not an error.
+    pub fn new(workspace: PathBuf) -> Result<Self, std::io::Error> {
+        let system_prompt = Self::build_system_prompt(&workspace)?;
+        Ok(Self {
             workspace,
             system_prompt,
             skills_context: None,
-        }
+        })
     }
 
-    /// Build system prompt from workspace bootstrap files
-    fn build_system_prompt(workspace: &PathBuf) -> String {
+    /// Build system prompt from workspace bootstrap files.
+    ///
+    /// Files that don't exist are silently skipped. Files that exist but fail
+    /// to read cause an immediate error — silent degradation on core config is
+    /// dangerous.
+    fn build_system_prompt(workspace: &PathBuf) -> Result<String, std::io::Error> {
         let mut parts = Vec::new();
 
         // Identity header
@@ -46,17 +55,12 @@ impl ContextBuilder {
         for filename in BOOTSTRAP_FILES {
             let file_path = workspace.join(filename);
             if file_path.exists() {
-                match std::fs::read_to_string(&file_path) {
-                    Ok(content) => {
-                        if !content.trim().is_empty() {
-                            debug!("Loaded bootstrap file: {}", filename);
-                            parts.push(format!("## {}\n\n{}", filename, content.trim()));
-                            loaded_any = true;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to read bootstrap file {:?}: {}", file_path, e);
-                    }
+                // File exists — a read failure here is a hard error.
+                let content = std::fs::read_to_string(&file_path)?;
+                if !content.trim().is_empty() {
+                    debug!("Loaded bootstrap file: {}", filename);
+                    parts.push(format!("## {}\n\n{}", filename, content.trim()));
+                    loaded_any = true;
                 }
             }
         }
@@ -66,7 +70,7 @@ impl ContextBuilder {
             parts.push(DEFAULT_INSTRUCTIONS.to_string());
         }
 
-        parts.join("\n\n")
+        Ok(parts.join("\n\n"))
     }
 
     /// Set a custom system prompt

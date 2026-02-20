@@ -292,7 +292,17 @@ impl SubagentManager {
                 max_iterations: 10,
                 ..Default::default()
             };
-            let agent = AgentLoop::new(provider, workspace, agent_config);
+            let agent = match AgentLoop::new(provider, workspace, agent_config) {
+                Ok(a) => a,
+                Err(e) => {
+                    let mut tasks = tasks_ref.write().await;
+                    if let Some(t) = tasks.get_mut(&tid) {
+                        t.status = TaskStatus::Failed;
+                        t.error = Some(format!("Failed to initialise subagent: {}", e));
+                    }
+                    return;
+                }
+            };
 
             // Execute with timeout
             let session_key = format!("subagent:{}", tid);

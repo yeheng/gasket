@@ -132,7 +132,7 @@ impl GeminiProvider {
             generation_config["maxOutputTokens"] = json!(tokens);
         }
 
-        if !generation_config.as_object().unwrap().is_empty() {
+        if generation_config.as_object().map_or(false, |obj| !obj.is_empty()) {
             body["generationConfig"] = generation_config;
         }
 
@@ -157,7 +157,7 @@ impl GeminiProvider {
 
         debug!(
             "Gemini request: {}",
-            serde_json::to_string_pretty(&body).unwrap()
+            serde_json::to_string_pretty(&body).unwrap_or_else(|_| "<serialization error>".to_string())
         );
         body
     }
@@ -166,7 +166,7 @@ impl GeminiProvider {
     fn parse_gemini_response(&self, response: Value) -> Result<ChatResponse> {
         debug!(
             "Gemini response: {}",
-            serde_json::to_string_pretty(&response).unwrap()
+            serde_json::to_string_pretty(&response).unwrap_or_else(|_| "<serialization error>".to_string())
         );
 
         // Check for errors
