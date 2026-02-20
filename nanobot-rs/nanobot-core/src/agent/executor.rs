@@ -5,6 +5,8 @@ use tracing::info;
 
 use crate::providers::ToolCall;
 use crate::tools::ToolRegistry;
+use crate::tools::middleware::ToolInvocation;
+use crate::trail::{Handler, MiddlewareStack};
 
 /// Result of executing a single tool call
 pub struct ToolCallResult {
@@ -23,16 +25,35 @@ pub struct ToolCallResult {
 pub struct ToolExecutor<'a> {
     registry: &'a ToolRegistry,
     max_result_chars: usize,
+    middleware: &'a MiddlewareStack<ToolInvocation, String>,
 }
 
 impl<'a> ToolExecutor<'a> {
     /// Create a new executor.
     ///
     /// `max_result_chars` of 0 means unlimited.
-    pub fn new(registry: &'a ToolRegistry, max_result_chars: usize) -> Self {
+    pub fn new(
+        registry: &'a ToolRegistry,
+        max_result_chars: usize,
+        middleware: &'a MiddlewareStack<ToolInvocation, String>,
+    ) -> Self {
         Self {
             registry,
             max_result_chars,
+            middleware,
+        }
+    }
+
+    /// Create a new executor without middleware (for backward compatibility / tests).
+    pub fn new_simple(registry: &'a ToolRegistry, max_result_chars: usize) -> Self {
+        // We need a static empty stack for simple mode
+        static EMPTY: std::sync::OnceLock<MiddlewareStack<ToolInvocation, String>> =
+            std::sync::OnceLock::new();
+        let empty = EMPTY.get_or_init(MiddlewareStack::new);
+        Self {
+            registry,
+            max_result_chars,
+            middleware: empty,
         }
     }
 
@@ -43,13 +64,16 @@ impl<'a> ToolExecutor<'a> {
             tool_call.function.name, tool_call.function.arguments
         );
 
-        let result = self
-            .registry
-            .execute(
-                &tool_call.function.name,
-                tool_call.function.arguments.clone(),
-            )
-            .await;
+        let invocation = ToolInvocation {
+            name: tool_call.function.name.clone(),
+            args: tool_call.function.arguments.clone(),
+        };
+
+        let handler = RegistryHandler {
+            registry: self.registry,
+        };
+
+        let result = self.middleware.execute(invocation, &handler).await;
 
         let mut result_str = match result {
             Ok(r) => r,
@@ -76,7 +100,16 @@ impl<'a> ToolExecutor<'a> {
 
     /// Execute a single tool call by name and raw arguments (convenience method).
     pub async fn execute_raw(&self, name: &str, args: Value) -> String {
-        let result = self.registry.execute(name, args).await;
+        let invocation = ToolInvocation {
+            name: name.to_string(),
+            args,
+        };
+
+        let handler = RegistryHandler {
+            registry: self.registry,
+        };
+
+        let result = self.middleware.execute(invocation, &handler).await;
 
         let mut result_str = match result {
             Ok(r) => r,
@@ -89,6 +122,21 @@ impl<'a> ToolExecutor<'a> {
         }
 
         result_str
+    }
+}
+
+/// Handler that delegates to the `ToolRegistry`.
+struct RegistryHandler<'a> {
+    registry: &'a ToolRegistry,
+}
+
+#[async_trait::async_trait]
+impl<'a> Handler<ToolInvocation, String> for RegistryHandler<'a> {
+    async fn handle(&self, request: ToolInvocation) -> anyhow::Result<String> {
+        self.registry
+            .execute(&request.name, request.args)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 
@@ -144,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_one_success() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
+        let executor = ToolExecutor::new_simple(&reg, 0);
 
         let tc = ToolCall::new("call_1", "echo", serde_json::json!({"msg": "hi"}));
         let result = executor.execute_one(&tc).await;
@@ -157,7 +205,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_one_failure() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
+        let executor = ToolExecutor::new_simple(&reg, 0);
 
         let tc = ToolCall::new("call_2", "fail", serde_json::json!({}));
         let result = executor.execute_one(&tc).await;
@@ -168,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_batch() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
+        let executor = ToolExecutor::new_simple(&reg, 0);
 
         let calls = vec![
             ToolCall::new("c1", "echo", serde_json::json!({"a": 1})),
@@ -184,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn test_truncation() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 10);
+        let executor = ToolExecutor::new_simple(&reg, 10);
 
         let tc = ToolCall::new(
             "c1",
@@ -200,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn test_not_found_tool() {
         let reg = make_registry();
-        let executor = ToolExecutor::new(&reg, 0);
+        let executor = ToolExecutor::new_simple(&reg, 0);
 
         let tc = ToolCall::new("c1", "nonexistent", serde_json::json!({}));
         let result = executor.execute_one(&tc).await;

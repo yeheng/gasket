@@ -3,6 +3,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::trail::TrailContext;
+
 /// LLM Provider trait
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -13,7 +15,14 @@ pub trait LlmProvider: Send + Sync {
     fn default_model(&self) -> &str;
 
     /// Send a chat completion request
-    async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse>;
+    ///
+    /// The `trail_ctx` parameter carries trace context for observability.
+    /// Pass `TrailContext::default()` when tracing is not needed.
+    async fn chat(
+        &self,
+        request: ChatRequest,
+        trail_ctx: &TrailContext,
+    ) -> anyhow::Result<ChatResponse>;
 }
 
 /// Chat completion request

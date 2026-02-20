@@ -2,6 +2,7 @@
 
 pub mod base;
 pub mod manager;
+pub mod middleware;
 
 #[cfg(feature = "telegram")]
 pub mod telegram;
@@ -18,5 +19,9 @@ pub mod email;
 #[cfg(feature = "feishu")]
 pub mod feishu;
 
-pub use base::Channel;
+pub use base::{Channel, MessageContext};
 pub use manager::ChannelManager;
+pub use middleware::{
+    ChannelAuthMiddleware, ChannelError, ChannelLoggingMiddleware,
+    ChannelOutboundLoggingMiddleware, ChannelRateLimitMiddleware,
+};

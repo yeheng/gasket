@@ -1,6 +1,7 @@
 //! Google Gemini LLM provider
 
 use crate::providers::{ChatRequest, ChatResponse, LlmProvider};
+use crate::trail::TrailContext;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::Client;
@@ -237,7 +238,7 @@ impl LlmProvider for GeminiProvider {
         &self.default_model
     }
 
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+    async fn chat(&self, request: ChatRequest, _trail_ctx: &TrailContext) -> Result<ChatResponse> {
         let model = if request.model.is_empty() {
             &self.default_model
         } else {

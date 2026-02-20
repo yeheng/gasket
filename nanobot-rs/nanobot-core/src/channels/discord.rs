@@ -105,6 +105,7 @@ impl EventHandler for DiscordHandler {
             media: None,
             metadata: None,
             timestamp: chrono::Utc::now(),
+            trace_id: None,
         };
 
         self.bus.publish_inbound(inbound).await;

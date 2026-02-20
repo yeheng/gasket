@@ -66,6 +66,7 @@ async fn test_message_bus() {
         media: None,
         metadata: None,
         timestamp: chrono::Utc::now(),
+        trace_id: None,
     };
 
     bus.publish_inbound(inbound.clone()).await;
@@ -89,6 +90,7 @@ async fn test_message_bus_session_key() {
         media: None,
         metadata: None,
         timestamp: chrono::Utc::now(),
+        trace_id: None,
     };
 
     assert_eq!(msg.session_key(), "telegram:chat456");
@@ -103,6 +105,7 @@ async fn test_outbound_message() {
         chat_id: "channel789".to_string(),
         content: "Response".to_string(),
         metadata: Some(serde_json::json!({"thread_ts": "12345"})),
+        trace_id: None,
     };
 
     assert_eq!(outbound.channel, ChannelType::Discord);
@@ -915,6 +918,7 @@ async fn test_message_bus_outbound() {
         chat_id: "chat1".to_string(),
         content: "Response".to_string(),
         metadata: None,
+        trace_id: None,
     };
 
     bus.publish_outbound(outbound.clone()).await;
@@ -943,6 +947,7 @@ async fn test_message_bus_senders() {
         media: None,
         metadata: None,
         timestamp: chrono::Utc::now(),
+        trace_id: None,
     };
 
     inbound_sender.send(msg).await.unwrap();

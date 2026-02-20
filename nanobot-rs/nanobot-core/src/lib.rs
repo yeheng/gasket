@@ -18,10 +18,12 @@ pub mod config;
 pub mod cron;
 pub mod heartbeat;
 pub mod mcp;
+pub mod memory;
 pub mod providers;
 pub mod session;
 pub mod skills;
 pub mod tools;
+pub mod trail;
 
 pub use config::Config;
 pub use providers::{
@@ -29,3 +31,7 @@ pub use providers::{
 };
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};
+pub use trail::{
+    DefaultTrail, Handler, Middleware, MiddlewareStack, NoopTrail, SpanId, Trail, TraceId,
+    TrailContext, TrailSpan,
+};

@@ -254,6 +254,7 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
         cron_service: None,
         web_tools: Some(config.tools.web.clone()),
         mcp_tools: Vec::new(),
+        tool_middleware: Vec::new(),
     };
 
     let agent = AgentLoop::with_dependencies(provider, workspace, agent_config, deps)
@@ -383,6 +384,7 @@ async fn cmd_gateway() -> Result<()> {
         cron_service: Some(cron_service.clone()),
         web_tools: Some(config.tools.web.clone()),
         mcp_tools,
+        tool_middleware: Vec::new(),
     };
 
     let agent = Arc::new(
@@ -418,6 +420,7 @@ async fn cmd_gateway() -> Result<()> {
                                 chat_id: msg.chat_id,
                                 content: response,
                                 metadata: None,
+                                trace_id: None,
                             };
                             bus_clone.publish_outbound(outbound).await;
                         }
@@ -447,6 +450,7 @@ async fn cmd_gateway() -> Result<()> {
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
+                            trace_id: None,
                         };
                         bus_inner.publish_inbound(inbound).await;
                     });
@@ -480,6 +484,7 @@ async fn cmd_gateway() -> Result<()> {
                         media: None,
                         metadata: None,
                         timestamp: chrono::Utc::now(),
+                        trace_id: None,
                     };
                     bus_for_cron.publish_inbound(inbound).await;
                     cron_svc.mark_job_run(&job.id).await;

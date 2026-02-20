@@ -37,6 +37,9 @@ pub struct ProviderRegistry {
 
     /// Model prefix to provider mapping
     prefix_map: HashMap<String, String>,
+
+    /// Default provider name
+    default_provider: Option<String>,
 }
 
 impl Default for ProviderRegistry {
@@ -52,6 +55,7 @@ impl ProviderRegistry {
             providers: HashMap::new(),
             metadata: HashMap::new(),
             prefix_map: HashMap::new(),
+            default_provider: None,
         }
     }
 
@@ -155,12 +159,61 @@ impl ProviderRegistry {
             model
         }
     }
+
+    /// Set the default provider by name.
+    ///
+    /// The provider must already be registered.
+    pub fn set_default(&mut self, name: &str) -> anyhow::Result<()> {
+        if !self.providers.contains_key(name) {
+            anyhow::bail!("Provider '{}' is not registered", name);
+        }
+        debug!("Setting default provider to: {}", name);
+        self.default_provider = Some(name.to_string());
+        Ok(())
+    }
+
+    /// Get the default provider.
+    ///
+    /// Returns the explicitly set default, or falls back to the first
+    /// available provider in preference order (openrouter, openai, anthropic).
+    pub fn get_default(&self) -> Option<Arc<dyn LlmProvider>> {
+        // Explicitly set default
+        if let Some(ref name) = self.default_provider {
+            if let Some(provider) = self.get(name) {
+                return Some(provider);
+            }
+        }
+
+        // Fallback: prefer providers in standard order
+        for default_name in &["openrouter", "openai", "anthropic"] {
+            if let Some(provider) = self.get(default_name) {
+                return Some(provider);
+            }
+        }
+
+        // Last resort: return any available provider
+        for (name, meta) in &self.metadata {
+            if meta.available {
+                if let Some(provider) = self.providers.get(name) {
+                    return Some(provider.clone());
+                }
+            }
+        }
+
+        None
+    }
+
+    /// List all registered provider names.
+    pub fn list(&self) -> Vec<&str> {
+        self.providers.keys().map(|s| s.as_str()).collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::{ChatRequest, ChatResponse};
+    use crate::trail::TrailContext;
     use anyhow::Result;
     use async_trait::async_trait;
 
@@ -179,7 +232,7 @@ mod tests {
             "mock-model"
         }
 
-        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
+        async fn chat(&self, _request: ChatRequest, _trail_ctx: &TrailContext) -> Result<ChatResponse> {
             Ok(ChatResponse {
                 content: Some("mock response".to_string()),
                 tool_calls: vec![],
@@ -285,5 +338,57 @@ mod tests {
         let available = registry.list_available();
         assert_eq!(available.len(), 1);
         assert_eq!(available[0].name, "available");
+    }
+
+    #[test]
+    fn test_set_and_get_default() {
+        let mut registry = ProviderRegistry::new();
+
+        // No default initially
+        assert!(registry.get_default().is_none());
+
+        let provider = Arc::new(MockProvider {
+            name: "test_provider".to_string(),
+        });
+        let metadata = ProviderMetadata {
+            name: "test_provider".to_string(),
+            api_base: None,
+            default_model: "mock-model".to_string(),
+            model_prefix: "tp".to_string(),
+            available: true,
+            missing_config: vec![],
+        };
+        registry.register(provider, metadata);
+
+        // Set default
+        assert!(registry.set_default("test_provider").is_ok());
+        let default = registry.get_default();
+        assert!(default.is_some());
+        assert_eq!(default.unwrap().name(), "test_provider");
+
+        // Setting unregistered default fails
+        assert!(registry.set_default("nonexistent").is_err());
+    }
+
+    #[test]
+    fn test_list_names() {
+        let mut registry = ProviderRegistry::new();
+
+        let provider = Arc::new(MockProvider {
+            name: "my_provider".to_string(),
+        });
+        let metadata = ProviderMetadata {
+            name: "my_provider".to_string(),
+            api_base: None,
+            default_model: "m".to_string(),
+            model_prefix: "mp".to_string(),
+            available: true,
+            missing_config: vec![],
+        };
+        registry.register(provider, metadata);
+
+        let names = registry.list();
+        assert_eq!(names.len(), 1);
+        assert!(names.contains(&"my_provider"));
     }
 }

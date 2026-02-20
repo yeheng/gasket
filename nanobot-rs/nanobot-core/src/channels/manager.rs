@@ -8,15 +8,19 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::base::Channel;
-use crate::bus::events::{ChannelType, OutboundMessage};
+use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
 use crate::bus::MessageBus;
+use crate::trail::{Handler, Middleware, MiddlewareStack};
 
 /// Manager for coordinating multiple channels.
 ///
 /// Owns the `MessageBus` and drives the outbound message routing loop.
+/// Supports inbound and outbound middleware stacks.
 pub struct ChannelManager {
     channels: Arc<RwLock<HashMap<ChannelType, Box<dyn Channel>>>>,
     bus: Arc<MessageBus>,
+    inbound_middleware: MiddlewareStack<InboundMessage, InboundMessage>,
+    outbound_middleware: MiddlewareStack<OutboundMessage, ()>,
 }
 
 impl ChannelManager {
@@ -25,7 +29,25 @@ impl ChannelManager {
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             bus,
+            inbound_middleware: MiddlewareStack::new(),
+            outbound_middleware: MiddlewareStack::new(),
         }
+    }
+
+    /// Add an inbound middleware (applied to messages received from channels).
+    pub fn add_inbound_middleware(
+        &mut self,
+        mw: Arc<dyn Middleware<InboundMessage, InboundMessage> + Send + Sync>,
+    ) {
+        self.inbound_middleware.push(mw);
+    }
+
+    /// Add an outbound middleware (applied to messages sent to channels).
+    pub fn add_outbound_middleware(
+        &mut self,
+        mw: Arc<dyn Middleware<OutboundMessage, ()> + Send + Sync>,
+    ) {
+        self.outbound_middleware.push(mw);
     }
 
     /// Register a channel
@@ -60,11 +82,24 @@ impl ChannelManager {
         Ok(())
     }
 
-    /// Send a message through a specific channel
+    /// Process an inbound message through the middleware stack, then publish to the bus.
+    pub async fn process_inbound(&self, msg: InboundMessage) -> Result<()> {
+        let handler = InboundPassthroughHandler;
+        let processed = self.inbound_middleware.execute(msg, &handler).await?;
+        self.bus.publish_inbound(processed).await;
+        Ok(())
+    }
+
+    /// Send a message through a specific channel (with outbound middleware).
     pub async fn send(&self, msg: OutboundMessage) -> Result<()> {
         let channels = self.channels.read().await;
         if let Some(channel) = channels.get(&msg.channel) {
-            channel.send(msg).await?;
+            let handler = OutboundChannelHandler {
+                channel: channel.as_ref(),
+            };
+            self.outbound_middleware
+                .execute(msg, &handler)
+                .await?;
         } else {
             warn!(
                 "No channel registered for type {:?}, dropping outbound message to {}",
@@ -96,5 +131,29 @@ impl ChannelManager {
             }
             info!("Outbound router exited");
         })
+    }
+}
+
+// ── Internal handlers ───────────────────────────────────
+
+/// Handler that passes inbound messages through unchanged.
+struct InboundPassthroughHandler;
+
+#[async_trait::async_trait]
+impl Handler<InboundMessage, InboundMessage> for InboundPassthroughHandler {
+    async fn handle(&self, request: InboundMessage) -> Result<InboundMessage> {
+        Ok(request)
+    }
+}
+
+/// Handler that sends outbound messages to the actual channel.
+struct OutboundChannelHandler<'a> {
+    channel: &'a dyn Channel,
+}
+
+#[async_trait::async_trait]
+impl<'a> Handler<OutboundMessage, ()> for OutboundChannelHandler<'a> {
+    async fn handle(&self, request: OutboundMessage) -> Result<()> {
+        self.channel.send(request).await
     }
 }

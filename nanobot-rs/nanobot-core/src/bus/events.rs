@@ -60,6 +60,10 @@ pub struct InboundMessage {
     /// Timestamp
     #[serde(default = "Utc::now")]
     pub timestamp: DateTime<Utc>,
+
+    /// Trail trace ID for end-to-end request tracking.
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 impl InboundMessage {
@@ -84,6 +88,10 @@ pub struct OutboundMessage {
     /// Additional metadata
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+
+    /// Trail trace ID for end-to-end request tracking.
+    #[serde(default)]
+    pub trace_id: Option<String>,
 }
 
 /// Media attachment

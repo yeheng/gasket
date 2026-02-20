@@ -65,6 +65,7 @@ impl TelegramChannel {
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
+                            trace_id: None,
                         };
 
                         bus.publish_inbound(inbound).await;

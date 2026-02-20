@@ -75,6 +75,7 @@ impl Tool for MessageTool {
             chat_id: params.chat_id.clone(),
             content: params.content.clone(),
             metadata: Default::default(),
+            trace_id: None,
         };
 
         // Send via message bus

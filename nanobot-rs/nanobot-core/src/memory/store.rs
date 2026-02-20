@@ -1,0 +1,333 @@
+//! Memory store trait and implementations
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use tracing::debug;
+
+/// A single memory entry.
+#[derive(Debug, Clone)]
+pub struct MemoryEntry {
+    /// The storage key.
+    pub key: String,
+
+    /// The stored value.
+    pub value: String,
+
+    /// When this entry was last updated.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Structured query for memory operations.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryQuery {
+    /// Filter by key prefix.
+    pub prefix: Option<String>,
+
+    /// Maximum number of results.
+    pub limit: Option<usize>,
+}
+
+/// Abstract storage interface for long-term memory.
+///
+/// Implementations must be safe to share across async tasks.
+#[async_trait]
+pub trait MemoryStore: Send + Sync {
+    /// Read a value by key.
+    async fn read(&self, key: &str) -> anyhow::Result<Option<String>>;
+
+    /// Write a value by key.
+    async fn write(&self, key: &str, value: &str) -> anyhow::Result<()>;
+
+    /// Delete a value by key.
+    async fn delete(&self, key: &str) -> anyhow::Result<bool>;
+
+    /// Append to an existing value (useful for history/logs).
+    async fn append(&self, key: &str, value: &str) -> anyhow::Result<()>;
+
+    /// Query entries matching a filter.
+    async fn query(&self, query: MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>>;
+}
+
+// ──────────────────────────────────────────────
+//  FileMemoryStore — file-based implementation
+// ──────────────────────────────────────────────
+
+/// File-based memory store that persists data under a workspace directory.
+///
+/// Compatible with the original `agent::memory::MemoryStore` file layout
+/// (`memory/MEMORY.md`, `memory/HISTORY.md`).
+pub struct FileMemoryStore {
+    memory_dir: PathBuf,
+}
+
+impl FileMemoryStore {
+    /// Create a new file-based memory store.
+    pub fn new(workspace: PathBuf) -> Self {
+        let memory_dir = workspace.join("memory");
+        let _ = std::fs::create_dir_all(&memory_dir);
+        Self { memory_dir }
+    }
+
+    fn key_to_path(&self, key: &str) -> PathBuf {
+        // Use the key directly as filename (sanitised)
+        let safe_key = key.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        self.memory_dir.join(safe_key)
+    }
+}
+
+#[async_trait]
+impl MemoryStore for FileMemoryStore {
+    async fn read(&self, key: &str) -> anyhow::Result<Option<String>> {
+        let path = self.key_to_path(key);
+        if path.exists() {
+            Ok(Some(std::fs::read_to_string(path)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn write(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let path = self.key_to_path(key);
+        std::fs::write(path, value)?;
+        debug!("Wrote memory key: {}", key);
+        Ok(())
+    }
+
+    async fn delete(&self, key: &str) -> anyhow::Result<bool> {
+        let path = self.key_to_path(key);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn append(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let path = self.key_to_path(key);
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?
+            .write_all(value.as_bytes())?;
+        debug!("Appended to memory key: {}", key);
+        Ok(())
+    }
+
+    async fn query(&self, query: MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
+        let mut entries = Vec::new();
+        if let Ok(dir) = std::fs::read_dir(&self.memory_dir) {
+            for entry in dir.flatten() {
+                let filename = entry.file_name().to_string_lossy().to_string();
+                if let Some(prefix) = &query.prefix {
+                    if !filename.starts_with(prefix) {
+                        continue;
+                    }
+                }
+                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                    let modified = entry
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| DateTime::<Utc>::from(t))
+                        .unwrap_or_else(Utc::now);
+                    entries.push(MemoryEntry {
+                        key: filename,
+                        value: content,
+                        updated_at: modified,
+                    });
+                }
+                if let Some(limit) = query.limit {
+                    if entries.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(entries)
+    }
+}
+
+// ──────────────────────────────────────────────
+//  InMemoryStore — in-memory (testing)
+// ──────────────────────────────────────────────
+
+/// In-memory store for testing. Not persisted.
+pub struct InMemoryStore {
+    data: Mutex<HashMap<String, String>>,
+}
+
+impl InMemoryStore {
+    pub fn new() -> Self {
+        Self {
+            data: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for InMemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl MemoryStore for InMemoryStore {
+    async fn read(&self, key: &str) -> anyhow::Result<Option<String>> {
+        Ok(self.data.lock().unwrap().get(key).cloned())
+    }
+
+    async fn write(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        self.data
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), value.to_string());
+        Ok(())
+    }
+
+    async fn delete(&self, key: &str) -> anyhow::Result<bool> {
+        Ok(self.data.lock().unwrap().remove(key).is_some())
+    }
+
+    async fn append(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        let mut data = self.data.lock().unwrap();
+        let entry = data.entry(key.to_string()).or_default();
+        entry.push_str(value);
+        Ok(())
+    }
+
+    async fn query(&self, query: MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
+        let data = self.data.lock().unwrap();
+        let mut entries: Vec<MemoryEntry> = data
+            .iter()
+            .filter(|(k, _)| {
+                if let Some(prefix) = &query.prefix {
+                    k.starts_with(prefix)
+                } else {
+                    true
+                }
+            })
+            .map(|(k, v)| MemoryEntry {
+                key: k.clone(),
+                value: v.clone(),
+                updated_at: Utc::now(),
+            })
+            .collect();
+
+        if let Some(limit) = query.limit {
+            entries.truncate(limit);
+        }
+
+        Ok(entries)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_in_memory_store_read_write() {
+        let store = InMemoryStore::new();
+
+        assert_eq!(store.read("key1").await.unwrap(), None);
+
+        store.write("key1", "value1").await.unwrap();
+        assert_eq!(store.read("key1").await.unwrap(), Some("value1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_delete() {
+        let store = InMemoryStore::new();
+
+        store.write("key1", "value1").await.unwrap();
+        assert!(store.delete("key1").await.unwrap());
+        assert!(!store.delete("key1").await.unwrap());
+        assert_eq!(store.read("key1").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_append() {
+        let store = InMemoryStore::new();
+
+        store.append("log", "line1\n").await.unwrap();
+        store.append("log", "line2\n").await.unwrap();
+        assert_eq!(
+            store.read("log").await.unwrap(),
+            Some("line1\nline2\n".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_query() {
+        let store = InMemoryStore::new();
+
+        store.write("mem_a", "1").await.unwrap();
+        store.write("mem_b", "2").await.unwrap();
+        store.write("other", "3").await.unwrap();
+
+        let results = store
+            .query(MemoryQuery {
+                prefix: Some("mem_".to_string()),
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_query_limit() {
+        let store = InMemoryStore::new();
+
+        store.write("a", "1").await.unwrap();
+        store.write("b", "2").await.unwrap();
+        store.write("c", "3").await.unwrap();
+
+        let results = store
+            .query(MemoryQuery {
+                prefix: None,
+                limit: Some(2),
+            })
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_file_memory_store() {
+        let dir = std::env::temp_dir().join(format!("nanobot_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let store = FileMemoryStore::new(dir.clone());
+
+        store.write("MEMORY.md", "# Memory").await.unwrap();
+        assert_eq!(
+            store.read("MEMORY.md").await.unwrap(),
+            Some("# Memory".to_string())
+        );
+
+        store
+            .append("HISTORY.md", "[2025-01-01] event1\n")
+            .await
+            .unwrap();
+        store
+            .append("HISTORY.md", "[2025-01-02] event2\n")
+            .await
+            .unwrap();
+        let history = store.read("HISTORY.md").await.unwrap().unwrap();
+        assert!(history.contains("event1"));
+        assert!(history.contains("event2"));
+
+        assert!(store.delete("MEMORY.md").await.unwrap());
+        assert_eq!(store.read("MEMORY.md").await.unwrap(), None);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

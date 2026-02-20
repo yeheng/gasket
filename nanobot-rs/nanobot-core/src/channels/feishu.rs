@@ -154,6 +154,7 @@ impl FeishuChannel {
                 media: None,
                 metadata,
                 timestamp: chrono::Utc::now(),
+                trace_id: None,
             };
 
             self.bus.publish_inbound(inbound).await;
