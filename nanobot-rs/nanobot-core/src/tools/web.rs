@@ -494,105 +494,23 @@ impl Tool for WebFetchTool {
     }
 }
 
-/// Strip HTML tags and decode common entities.
+/// Strip HTML tags and convert to plain text.
 ///
-/// Removes `<script>` and `<style>` blocks entirely, strips all other tags,
-/// decodes common HTML entities, and collapses whitespace.
+/// Uses the well-tested `html2text` crate for robust HTML parsing,
+/// handling edge cases like malformed tags, entities, and nested structures.
 fn strip_html(html: &str) -> String {
-    let mut result = String::with_capacity(html.len());
-    let chars: Vec<char> = html.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    let mut in_script = false;
-    let mut in_style = false;
-
-    while i < len {
-        // Check for opening <script or <style tags
-        if chars[i] == '<' {
-            // Try to match <script or </script>
-            let rest: String = chars[i..std::cmp::min(i + 10, len)].iter().collect();
-            let rest_lower = rest.to_lowercase();
-
-            if rest_lower.starts_with("<script") {
-                in_script = true;
-                // Skip to closing >
-                while i < len && chars[i] != '>' {
-                    i += 1;
-                }
-                i += 1; // skip '>'
-                continue;
-            }
-
-            if rest_lower.starts_with("</script") {
-                in_script = false;
-                while i < len && chars[i] != '>' {
-                    i += 1;
-                }
-                i += 1;
-                continue;
-            }
-
-            if rest_lower.starts_with("<style") {
-                in_style = true;
-                while i < len && chars[i] != '>' {
-                    i += 1;
-                }
-                i += 1;
-                continue;
-            }
-
-            if rest_lower.starts_with("</style") {
-                in_style = false;
-                while i < len && chars[i] != '>' {
-                    i += 1;
-                }
-                i += 1;
-                continue;
-            }
-
-            // Skip any other tag
-            if !in_script && !in_style {
-                while i < len && chars[i] != '>' {
-                    i += 1;
-                }
-                i += 1;
-                result.push(' ');
-                continue;
-            }
+    match html2text::from_read(html.as_bytes(), 80) {
+        Ok(text) => text
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Err(_) => {
+            // Fallback: simple tag stripping if html2text fails
+            html.split_whitespace().collect::<Vec<_>>().join(" ")
         }
-
-        if in_script || in_style {
-            i += 1;
-            continue;
-        }
-
-        // Decode HTML entities
-        if chars[i] == '&' {
-            let entity_end = chars[i..std::cmp::min(i + 10, len)]
-                .iter()
-                .position(|&c| c == ';');
-            if let Some(end) = entity_end {
-                let entity: String = chars[i..i + end + 1].iter().collect();
-                match entity.as_str() {
-                    "&nbsp;" => result.push(' '),
-                    "&amp;" => result.push('&'),
-                    "&lt;" => result.push('<'),
-                    "&gt;" => result.push('>'),
-                    "&quot;" => result.push('"'),
-                    "&#39;" | "&apos;" => result.push('\''),
-                    _ => result.push_str(&entity),
-                }
-                i += end + 1;
-                continue;
-            }
-        }
-
-        result.push(chars[i]);
-        i += 1;
     }
-
-    // Collapse whitespace
-    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // URL encoding helper

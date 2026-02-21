@@ -32,9 +32,15 @@ url = "2"
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
-# Logging
+# Logging & Tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# OpenTelemetry
+opentelemetry = "0.29"
+opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.29", features = ["trace", "grpc-tonic"] }
+tracing-opentelemetry = "0.30"
 
 # Error handling
 thiserror = "2"
@@ -60,6 +66,14 @@ cron = "0.15"
 
 # UUID
 uuid = { version = "1", features = ["v4"] }
+
+# Email (SMTP)
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "builder", "smtp-transport"] }
+
+# Email (IMAP)
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = "0.26"
+rustls-native-certs = "0.8"
 
 # Internal crates
 nanobot-core = { path = "nanobot-core" }

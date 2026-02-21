@@ -57,12 +57,10 @@ impl DiscordChannel {
         let token = self.config.token.clone();
         let inbound_processor = self.inbound_processor.clone();
         let allow_from = self.config.allow_from.clone();
-        let trail_ctx = self.trail_ctx.clone();
 
         let handler = DiscordHandler {
             inbound_processor,
             allow_from,
-            trail_ctx,
         };
 
         let mut client = Client::builder(&token, intents)
@@ -100,7 +98,6 @@ impl Channel for DiscordChannel {
 struct DiscordHandler {
     inbound_processor: Arc<dyn InboundProcessor>,
     allow_from: Vec<String>,
-    trail_ctx: TrailContext,
 }
 
 #[serenity::async_trait]
@@ -121,13 +118,8 @@ impl EventHandler for DiscordHandler {
 
         debug!("Received message from {}: {}", user_id, msg.content);
 
-        // Create a child context for this message
-        let child_ctx = self.trail_ctx.child(crate::trail::SpanId(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64,
-        ));
+        // Get current tracing context
+        let ctx = crate::trail::TrailContext::current();
 
         let inbound = InboundMessage {
             channel: ChannelType::Discord,
@@ -137,7 +129,7 @@ impl EventHandler for DiscordHandler {
             media: None,
             metadata: None,
             timestamp: chrono::Utc::now(),
-            trace_id: Some(child_ctx.trace_id.to_string()),
+            trace_id: ctx.trace_id(),
         };
 
         if let Err(e) = self.inbound_processor.process(inbound).await {

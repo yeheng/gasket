@@ -1,8 +1,17 @@
 //! Email channel implementation using IMAP and SMTP
+//!
+//! Uses well-tested crates for email operations:
+//! - `lettre` for SMTP (sending emails)
+//! - `async-imap` for IMAP (receiving emails)
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use lettre::{
+    message::{header::ContentType, Mailbox},
+    transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+};
 use tracing::{debug, info, warn};
 
 use super::base::Channel;
@@ -61,17 +70,11 @@ impl EmailChannel {
 
         debug!("Polling IMAP for new emails");
 
-        // Use async-imap for polling
         let messages = self.fetch_unread_emails().await?;
 
         for msg in &messages {
-            // Create a child context for this message
-            let child_ctx = self.trail_ctx.child(crate::trail::SpanId(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64,
-            ));
+            // Get current tracing context
+            let ctx = TrailContext::current();
 
             let inbound = InboundMessage {
                 channel: ChannelType::Email,
@@ -81,7 +84,7 @@ impl EmailChannel {
                 media: None,
                 metadata: None,
                 timestamp: chrono::Utc::now(),
-                trace_id: Some(child_ctx.trace_id.to_string()),
+                trace_id: ctx.trace_id(),
             };
 
             if let Err(e) = self.inbound_processor.process(inbound).await {
@@ -93,127 +96,192 @@ impl EmailChannel {
     }
 
     async fn fetch_unread_emails(&self) -> anyhow::Result<Vec<InboundMessage>> {
-        // Simplified IMAP fetch
-        // In production, use async-imap or imap crate
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use async_imap::Client;
+        use futures_util::StreamExt;
         use tokio::net::TcpStream;
+        use tokio_rustls::{TlsConnector, rustls::{ClientConfig, RootCertStore}};
+        use std::sync::Arc;
 
         let addr = format!("{}:{}", self.config.imap_host, self.config.imap_port);
+        let username = &self.config.imap_username;
+        let password = &self.config.imap_password;
 
-        match TcpStream::connect(&addr).await {
-            Ok(mut stream) => {
-                // Read greeting
-                let mut greeting = vec![0u8; 1024];
-                let _ = stream.read(&mut greeting).await;
+        // Build TLS connector with native roots
+        let mut root_store = RootCertStore::empty();
+        let result = rustls_native_certs::load_native_certs();
+        for cert in result.certs {
+            let _ = root_store.add(cert);
+        }
+        if !result.errors.is_empty() {
+            warn!("Some errors loading native certs: {:?}", result.errors);
+        }
 
-                // Send CAPABILITY
-                stream.write_all(b"A001 CAPABILITY\r\n").await?;
-                let mut response = vec![0u8; 4096];
-                let _ = stream.read(&mut response).await;
+        let config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = TlsConnector::from(Arc::new(config));
 
-                // Send LOGIN
-                let login = format!(
-                    "A002 LOGIN {} {}\r\n",
-                    self.config.imap_username, self.config.imap_password
-                );
-                stream.write_all(login.as_bytes()).await?;
-                let _ = stream.read(&mut response).await;
-
-                // Send SELECT INBOX
-                stream.write_all(b"A003 SELECT INBOX\r\n").await?;
-                let _ = stream.read(&mut response).await;
-
-                // Search for UNSEEN messages
-                stream.write_all(b"A004 SEARCH UNSEEN\r\n").await?;
-                let mut search_response = vec![0u8; 4096];
-                let n = stream.read(&mut search_response).await?;
-
-                // Parse search results (simplified)
-                let _search_str = String::from_utf8_lossy(&search_response[..n]);
-
-                // Logout
-                stream.write_all(b"A005 LOGOUT\r\n").await?;
-
-                // For now, return empty - real implementation would parse emails
-                Ok(vec![])
-            }
+        // Connect via TCP
+        let tcp_stream = match TcpStream::connect(&addr).await {
+            Ok(s) => s,
             Err(e) => {
-                warn!("Failed to connect to IMAP: {}", e);
-                Ok(vec![])
+                warn!("Failed to connect to IMAP server: {}", e);
+                return Ok(vec![]);
             }
+        };
+
+        // Upgrade to TLS
+        let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(&*self.config.imap_host)
+            .map_err(|e| anyhow::anyhow!("Invalid server name: {}", e))?;
+        let tls_stream = match connector.connect(server_name.to_owned(), tcp_stream).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("TLS handshake failed: {}", e);
+                return Ok(vec![]);
+            }
+        };
+
+        // Create IMAP client
+        let client = Client::new(tls_stream);
+
+        // Authenticate
+        let mut session = match client.login(username, password).await {
+            Ok(s) => s,
+            Err((e, _)) => {
+                warn!("IMAP login failed: {}", e);
+                return Ok(vec![]);
+            }
+        };
+
+        debug!("Connected to IMAP server");
+
+        // Select inbox
+        match session.select("INBOX").await {
+            Ok(_) => debug!("Selected INBOX"),
+            Err(e) => {
+                warn!("Failed to select INBOX: {}", e);
+                let _ = session.logout().await;
+                return Ok(vec![]);
+            }
+        }
+
+        // Search for unseen messages
+        let unseen = match session.search("UNSEEN").await {
+            Ok(ids) => ids,
+            Err(e) => {
+                warn!("Failed to search for unseen messages: {}", e);
+                let _ = session.logout().await;
+                return Ok(vec![]);
+            }
+        };
+
+        let mut messages = Vec::new();
+
+        for seq in unseen.iter() {
+            // Fetch the message
+            let fetch_result = session
+                .fetch(seq.to_string(), "RFC822")
+                .await;
+
+            if let Ok(mut fetches) = fetch_result {
+                while let Some(fetch) = fetches.next().await {
+                    if let Some(fetch) = fetch.ok() {
+                        if let Some(email_data) = self.parse_fetch(&fetch) {
+                            messages.push(email_data);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Logout
+        let _ = session.logout().await;
+
+        info!("Fetched {} unread emails", messages.len());
+        Ok(messages)
+    }
+
+    fn parse_fetch(&self, fetch: &async_imap::types::Fetch) -> Option<InboundMessage> {
+        let body = fetch.body()?;
+        let body_str = String::from_utf8_lossy(body);
+
+        // Simple email parsing (extract From and Subject)
+        let sender_id = self.extract_header(&body_str, "From")
+            .unwrap_or_else(|| "unknown@unknown".to_string());
+
+        let subject = self.extract_header(&body_str, "Subject")
+            .unwrap_or_else(|| "(no subject)".to_string());
+
+        // Extract plain text body (very basic)
+        let content = self.extract_body(&body_str);
+
+        Some(InboundMessage {
+            channel: ChannelType::Email,
+            sender_id: sender_id.clone(),
+            chat_id: format!("email:{}", sender_id),
+            content: format!("Subject: {}\n\n{}", subject, content),
+            media: None,
+            metadata: None,
+            timestamp: chrono::Utc::now(),
+            trace_id: None,
+        })
+    }
+
+    fn extract_header(&self, email: &str, header: &str) -> Option<String> {
+        for line in email.lines() {
+            if line.starts_with(header) {
+                return Some(line.trim_start_matches(&format!("{}:", header)).trim().to_string());
+            }
+            if line.is_empty() {
+                break;
+            }
+        }
+        None
+    }
+
+    fn extract_body(&self, email: &str) -> String {
+        // Find empty line that separates headers from body
+        if let Some(pos) = email.find("\r\n\r\n") {
+            email[pos + 4..].to_string()
+        } else if let Some(pos) = email.find("\n\n") {
+            email[pos + 2..].to_string()
+        } else {
+            String::new()
         }
     }
 
-    /// Send an email
+    /// Send an email using lettre
     pub async fn send_email(&self, to: &str, subject: &str, body: &str) -> anyhow::Result<()> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpStream;
+        let from: Mailbox = self.config.from_address.parse()?;
+        let to_mailbox: Mailbox = to.parse()?;
 
-        let addr = format!("{}:{}", self.config.smtp_host, self.config.smtp_port);
+        let email = Message::builder()
+            .from(from)
+            .to(to_mailbox)
+            .subject(subject)
+            .header(ContentType::TEXT_PLAIN)
+            .body(body.to_string())?;
 
-        let mut stream = TcpStream::connect(&addr).await?;
-
-        // Read greeting
-        let mut greeting = vec![0u8; 1024];
-        let _ = stream.read(&mut greeting).await;
-
-        // Send EHLO
-        stream
-            .write_all(format!("EHLO {}\r\n", self.config.smtp_host).as_bytes())
-            .await?;
-        let _ = stream.read(&mut greeting).await;
-
-        // Send STARTTLS (if port 587)
-        if self.config.smtp_port == 587 {
-            stream.write_all(b"STARTTLS\r\n").await?;
-            let _ = stream.read(&mut greeting).await;
-        }
-
-        // Send AUTH LOGIN (simplified)
-        stream.write_all(b"AUTH LOGIN\r\n").await?;
-        let _ = stream.read(&mut greeting).await;
-
-        // Send username (base64)
-        let username_b64 = base64_encode(&self.config.smtp_username);
-        stream
-            .write_all(format!("{}\r\n", username_b64).as_bytes())
-            .await?;
-        let _ = stream.read(&mut greeting).await;
-
-        // Send password (base64)
-        let password_b64 = base64_encode(&self.config.smtp_password);
-        stream
-            .write_all(format!("{}\r\n", password_b64).as_bytes())
-            .await?;
-        let _ = stream.read(&mut greeting).await;
-
-        // Send MAIL FROM
-        stream
-            .write_all(format!("MAIL FROM:<{}>\r\n", self.config.from_address).as_bytes())
-            .await?;
-        let _ = stream.read(&mut greeting).await;
-
-        // Send RCPT TO
-        stream
-            .write_all(format!("RCPT TO:<{}>\r\n", to).as_bytes())
-            .await?;
-        let _ = stream.read(&mut greeting).await;
-
-        // Send DATA
-        stream.write_all(b"DATA\r\n").await?;
-        let _ = stream.read(&mut greeting).await;
-
-        // Send email content
-        let email = format!(
-            "From: {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}\r\n.\r\n",
-            self.config.from_address, to, subject, body
+        let creds = Credentials::new(
+            self.config.smtp_username.clone(),
+            self.config.smtp_password.clone(),
         );
-        stream.write_all(email.as_bytes()).await?;
-        let _ = stream.read(&mut greeting).await;
 
-        // Send QUIT
-        stream.write_all(b"QUIT\r\n").await?;
+        // Build TLS transport
+        let mailer: AsyncSmtpTransport<Tokio1Executor> =
+            if self.config.smtp_port == 465 {
+                AsyncSmtpTransport::<Tokio1Executor>::relay(&self.config.smtp_host)?
+                    .credentials(creds)
+                    .build()
+            } else {
+                // Port 587 - use STARTTLS
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.config.smtp_host)?
+                    .credentials(creds)
+                    .port(self.config.smtp_port)
+                    .build()
+            };
 
+        mailer.send(email).await?;
         info!("Email sent to {}", to);
         Ok(())
     }
@@ -254,35 +322,4 @@ impl Channel for EmailChannel {
         let to = msg.chat_id.trim_start_matches("email:");
         self.send_email(to, "Re: Your message", &msg.content).await
     }
-}
-
-/// Simple base64 encoding (without external crate)
-fn base64_encode(input: &str) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let bytes = input.as_bytes();
-    let mut result = String::new();
-
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
-
-        result.push(ALPHABET[b0 >> 2] as char);
-        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
-
-        if chunk.len() > 1 {
-            result.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(ALPHABET[b2 & 0x3f] as char);
-        } else {
-            result.push('=');
-        }
-    }
-
-    result
 }

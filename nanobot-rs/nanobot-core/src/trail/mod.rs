@@ -1,21 +1,21 @@
-//! Trail system for execution tracing and observability
+//! Trail context for execution tracing using OpenTelemetry
 //!
-//! The Trail system provides end-to-end execution tracing inspired by
-//! OpenTelemetry's span/event model. It supports:
-//! - Hierarchical span tracking
-//! - Async context propagation via `TrailContext`
-//! - Pluggable middleware infrastructure
-//! - Built-in implementations: `DefaultTrail` (in-memory) and `NoopTrail`
+//! This module provides a lightweight context propagation system built on
+//! OpenTelemetry. The `TrailContext` wraps OpenTelemetry's `Context` and
+//! provides a simple interface for distributed tracing.
+//!
+//! For span creation, use the `tracing` crate with `#[instrument]`:
+//! ```ignore
+//! use tracing::{info_span, instrument};
+//!
+//! #[instrument(skip_all)]
+//! async fn my_function(ctx: &TrailContext) {
+//!     // Span is automatically created and linked to parent
+//! }
+//! ```
 
 mod context;
 mod middleware;
-mod span;
-mod types;
 
 pub use context::TrailContext;
 pub use middleware::{Handler, Middleware, MiddlewareStack, Next};
-pub use span::TrailSpan;
-pub use types::{DefaultTrail, NoopTrail, SpanId, SpanRecord, Trail, TraceId, Value};
-
-#[cfg(test)]
-mod tests;

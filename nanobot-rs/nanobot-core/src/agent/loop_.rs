@@ -19,9 +19,7 @@ use crate::tools::{
     ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 use crate::tools::middleware::{ToolInvocation, ToolLoggingMiddleware};
-use crate::trail::{DefaultTrail, Middleware, MiddlewareStack, Trail, TrailSpan};
-
-use std::sync::Arc as TrailArc;
+use crate::trail::{Middleware, MiddlewareStack, TrailContext};
 
 /// Agent loop configuration
 pub struct AgentConfig {
@@ -327,27 +325,14 @@ impl AgentLoop {
             &self.tool_middleware,
         );
 
-        // Create a trail for this agent run
-        let trail: TrailArc<dyn Trail> = TrailArc::new(DefaultTrail::new());
-        let _agent_span = TrailSpan::new(
-            trail.clone(),
-            "agent_loop",
-            vec![("model".into(), self.config.model.clone().into())],
-        );
-        let trail_ctx = trail.current_context();
+        // Create a trail context for this agent run
+        let trail_ctx = TrailContext::new();
 
         let model_name = Arc::new(self.config.model.clone());
 
         while iteration < self.config.max_iterations {
             iteration += 1;
             debug!("Agent loop iteration {}", iteration);
-
-            // Trail span for this iteration
-            let _iter_span = TrailSpan::new(
-                trail.clone(),
-                "iteration",
-                vec![("iteration".into(), (iteration as i64).into())],
-            );
 
             let request = ChatRequest {
                 model: model_name.to_string(),

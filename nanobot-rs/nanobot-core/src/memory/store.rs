@@ -6,6 +6,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
 
 /// A single memory entry.
@@ -60,8 +61,13 @@ pub trait MemoryStore: Send + Sync {
 ///
 /// Compatible with the original `agent::memory::MemoryStore` file layout
 /// (`memory/MEMORY.md`, `memory/HISTORY.md`).
+///
+/// Uses an async mutex to serialize write operations, preventing data
+/// corruption from concurrent writes.
 pub struct FileMemoryStore {
     memory_dir: PathBuf,
+    /// Lock for write operations to prevent concurrent file corruption
+    write_lock: AsyncMutex<()>,
 }
 
 impl FileMemoryStore {
@@ -69,7 +75,10 @@ impl FileMemoryStore {
     pub fn new(workspace: PathBuf) -> Self {
         let memory_dir = workspace.join("memory");
         let _ = std::fs::create_dir_all(&memory_dir);
-        Self { memory_dir }
+        Self {
+            memory_dir,
+            write_lock: AsyncMutex::new(()),
+        }
     }
 
     fn key_to_path(&self, key: &str) -> PathBuf {
@@ -83,73 +92,116 @@ impl FileMemoryStore {
 impl MemoryStore for FileMemoryStore {
     async fn read(&self, key: &str) -> anyhow::Result<Option<String>> {
         let path = self.key_to_path(key);
-        if path.exists() {
-            Ok(Some(std::fs::read_to_string(path)?))
-        } else {
-            Ok(None)
-        }
+
+        // Use spawn_blocking to avoid blocking the async runtime
+        let content = tokio::task::spawn_blocking(move || {
+            if path.exists() {
+                std::fs::read_to_string(path).map(Some)
+            } else {
+                Ok(None)
+            }
+        })
+        .await??;
+
+        Ok(content)
     }
 
     async fn write(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        // Acquire write lock to serialize writes
+        let _guard = self.write_lock.lock().await;
+
         let path = self.key_to_path(key);
-        std::fs::write(path, value)?;
-        debug!("Wrote memory key: {}", key);
+        let key_owned = key.to_string();
+        let value_owned = value.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(&path, value_owned)?;
+            debug!("Wrote memory key: {}", key_owned);
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+
         Ok(())
     }
 
     async fn delete(&self, key: &str) -> anyhow::Result<bool> {
+        // Acquire write lock to serialize deletes
+        let _guard = self.write_lock.lock().await;
+
         let path = self.key_to_path(key);
-        if path.exists() {
-            std::fs::remove_file(path)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+
+        let deleted = tokio::task::spawn_blocking(move || {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+                Ok::<bool, anyhow::Error>(true)
+            } else {
+                Ok(false)
+            }
+        })
+        .await??;
+
+        Ok(deleted)
     }
 
     async fn append(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        // Acquire write lock to serialize appends
+        let _guard = self.write_lock.lock().await;
+
         let path = self.key_to_path(key);
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?
-            .write_all(value.as_bytes())?;
-        debug!("Appended to memory key: {}", key);
+        let key_owned = key.to_string();
+        let value_owned = value.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?
+                .write_all(value_owned.as_bytes())?;
+            debug!("Appended to memory key: {}", key_owned);
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+
         Ok(())
     }
 
     async fn query(&self, query: MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
-        let mut entries = Vec::new();
-        if let Ok(dir) = std::fs::read_dir(&self.memory_dir) {
-            for entry in dir.flatten() {
-                let filename = entry.file_name().to_string_lossy().to_string();
-                if let Some(prefix) = &query.prefix {
-                    if !filename.starts_with(prefix) {
-                        continue;
+        let memory_dir = self.memory_dir.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut entries = Vec::new();
+            if let Ok(dir) = std::fs::read_dir(&memory_dir) {
+                for entry in dir.flatten() {
+                    let filename = entry.file_name().to_string_lossy().to_string();
+                    if let Some(prefix) = &query.prefix {
+                        if !filename.starts_with(prefix) {
+                            continue;
+                        }
                     }
-                }
-                if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                    let modified = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .map(|t| DateTime::<Utc>::from(t))
-                        .unwrap_or_else(Utc::now);
-                    entries.push(MemoryEntry {
-                        key: filename,
-                        value: content,
-                        updated_at: modified,
-                    });
-                }
-                if let Some(limit) = query.limit {
-                    if entries.len() >= limit {
-                        break;
+                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                        let modified = entry
+                            .metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .map(|t| DateTime::<Utc>::from(t))
+                            .unwrap_or_else(Utc::now);
+                        entries.push(MemoryEntry {
+                            key: filename,
+                            value: content,
+                            updated_at: modified,
+                        });
+                    }
+                    if let Some(limit) = query.limit {
+                        if entries.len() >= limit {
+                            break;
+                        }
                     }
                 }
             }
-        }
-        Ok(entries)
+            Ok(entries)
+        })
+        .await?
     }
 }
 

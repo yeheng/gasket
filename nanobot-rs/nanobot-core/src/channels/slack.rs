@@ -144,7 +144,7 @@ impl SlackChannel {
         event: &serde_json::Value,
         write: &mut W,
         inbound_processor: &Arc<dyn InboundProcessor>,
-        trail_ctx: &TrailContext,
+        _trail_ctx: &TrailContext,
         group_policy: &Option<String>,
     ) where
         W: SinkExt<tokio_tungstenite::tungstenite::Message> + Unpin,
@@ -198,13 +198,8 @@ impl SlackChannel {
 
                             debug!("Received Slack message from {}: {}", user, text);
 
-                            // Create a child context for this message
-                            let child_ctx = trail_ctx.child(crate::trail::SpanId(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_nanos() as u64,
-                            ));
+                            // Get current tracing context
+                            let ctx = crate::trail::TrailContext::current();
 
                             let inbound = InboundMessage {
                                 channel: ChannelType::Slack,
@@ -217,7 +212,7 @@ impl SlackChannel {
                                     "ts": event_data["ts"]
                                 })),
                                 timestamp: chrono::Utc::now(),
-                                trace_id: Some(child_ctx.trace_id.to_string()),
+                                trace_id: ctx.trace_id(),
                             };
 
                             if let Err(e) = inbound_processor.process(inbound).await {

@@ -213,6 +213,8 @@ impl Default for SubagentConfig {
 ///
 /// Each spawned task creates an independent `AgentLoop` that shares the same
 /// LLM provider but operates in its own session.
+///
+/// Task state is persisted to disk for recovery after restarts.
 pub struct SubagentManager {
     /// Active tasks
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
@@ -228,17 +230,101 @@ pub struct SubagentManager {
 
     /// Configuration
     config: SubagentConfig,
+
+    /// Path to the tasks persistence file
+    tasks_file: PathBuf,
 }
 
 impl SubagentManager {
     /// Create a new subagent manager
     pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: SubagentConfig) -> Self {
+        let tasks_file = workspace.join("data").join("tasks.json");
+
+        // Load existing tasks from disk
+        let tasks = Self::load_tasks(&tasks_file);
+
         Self {
-            tasks: Arc::new(RwLock::new(HashMap::new())),
+            tasks: Arc::new(RwLock::new(tasks)),
             handles: Arc::new(RwLock::new(HashMap::new())),
             provider,
             workspace,
             config,
+            tasks_file,
+        }
+    }
+
+    /// Load tasks from the persistence file
+    fn load_tasks(path: &PathBuf) -> HashMap<String, SubagentTask> {
+        if !path.exists() {
+            return HashMap::new();
+        }
+
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                match serde_json::from_str::<Vec<SubagentTask>>(&content) {
+                    Ok(tasks) => {
+                        let map: HashMap<String, SubagentTask> = tasks
+                            .into_iter()
+                            .map(|t| (t.id.clone(), t))
+                            .collect();
+                        info!("Loaded {} persisted tasks from {:?}", map.len(), path);
+                        map
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse tasks file: {}, starting fresh", e);
+                        HashMap::new()
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to read tasks file: {}, starting fresh", e);
+                HashMap::new()
+            }
+        }
+    }
+
+    /// Save tasks to the persistence file
+    async fn save_tasks(&self) {
+        let tasks: Vec<SubagentTask> = self.tasks.read().await.values().cloned().collect();
+
+        // Ensure parent directory exists
+        if let Some(parent) = self.tasks_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        match serde_json::to_string_pretty(&tasks) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(&self.tasks_file, content) {
+                    warn!("Failed to save tasks file: {}", e);
+                } else {
+                    debug!("Saved {} tasks to {:?}", tasks.len(), self.tasks_file);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to serialize tasks: {}", e);
+            }
+        }
+    }
+
+    /// Recover tasks that were interrupted (mark running tasks as failed)
+    pub async fn recover_interrupted_tasks(&self) {
+        let mut tasks = self.tasks.write().await;
+        let mut recovered = 0;
+
+        for task in tasks.values_mut() {
+            if task.status == TaskStatus::Running || task.status == TaskStatus::Pending {
+                task.status = TaskStatus::Failed;
+                task.error = Some("Task interrupted by process restart".to_string());
+                task.completed_at = Some(Utc::now());
+                recovered += 1;
+            }
+        }
+
+        drop(tasks); // Release lock before saving
+
+        if recovered > 0 {
+            info!("Recovered {} interrupted tasks", recovered);
+            self.save_tasks().await;
         }
     }
 
@@ -266,13 +352,28 @@ impl SubagentManager {
         // Store as pending
         self.tasks.write().await.insert(task_id.clone(), task);
 
+        // Save initial state
+        self.save_tasks().await;
+
         // Spawn the actual execution
         let tasks_ref = self.tasks.clone();
         let provider = self.provider.clone();
         let workspace = self.workspace.clone();
         let tid = task_id.clone();
+        let tasks_file = self.tasks_file.clone();
 
         let handle = tokio::spawn(async move {
+            // Helper function to save tasks
+            let save_to_disk = |tasks: &HashMap<String, SubagentTask>, path: &PathBuf| {
+                let tasks_vec: Vec<SubagentTask> = tasks.values().cloned().collect();
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Ok(content) = serde_json::to_string_pretty(&tasks_vec) {
+                    let _ = std::fs::write(path, content);
+                }
+            };
+
             // Mark as running
             {
                 let mut tasks = tasks_ref.write().await;
@@ -280,6 +381,7 @@ impl SubagentManager {
                     t.status = TaskStatus::Running;
                     t.started_at = Some(Utc::now());
                 }
+                save_to_disk(&tasks, &tasks_file);
             }
 
             info!(
@@ -302,6 +404,7 @@ impl SubagentManager {
                         t.status = TaskStatus::Failed;
                         t.error = Some(format!("Failed to initialise subagent: {}", e));
                     }
+                    save_to_disk(&tasks, &tasks_file);
                     return;
                 }
             };
@@ -312,29 +415,32 @@ impl SubagentManager {
                 tokio::time::timeout(timeout, agent.process_direct(&prompt, &session_key)).await;
 
             // Update task state
-            let mut tasks = tasks_ref.write().await;
-            if let Some(t) = tasks.get_mut(&tid) {
-                match result {
-                    Ok(Ok(response)) => {
-                        t.status = TaskStatus::Completed;
-                        t.result = Some(response);
-                        t.completed_at = Some(Utc::now());
-                        t.progress = 100;
-                        info!("Subagent task {} completed", tid);
-                    }
-                    Ok(Err(e)) => {
-                        t.status = TaskStatus::Failed;
-                        t.error = Some(e.to_string());
-                        t.completed_at = Some(Utc::now());
-                        warn!("Subagent task {} failed: {}", tid, e);
-                    }
-                    Err(_) => {
-                        t.status = TaskStatus::Timeout;
-                        t.error = Some("Task timed out".to_string());
-                        t.completed_at = Some(Utc::now());
-                        warn!("Subagent task {} timed out", tid);
+            {
+                let mut tasks = tasks_ref.write().await;
+                if let Some(t) = tasks.get_mut(&tid) {
+                    match result {
+                        Ok(Ok(response)) => {
+                            t.status = TaskStatus::Completed;
+                            t.result = Some(response);
+                            t.completed_at = Some(Utc::now());
+                            t.progress = 100;
+                            info!("Subagent task {} completed", tid);
+                        }
+                        Ok(Err(e)) => {
+                            t.status = TaskStatus::Failed;
+                            t.error = Some(e.to_string());
+                            t.completed_at = Some(Utc::now());
+                            warn!("Subagent task {} failed: {}", tid, e);
+                        }
+                        Err(_) => {
+                            t.status = TaskStatus::Timeout;
+                            t.error = Some("Task timed out".to_string());
+                            t.completed_at = Some(Utc::now());
+                            warn!("Subagent task {} timed out", tid);
+                        }
                     }
                 }
+                save_to_disk(&tasks, &tasks_file);
             }
         });
 
@@ -376,6 +482,16 @@ impl SubagentManager {
                 task.status = TaskStatus::Cancelled;
                 task.completed_at = Some(Utc::now());
                 info!("Cancelled task: {}", task_id);
+
+                // Save state
+                let tasks_vec: Vec<SubagentTask> = tasks.values().cloned().collect();
+                drop(tasks); // Release lock before I/O
+                if let Some(parent) = self.tasks_file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Ok(content) = serde_json::to_string_pretty(&tasks_vec) {
+                    let _ = std::fs::write(&self.tasks_file, content);
+                }
                 return true;
             }
         }

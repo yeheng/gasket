@@ -1,41 +1,78 @@
-//! Trail context for async propagation
+//! Trail context for async propagation using OpenTelemetry
 
 use std::collections::HashMap;
 
-use super::types::{SpanId, TraceId};
+use opentelemetry::Context;
 
 /// Trail context for propagating trace information across async boundaries.
 ///
-/// Contains the current trace and span IDs plus arbitrary baggage items
-/// that travel with the request through the system.
+/// This wraps OpenTelemetry's `Context` and provides a simple interface
+/// for distributed tracing. The context can be passed to LLM providers
+/// and other services for end-to-end tracing.
 #[derive(Debug, Clone)]
 pub struct TrailContext {
-    /// The trace this context belongs to.
-    pub trace_id: TraceId,
-
-    /// The current span within the trace.
-    pub span_id: SpanId,
-
-    /// Arbitrary key-value pairs propagated with the context.
-    pub baggage: HashMap<String, String>,
+    /// The OpenTelemetry context containing span information
+    context: Context,
+    /// Arbitrary key-value pairs propagated with the context
+    baggage: HashMap<String, String>,
 }
 
 impl TrailContext {
-    /// Create a new root context with a given trace ID.
-    pub fn new(trace_id: TraceId) -> Self {
+    /// Create a new context from the current OpenTelemetry span.
+    pub fn current() -> Self {
         Self {
-            trace_id,
-            span_id: SpanId(0),
+            context: Context::current(),
             baggage: HashMap::new(),
         }
     }
 
-    /// Create a child context from this one, with a new span ID.
-    pub fn child(&self, span_id: SpanId) -> Self {
+    /// Create a new root context (no active span).
+    pub fn new() -> Self {
         Self {
-            trace_id: self.trace_id,
-            span_id,
-            baggage: self.baggage.clone(),
+            context: Context::new(),
+            baggage: HashMap::new(),
+        }
+    }
+
+    /// Create a context from an existing OpenTelemetry Context.
+    pub fn from_context(context: Context) -> Self {
+        Self {
+            context,
+            baggage: HashMap::new(),
+        }
+    }
+
+    /// Get the underlying OpenTelemetry Context.
+    pub fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Get a clone of the underlying OpenTelemetry Context.
+    pub fn to_context(&self) -> Context {
+        self.context.clone()
+    }
+
+    /// Get the trace ID as a string, if available.
+    pub fn trace_id(&self) -> Option<String> {
+        use opentelemetry::trace::TraceContextExt;
+        let span = self.context.span();
+        let span_ctx = span.span_context();
+        if span_ctx.is_valid() {
+            Some(span_ctx.trace_id().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Get the span ID as a string, if available.
+    pub fn span_id(&self) -> Option<String> {
+        use opentelemetry::trace::TraceContextExt;
+        let span = self.context.span();
+        let span_ctx = span.span_context();
+        if span_ctx.is_valid() {
+            Some(span_ctx.span_id().to_string())
+        } else {
+            None
         }
     }
 
@@ -49,18 +86,15 @@ impl TrailContext {
         self.baggage.get(key).map(|s| s.as_str())
     }
 
-    /// Check if this is a valid (non-zero) context.
+    /// Check if this context has an active span.
     pub fn is_valid(&self) -> bool {
-        self.trace_id.0 != 0
+        use opentelemetry::trace::TraceContextExt;
+        self.context.span().span_context().is_valid()
     }
 }
 
 impl Default for TrailContext {
     fn default() -> Self {
-        Self {
-            trace_id: TraceId(0),
-            span_id: SpanId(0),
-            baggage: HashMap::new(),
-        }
+        Self::current()
     }
 }

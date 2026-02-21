@@ -204,13 +204,8 @@ impl DingTalkChannel {
 
         let metadata = serde_json::to_value(&message).ok();
 
-        // Create a child context for this message
-        let child_ctx = self.trail_ctx.child(crate::trail::SpanId(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64,
-        ));
+        // Get current tracing context
+        let ctx = crate::trail::TrailContext::current();
 
         let inbound = InboundMessage {
             channel: ChannelType::DingTalk,
@@ -220,7 +215,7 @@ impl DingTalkChannel {
             media: None,
             metadata,
             timestamp: chrono::Utc::now(),
-            trace_id: Some(child_ctx.trace_id.to_string()),
+            trace_id: ctx.trace_id(),
         };
 
         self.inbound_processor.process(inbound).await

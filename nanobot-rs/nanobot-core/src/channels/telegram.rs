@@ -53,13 +53,11 @@ impl TelegramChannel {
         let bot = Bot::new(&self.config.token);
         let inbound_processor = self.inbound_processor.clone();
         let allow_from = self.config.allow_from.clone();
-        let trail_ctx = self.trail_ctx.clone();
 
         // Use Dispatcher for proper handling
         let handler = Update::filter_message().branch(dptree::endpoint(move |msg: Message| {
             let inbound_processor = inbound_processor.clone();
             let allow_from = allow_from.clone();
-            let trail_ctx = trail_ctx.clone();
             async move {
                 if let Some(ref user) = msg.from {
                     let user_id = user.id.0;
@@ -76,13 +74,8 @@ impl TelegramChannel {
 
                         debug!("Received message from {}: {}", user_id, text);
 
-                        // Create a child context for this message
-                        let child_ctx = trail_ctx.child(crate::trail::SpanId(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_nanos() as u64,
-                        ));
+                        // Get current tracing context
+                        let ctx = crate::trail::TrailContext::current();
 
                         // Process through middleware
                         let inbound = InboundMessage {
@@ -93,7 +86,7 @@ impl TelegramChannel {
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
-                            trace_id: Some(child_ctx.trace_id.to_string()),
+                            trace_id: ctx.trace_id(),
                         };
 
                         if let Err(e) = inbound_processor.process(inbound).await {

@@ -11,7 +11,7 @@ default = []
 telegram = ["teloxide"]
 discord = ["serenity"]
 slack = ["tokio-tungstenite"]
-email = []
+email = ["lettre", "async-imap", "tokio-rustls", "rustls-native-certs"]
 dingtalk = ["base64", "sha2"]
 feishu = []
 all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu"]
@@ -33,8 +33,10 @@ reqwest.workspace = true
 url.workspace = true
 urlencoding = "2.1"
 
-# Logging
+# Logging & Tracing
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -55,6 +57,9 @@ uuid.workspace = true
 # Which (for checking binary existence)
 which = "6.0"
 
+# HTML parsing
+html2text = "0.14"
+
 # Telegram (optional)
 teloxide = { workspace = true, optional = true }
 
@@ -67,6 +72,12 @@ tokio-tungstenite = { workspace = true, optional = true }
 # DingTalk (optional)
 base64 = { version = "0.22", optional = true }
 sha2 = { version = "0.10", optional = true }
+
+# Email (optional)
+lettre = { workspace = true, optional = true }
+async-imap = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
