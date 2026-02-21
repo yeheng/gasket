@@ -1,13 +1,17 @@
 //! Telegram channel implementation using teloxide
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
 use tracing::{debug, info};
 
 use super::base::Channel;
+use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::{ChannelType, MessageBus};
+use crate::bus::ChannelType;
+use crate::trail::TrailContext;
 
 /// Telegram channel configuration
 #[derive(Debug, Clone)]
@@ -16,16 +20,30 @@ pub struct TelegramConfig {
     pub allow_from: Vec<String>,
 }
 
-/// Telegram channel
+/// Telegram channel with middleware support.
+///
+/// Uses `InboundProcessor` to process incoming messages through
+/// the middleware stack before publishing to the bus.
 pub struct TelegramChannel {
     config: TelegramConfig,
-    bus: MessageBus,
+    inbound_processor: Arc<dyn InboundProcessor>,
+    trail_ctx: TrailContext,
 }
 
 impl TelegramChannel {
-    /// Create a new Telegram channel
-    pub fn new(config: TelegramConfig, bus: MessageBus) -> Self {
-        Self { config, bus }
+    /// Create a new Telegram channel with an inbound processor.
+    pub fn new(config: TelegramConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+        Self {
+            config,
+            inbound_processor,
+            trail_ctx: TrailContext::default(),
+        }
+    }
+
+    /// Set the trail context for this channel.
+    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
+        self.trail_ctx = ctx;
+        self
     }
 
     /// Start the Telegram bot (blocking)
@@ -33,13 +51,15 @@ impl TelegramChannel {
         info!("Starting Telegram bot");
 
         let bot = Bot::new(&self.config.token);
-        let bus = self.bus.clone();
+        let inbound_processor = self.inbound_processor.clone();
         let allow_from = self.config.allow_from.clone();
+        let trail_ctx = self.trail_ctx.clone();
 
         // Use Dispatcher for proper handling
         let handler = Update::filter_message().branch(dptree::endpoint(move |msg: Message| {
-            let bus = bus.clone();
+            let inbound_processor = inbound_processor.clone();
             let allow_from = allow_from.clone();
+            let trail_ctx = trail_ctx.clone();
             async move {
                 if let Some(ref user) = msg.from {
                     let user_id = user.id.0;
@@ -56,7 +76,15 @@ impl TelegramChannel {
 
                         debug!("Received message from {}: {}", user_id, text);
 
-                        // Publish to bus
+                        // Create a child context for this message
+                        let child_ctx = trail_ctx.child(crate::trail::SpanId(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_nanos() as u64,
+                        ));
+
+                        // Process through middleware
                         let inbound = InboundMessage {
                             channel: ChannelType::Telegram,
                             sender_id: user_id_str,
@@ -65,10 +93,12 @@ impl TelegramChannel {
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
-                            trace_id: None,
+                            trace_id: Some(child_ctx.trace_id.to_string()),
                         };
 
-                        bus.publish_inbound(inbound).await;
+                        if let Err(e) = inbound_processor.process(inbound).await {
+                            debug!("Failed to process inbound message: {}", e);
+                        }
                     }
                 }
                 Ok(())

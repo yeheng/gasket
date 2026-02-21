@@ -2,14 +2,17 @@
 //!
 //! Supports Feishu/Lark bot messaging via webhook and API
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
 use super::base::Channel;
+use super::middleware::InboundProcessor;
 use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
-use crate::bus::MessageBus;
+use crate::trail::TrailContext;
 
 /// Feishu channel configuration
 #[derive(Debug, Clone)]
@@ -30,23 +33,34 @@ pub struct FeishuConfig {
     pub allow_from: Vec<String>,
 }
 
-/// Feishu channel
+/// Feishu channel with middleware support.
+///
+/// Uses `InboundProcessor` to process incoming messages through
+/// the middleware stack before publishing to the bus.
 pub struct FeishuChannel {
     config: FeishuConfig,
-    bus: MessageBus,
+    inbound_processor: Arc<dyn InboundProcessor>,
+    trail_ctx: TrailContext,
     client: Client,
     access_token: Option<String>,
 }
 
 impl FeishuChannel {
-    /// Create a new Feishu channel
-    pub fn new(config: FeishuConfig, bus: MessageBus) -> Self {
+    /// Create a new Feishu channel with an inbound processor.
+    pub fn new(config: FeishuConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
         Self {
             config,
-            bus,
+            inbound_processor,
+            trail_ctx: TrailContext::default(),
             client: Client::new(),
             access_token: None,
         }
+    }
+
+    /// Set the trail context for this channel.
+    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
+        self.trail_ctx = ctx;
+        self
     }
 
     /// Get tenant access token
@@ -146,6 +160,14 @@ impl FeishuChannel {
 
             let metadata = serde_json::to_value(&message).ok();
 
+            // Create a child context for this message
+            let child_ctx = self.trail_ctx.child(crate::trail::SpanId(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64,
+            ));
+
             let inbound = InboundMessage {
                 channel: ChannelType::Feishu,
                 sender_id: sender_info.sender_id.user_id.clone(),
@@ -154,10 +176,10 @@ impl FeishuChannel {
                 media: None,
                 metadata,
                 timestamp: chrono::Utc::now(),
-                trace_id: None,
+                trace_id: Some(child_ctx.trace_id.to_string()),
             };
 
-            self.bus.publish_inbound(inbound).await;
+            self.inbound_processor.process(inbound).await?;
         }
 
         Ok(())
@@ -317,6 +339,7 @@ pub struct FeishuChallengeResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channels::middleware::NoopInboundProcessor;
 
     #[test]
     fn test_feishu_config_creation() {
@@ -342,8 +365,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
-        let channel = FeishuChannel::new(config, bus);
+        let channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
 
         assert_eq!(channel.name(), "feishu");
     }

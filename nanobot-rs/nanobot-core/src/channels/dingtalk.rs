@@ -2,6 +2,8 @@
 //!
 //! Supports DingTalk robot messaging via webhook and API
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
@@ -10,8 +12,10 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info};
 
 use super::base::Channel;
+use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::MessageBus;
+use crate::bus::ChannelType;
+use crate::trail::TrailContext;
 
 /// DingTalk channel configuration
 #[derive(Debug, Clone)]
@@ -29,21 +33,32 @@ pub struct DingTalkConfig {
     pub allow_from: Vec<String>,
 }
 
-/// DingTalk channel
+/// DingTalk channel with middleware support.
+///
+/// Uses `InboundProcessor` to process incoming messages through
+/// the middleware stack before publishing to the bus.
 pub struct DingTalkChannel {
     config: DingTalkConfig,
-    bus: MessageBus,
+    inbound_processor: Arc<dyn InboundProcessor>,
+    trail_ctx: TrailContext,
     client: Client,
 }
 
 impl DingTalkChannel {
-    /// Create a new DingTalk channel
-    pub fn new(config: DingTalkConfig, bus: MessageBus) -> Self {
+    /// Create a new DingTalk channel with an inbound processor.
+    pub fn new(config: DingTalkConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
         Self {
             config,
-            bus,
+            inbound_processor,
+            trail_ctx: TrailContext::default(),
             client: Client::new(),
         }
+    }
+
+    /// Set the trail context for this channel.
+    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
+        self.trail_ctx = ctx;
+        self
     }
 
     /// Generate signed webhook URL with timestamp and sign
@@ -189,19 +204,26 @@ impl DingTalkChannel {
 
         let metadata = serde_json::to_value(&message).ok();
 
+        // Create a child context for this message
+        let child_ctx = self.trail_ctx.child(crate::trail::SpanId(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        ));
+
         let inbound = InboundMessage {
-            channel: "dingtalk".to_string(),
+            channel: ChannelType::DingTalk,
             sender_id: message.sender_id.clone(),
             chat_id: message.conversation_id.clone(),
             content,
             media: None,
             metadata,
             timestamp: chrono::Utc::now(),
-            trace_id: None,
+            trace_id: Some(child_ctx.trace_id.to_string()),
         };
 
-        self.bus.publish_inbound(inbound).await;
-        Ok(())
+        self.inbound_processor.process(inbound).await
     }
 }
 
@@ -279,6 +301,7 @@ pub struct DingTalkWebhookResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channels::middleware::NoopInboundProcessor;
 
     #[test]
     fn test_dingtalk_config_creation() {
@@ -304,8 +327,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
-        let channel = DingTalkChannel::new(config, bus);
+        let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
 
         assert_eq!(channel.name(), "dingtalk");
     }
@@ -319,8 +341,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
-        let channel = DingTalkChannel::new(config, bus);
+        let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
 
         let url = channel.get_signed_webhook_url();
         assert_eq!(url, "https://oapi.dingtalk.com/robot/send?access_token=test");

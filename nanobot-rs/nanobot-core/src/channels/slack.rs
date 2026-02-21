@@ -1,13 +1,17 @@
 //! Slack channel implementation using Socket Mode
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use super::base::Channel;
+use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::{ChannelType, MessageBus};
+use crate::bus::ChannelType;
+use crate::trail::TrailContext;
 
 /// Slack channel configuration
 #[derive(Debug, Clone)]
@@ -34,20 +38,34 @@ struct SlackMessage {
     thread_ts: Option<String>,
 }
 
-/// Slack channel using Socket Mode
+/// Slack channel using Socket Mode with middleware support.
+///
+/// Uses `InboundProcessor` to process incoming messages through
+/// the middleware stack before publishing to the bus.
 pub struct SlackChannel {
     config: SlackConfig,
-    bus: MessageBus,
+    inbound_processor: Arc<dyn InboundProcessor>,
+    trail_ctx: TrailContext,
 }
 
 impl SlackChannel {
-    /// Create a new Slack channel
-    pub fn new(config: SlackConfig, bus: MessageBus) -> Self {
-        Self { config, bus }
+    /// Create a new Slack channel with an inbound processor.
+    pub fn new(config: SlackConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+        Self {
+            config,
+            inbound_processor,
+            trail_ctx: TrailContext::default(),
+        }
+    }
+
+    /// Set the trail context for this channel.
+    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
+        self.trail_ctx = ctx;
+        self
     }
 
     /// Start the Slack bot using WebSocket
-    pub async fn start(self) -> anyhow::Result<()> {
+    pub async fn start_bot(&self) -> anyhow::Result<()> {
         info!("Starting Slack bot");
 
         let ws_url = self.get_socket_url().await?;
@@ -61,12 +79,23 @@ impl SlackChannel {
 
         info!("Slack WebSocket connected");
 
+        let inbound_processor = self.inbound_processor.clone();
+        let trail_ctx = self.trail_ctx.clone();
+        let group_policy = self.config.group_policy.clone();
+
         // Handle messages
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(WsMessage::Text(text)) => {
                     if let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) {
-                        self.handle_event(&event, &mut write).await;
+                        Self::handle_event(
+                            &event,
+                            &mut write,
+                            &inbound_processor,
+                            &trail_ctx,
+                            &group_policy,
+                        )
+                        .await;
                     }
                 }
                 Ok(WsMessage::Ping(data)) => {
@@ -111,8 +140,13 @@ impl SlackChannel {
         Ok(json["url"].as_str().unwrap_or_default().to_string())
     }
 
-    async fn handle_event<W>(&self, event: &serde_json::Value, write: &mut W)
-    where
+    async fn handle_event<W>(
+        event: &serde_json::Value,
+        write: &mut W,
+        inbound_processor: &Arc<dyn InboundProcessor>,
+        trail_ctx: &TrailContext,
+        group_policy: &Option<String>,
+    ) where
         W: SinkExt<tokio_tungstenite::tungstenite::Message> + Unpin,
     {
         use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -148,7 +182,7 @@ impl SlackChannel {
                         ) {
                             // Check group policy for channel messages
                             if channel.starts_with('C') {
-                                match self.config.group_policy.as_deref() {
+                                match group_policy.as_deref() {
                                     Some("open") => {
                                         // Respond to all
                                     }
@@ -164,6 +198,14 @@ impl SlackChannel {
 
                             debug!("Received Slack message from {}: {}", user, text);
 
+                            // Create a child context for this message
+                            let child_ctx = trail_ctx.child(crate::trail::SpanId(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_nanos() as u64,
+                            ));
+
                             let inbound = InboundMessage {
                                 channel: ChannelType::Slack,
                                 sender_id: user.to_string(),
@@ -175,10 +217,12 @@ impl SlackChannel {
                                     "ts": event_data["ts"]
                                 })),
                                 timestamp: chrono::Utc::now(),
-                                trace_id: None,
+                                trace_id: Some(child_ctx.trace_id.to_string()),
                             };
 
-                            self.bus.publish_inbound(inbound).await;
+                            if let Err(e) = inbound_processor.process(inbound).await {
+                                debug!("Failed to process inbound message: {}", e);
+                            }
                         }
                     }
                 }

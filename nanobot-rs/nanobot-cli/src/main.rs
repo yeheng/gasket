@@ -10,7 +10,7 @@ use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
 
 use nanobot_core::agent::{AgentConfig, AgentDependencies, AgentLoop};
-use nanobot_core::channels::Channel;
+use nanobot_core::channels::BusInboundProcessor;
 use nanobot_core::config::{load_config, Config, ConfigLoader};
 use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 
@@ -400,6 +400,11 @@ async fn cmd_gateway() -> Result<()> {
     let channel_manager = Arc::new(nanobot_core::channels::ChannelManager::new(bus.clone()));
     tasks.push(channel_manager.spawn_outbound_router(outbound_rx));
 
+    // Create inbound processor for channels (applies middleware before publishing to bus)
+    #[allow(unused_variables)]
+    let inbound_processor: Arc<dyn nanobot_core::channels::InboundProcessor> =
+        Arc::new(BusInboundProcessor::new((*bus).clone()));
+
     // --- Inbound message handler ---
     {
         let agent_for_handler = agent.clone();
@@ -506,7 +511,7 @@ async fn cmd_gateway() -> Result<()> {
 
             let telegram_channel = nanobot_core::channels::telegram::TelegramChannel::new(
                 telegram_cfg,
-                (*bus).clone(),
+                inbound_processor.clone(),
             );
 
             let task = tokio::spawn(async move {
@@ -529,10 +534,10 @@ async fn cmd_gateway() -> Result<()> {
             };
 
             let discord_channel =
-                nanobot_core::channels::discord::DiscordChannel::new(discord_cfg, (*bus).clone());
+                nanobot_core::channels::discord::DiscordChannel::new(discord_cfg, inbound_processor.clone());
 
             let task = tokio::spawn(async move {
-                let _ = discord_channel.start().await;
+                let _ = discord_channel.start_bot().await;
             });
 
             tasks.push(task);
@@ -554,7 +559,7 @@ async fn cmd_gateway() -> Result<()> {
             };
 
             let mut feishu_channel =
-                nanobot_core::channels::feishu::FeishuChannel::new(feishu_cfg, (*bus).clone());
+                nanobot_core::channels::feishu::FeishuChannel::new(feishu_cfg, inbound_processor.clone());
 
             let task = tokio::spawn(async move {
                 let _ = feishu_channel.start().await;

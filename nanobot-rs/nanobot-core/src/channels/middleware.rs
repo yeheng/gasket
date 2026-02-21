@@ -11,8 +11,7 @@ use async_trait::async_trait;
 use tracing::{debug, warn};
 
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::channels::base::Channel;
-use crate::trail::{Handler, Middleware, MiddlewareStack, Next, TrailContext};
+use crate::trail::{Handler, Middleware, MiddlewareStack, Next};
 
 /// Type alias for inbound channel middleware (message reception).
 pub type ChannelInboundMiddleware = dyn Middleware<InboundMessage, InboundMessage>;
@@ -303,6 +302,44 @@ impl Middleware<InboundMessage, InboundMessage> for ChannelRateLimitMiddleware {
 
     fn name(&self) -> &str {
         "ChannelRateLimitMiddleware"
+    }
+}
+
+// ── MiddlewareInboundProcessor ─────────────────────────────
+
+/// Inbound processor that applies middleware before publishing.
+pub struct MiddlewareInboundProcessor {
+    middleware: MiddlewareStack<InboundMessage, InboundMessage>,
+    bus: crate::bus::MessageBus,
+}
+
+impl MiddlewareInboundProcessor {
+    /// Create a new processor with middleware and bus.
+    pub fn new(
+        middleware: MiddlewareStack<InboundMessage, InboundMessage>,
+        bus: crate::bus::MessageBus,
+    ) -> Self {
+        Self { middleware, bus }
+    }
+}
+
+#[async_trait]
+impl InboundProcessor for MiddlewareInboundProcessor {
+    async fn process(&self, msg: InboundMessage) -> anyhow::Result<()> {
+        let handler = InboundPassthroughHandler;
+        let processed = self.middleware.execute(msg, &handler).await?;
+        self.bus.publish_inbound(processed).await;
+        Ok(())
+    }
+}
+
+/// Passthrough handler for inbound messages.
+struct InboundPassthroughHandler;
+
+#[async_trait::async_trait]
+impl Handler<InboundMessage, InboundMessage> for InboundPassthroughHandler {
+    async fn handle(&self, request: InboundMessage) -> anyhow::Result<InboundMessage> {
+        Ok(request)
     }
 }
 

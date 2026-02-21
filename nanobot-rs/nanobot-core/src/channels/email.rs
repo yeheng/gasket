@@ -1,11 +1,15 @@
 //! Email channel implementation using IMAP and SMTP
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
 use super::base::Channel;
+use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
-use crate::bus::MessageBus;
+use crate::bus::ChannelType;
+use crate::trail::TrailContext;
 
 /// Email channel configuration
 #[derive(Debug, Clone)]
@@ -23,16 +27,30 @@ pub struct EmailConfig {
     pub consent_granted: bool,
 }
 
-/// Email channel using IMAP/SMTP
+/// Email channel with middleware support.
+///
+/// Uses `InboundProcessor` to process incoming messages through
+/// the middleware stack before publishing to the bus.
 pub struct EmailChannel {
     config: EmailConfig,
-    bus: MessageBus,
+    inbound_processor: Arc<dyn InboundProcessor>,
+    trail_ctx: TrailContext,
 }
 
 impl EmailChannel {
-    /// Create a new Email channel
-    pub fn new(config: EmailConfig, bus: MessageBus) -> Self {
-        Self { config, bus }
+    /// Create a new Email channel with an inbound processor.
+    pub fn new(config: EmailConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+        Self {
+            config,
+            inbound_processor,
+            trail_ctx: TrailContext::default(),
+        }
+    }
+
+    /// Set the trail context for this channel.
+    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
+        self.trail_ctx = ctx;
+        self
     }
 
     /// Poll for new emails
@@ -47,7 +65,28 @@ impl EmailChannel {
         let messages = self.fetch_unread_emails().await?;
 
         for msg in &messages {
-            self.bus.publish_inbound(msg.clone()).await;
+            // Create a child context for this message
+            let child_ctx = self.trail_ctx.child(crate::trail::SpanId(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64,
+            ));
+
+            let inbound = InboundMessage {
+                channel: ChannelType::Email,
+                sender_id: msg.sender_id.clone(),
+                chat_id: msg.chat_id.clone(),
+                content: msg.content.clone(),
+                media: None,
+                metadata: None,
+                timestamp: chrono::Utc::now(),
+                trace_id: Some(child_ctx.trace_id.to_string()),
+            };
+
+            if let Err(e) = self.inbound_processor.process(inbound).await {
+                warn!("Failed to process inbound email: {}", e);
+            }
         }
 
         Ok(messages)

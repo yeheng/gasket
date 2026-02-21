@@ -12,8 +12,9 @@ telegram = ["teloxide"]
 discord = ["serenity"]
 slack = ["tokio-tungstenite"]
 email = []
+dingtalk = ["base64", "sha2"]
 feishu = []
-all-channels = ["telegram", "discord", "slack", "email", "feishu"]
+all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu"]
 
 [dependencies]
 # Async
@@ -62,6 +63,10 @@ serenity = { workspace = true, optional = true }
 
 # WebSocket (optional, for Slack)
 tokio-tungstenite = { workspace = true, optional = true }
+
+# DingTalk (optional)
+base64 = { version = "0.22", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
