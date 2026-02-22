@@ -66,12 +66,6 @@ pub struct SessionMessage {
     pub tools_used: Option<Vec<String>>,
 }
 
-/// Cached session entry, tracks whether the session has unsaved changes.
-struct CachedSession {
-    session: Session,
-    dirty: bool,
-}
-
 /// Session manager with in-memory cache and async disk persistence.
 ///
 /// Sessions are kept in an LRU-style HashMap. Disk writes happen immediately
@@ -79,7 +73,7 @@ struct CachedSession {
 ///
 /// All disk I/O uses `tokio::fs` to avoid blocking the async runtime.
 pub struct SessionManager {
-    sessions: Arc<RwLock<HashMap<String, CachedSession>>>,
+    sessions: Arc<RwLock<HashMap<String, Session>>>,
     sessions_dir: PathBuf,
 }
 
@@ -118,15 +112,15 @@ impl SessionManager {
     pub async fn get_or_create(&self, key: &str) -> Session {
         {
             let sessions = self.sessions.read().await;
-            if let Some(cached) = sessions.get(key) {
-                return cached.session.clone();
+            if let Some(session) = sessions.get(key) {
+                return session.clone();
             }
         }
 
         let mut sessions = self.sessions.write().await;
         // Double check after acquiring write lock
-        if let Some(cached) = sessions.get(key) {
-            return cached.session.clone();
+        if let Some(session) = sessions.get(key) {
+            return session.clone();
         }
 
         // Try to load from disk
@@ -134,13 +128,7 @@ impl SessionManager {
             .load_from_disk(key)
             .await
             .unwrap_or_else(|_| Session::new(key));
-        sessions.insert(
-            key.to_string(),
-            CachedSession {
-                session: session.clone(),
-                dirty: false,
-            },
-        );
+        sessions.insert(key.to_string(), session.clone());
         session
     }
 
@@ -149,13 +137,7 @@ impl SessionManager {
     pub async fn save(&self, session: &Session) {
         let key = session.key.clone();
         let mut sessions = self.sessions.write().await;
-        sessions.insert(
-            key.clone(),
-            CachedSession {
-                session: session.clone(),
-                dirty: false,
-            },
-        );
+        sessions.insert(key.clone(), session.clone());
         drop(sessions); // Release lock before I/O
 
         // Flush immediately - KISS

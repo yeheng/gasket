@@ -16,6 +16,7 @@ dingtalk = ["base64", "sha2"]
 feishu = []
 wecom = ["sha1", "aes", "cbc", "base64", "quick-xml"]
 webhook = ["axum", "tower", "tower-http"]
+sqlite = ["rusqlite"]
 all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
 
 [dependencies]
@@ -92,6 +93,9 @@ axum = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true }
 bytes = "1"
+
+# SQLite (optional)
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

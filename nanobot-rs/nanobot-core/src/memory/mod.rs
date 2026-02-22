@@ -1,9 +1,15 @@
 //! Memory storage abstraction
 //!
 //! Provides a trait-based `MemoryStore` interface with multiple backends:
-//! - `FileMemoryStore` — file-based storage (migrated from `agent/memory.rs`)
-//! - `InMemoryStore` — in-memory storage (for testing)
+//! - `FileMemoryStore` — file-based storage
+//! - `SqliteStore` — SQLite-backed storage with FTS5 (requires `sqlite` feature)
 
 mod store;
 
-pub use store::{FileMemoryStore, InMemoryStore, MemoryEntry, MemoryQuery, MemoryStore};
+#[cfg(feature = "sqlite")]
+mod sqlite;
+
+pub use store::{FileMemoryStore, MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};
+
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteStore;
