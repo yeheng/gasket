@@ -13,7 +13,6 @@ use tracing::{info, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 use nanobot_core::agent::{AgentConfig, AgentLoop};
-use nanobot_core::channels::{BusInboundProcessor, InboundProcessor};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
 use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 use nanobot_core::tools::{
@@ -438,11 +437,6 @@ async fn cmd_gateway() -> Result<()> {
     // --- Channel manager + outbound router ---
     let channel_manager = Arc::new(ChannelManager::new(bus.clone()));
     tasks.push(channel_manager.spawn_outbound_router(outbound_rx));
-
-    // Create inbound processor for channels (applies middleware before publishing to bus)
-    #[allow(unused_variables)]
-    let inbound_processor: Arc<dyn InboundProcessor> =
-        Arc::new(BusInboundProcessor::new((*bus).clone()));
 
     // --- Inbound message handler ---
     {

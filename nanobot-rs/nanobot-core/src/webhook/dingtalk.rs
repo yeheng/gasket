@@ -8,11 +8,12 @@ use axum::{
     extract::Query,
     http::{HeaderMap, Response},
 };
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error};
 
 use super::handlers;
 use super::types::{WebhookError, WebhookHandler, WebhookResult};
-use crate::channels::middleware::InboundProcessor;
+use crate::bus::events::InboundMessage;
 use crate::channels::dingtalk::{DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig};
 
 /// DingTalk webhook handler that wraps a DingTalkChannel
@@ -30,13 +31,13 @@ impl DingTalkWebhookHandler {
         }
     }
 
-    /// Create from config and inbound processor
+    /// Create from config and inbound sender
     pub fn from_config(
         config: DingTalkConfig,
-        inbound_processor: Arc<dyn InboundProcessor>,
+        inbound_sender: Sender<InboundMessage>,
         path: Option<&str>,
     ) -> Self {
-        let channel = DingTalkChannel::new(config, inbound_processor);
+        let channel = DingTalkChannel::new(config, inbound_sender);
         Self::new(channel, path)
     }
 }
@@ -89,7 +90,12 @@ impl WebhookHandler for DingTalkWebhookHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::middleware::NoopInboundProcessor;
+    use tokio::sync::mpsc;
+
+    fn create_test_sender() -> Sender<InboundMessage> {
+        let (tx, _rx) = mpsc::channel(100);
+        tx
+    }
 
     fn create_test_config() -> DingTalkConfig {
         DingTalkConfig {
@@ -105,7 +111,7 @@ mod tests {
         let config = create_test_config();
         let handler = DingTalkWebhookHandler::from_config(
             config,
-            Arc::new(NoopInboundProcessor),
+            create_test_sender(),
             Some("/custom/dingtalk"),
         );
         assert_eq!(handler.path(), "/custom/dingtalk");
@@ -114,7 +120,7 @@ mod tests {
     #[test]
     fn test_default_path() {
         let config = create_test_config();
-        let handler = DingTalkWebhookHandler::from_config(config, Arc::new(NoopInboundProcessor), None);
+        let handler = DingTalkWebhookHandler::from_config(config, create_test_sender(), None);
         assert_eq!(handler.path(), "/dingtalk/callback");
     }
 }

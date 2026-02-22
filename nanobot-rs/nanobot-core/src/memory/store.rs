@@ -1,17 +1,12 @@
 //! Memory store trait and implementations
 
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tracing::debug;
-
-/// Number of lock stripes for FileMemoryStore.
-/// A fixed-size array prevents unbounded memory growth from per-key locks.
-const NUM_LOCK_STRIPES: usize = 64;
 
 /// A single memory entry.
 #[derive(Debug, Clone)]
@@ -63,13 +58,13 @@ pub trait MemoryStore: Send + Sync {
 /// Compatible with the original `agent::memory::MemoryStore` file layout
 /// (`memory/MEMORY.md`, `memory/HISTORY.md`).
 ///
-/// Uses lock striping (fixed-size array of mutexes) instead of per-key locks
-/// to prevent unbounded memory growth while still allowing concurrent
-/// operations on different keys.
+/// Uses a simple global lock for file operations. For a low-frequency
+/// file-based store used by a single chatbot, this is perfectly adequate
+/// and much simpler than lock striping.
 pub struct FileMemoryStore {
     memory_dir: PathBuf,
-    /// Fixed-size stripe locks — keys are hashed to a stripe index.
-    stripe_locks: Vec<tokio::sync::Mutex<()>>,
+    /// Simple global lock for all file operations
+    lock: tokio::sync::Mutex<()>,
 }
 
 impl FileMemoryStore {
@@ -77,12 +72,9 @@ impl FileMemoryStore {
     pub fn new(workspace: PathBuf) -> Self {
         let memory_dir = workspace.join("memory");
         let _ = std::fs::create_dir_all(&memory_dir);
-        let stripe_locks = (0..NUM_LOCK_STRIPES)
-            .map(|_| tokio::sync::Mutex::new(()))
-            .collect();
         Self {
             memory_dir,
-            stripe_locks,
+            lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -90,14 +82,6 @@ impl FileMemoryStore {
         // Use the key directly as filename (sanitised)
         let safe_key = key.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
         self.memory_dir.join(safe_key)
-    }
-
-    /// Get the stripe lock for a given key (hash-based).
-    fn get_stripe_lock(&self, key: &str) -> &tokio::sync::Mutex<()> {
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        let index = (hasher.finish() as usize) % NUM_LOCK_STRIPES;
-        &self.stripe_locks[index]
     }
 }
 
@@ -114,7 +98,7 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn write(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let _guard = self.get_stripe_lock(key).lock().await;
+        let _guard = self.lock.lock().await;
 
         let path = self.key_to_path(key);
         let tmp_path = path.with_extension("tmp");
@@ -127,7 +111,7 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn delete(&self, key: &str) -> anyhow::Result<bool> {
-        let _guard = self.get_stripe_lock(key).lock().await;
+        let _guard = self.lock.lock().await;
 
         let path = self.key_to_path(key);
 
@@ -139,7 +123,7 @@ impl MemoryStore for FileMemoryStore {
     }
 
     async fn append(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let _guard = self.get_stripe_lock(key).lock().await;
+        let _guard = self.lock.lock().await;
 
         let path = self.key_to_path(key);
 
@@ -379,16 +363,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Test that concurrent writes to different keys don't block each other
+    /// Test that concurrent writes work correctly with the simple lock
     #[tokio::test]
-    async fn test_file_memory_store_concurrent_different_keys() {
+    async fn test_file_memory_store_concurrent_writes() {
         let dir =
             std::env::temp_dir().join(format!("nanobot_test_concurrent_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let store = std::sync::Arc::new(FileMemoryStore::new(dir.clone()));
 
-        // Spawn concurrent writes to different keys
+        // Spawn concurrent writes
         let mut handles = vec![];
         for i in 0..10 {
             let store = store.clone();

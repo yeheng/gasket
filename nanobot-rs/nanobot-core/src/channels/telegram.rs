@@ -1,14 +1,12 @@
 //! Telegram channel implementation using teloxide
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
 
@@ -19,21 +17,20 @@ pub struct TelegramConfig {
     pub allow_from: Vec<String>,
 }
 
-/// Telegram channel with middleware support.
+/// Telegram channel.
 ///
-/// Uses `InboundProcessor` to process incoming messages through
-/// the middleware stack before publishing to the bus.
+/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
 pub struct TelegramChannel {
     config: TelegramConfig,
-    inbound_processor: Arc<dyn InboundProcessor>,
+    inbound_sender: Sender<InboundMessage>,
 }
 
 impl TelegramChannel {
-    /// Create a new Telegram channel with an inbound processor.
-    pub fn new(config: TelegramConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+    /// Create a new Telegram channel with an inbound message sender.
+    pub fn new(config: TelegramConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         Self {
             config,
-            inbound_processor,
+            inbound_sender,
         }
     }
 
@@ -43,12 +40,12 @@ impl TelegramChannel {
         info!("Starting Telegram bot");
 
         let bot = Bot::new(&self.config.token);
-        let inbound_processor = self.inbound_processor.clone();
+        let inbound_sender = self.inbound_sender.clone();
         let allow_from = self.config.allow_from.clone();
 
         // Use Dispatcher for proper handling
         let handler = Update::filter_message().branch(dptree::endpoint(move |msg: Message| {
-            let inbound_processor = inbound_processor.clone();
+            let inbound_sender = inbound_sender.clone();
             let allow_from = allow_from.clone();
             async move {
                 if let Some(ref user) = msg.from {
@@ -77,8 +74,8 @@ impl TelegramChannel {
                             trace_id: None,
                         };
 
-                        if let Err(e) = inbound_processor.process(inbound).await {
-                            debug!("Failed to process inbound message: {}", e);
+                        if let Err(e) = inbound_sender.send(inbound).await {
+                            debug!("Failed to send inbound message: {}", e);
                         }
                     }
                 }

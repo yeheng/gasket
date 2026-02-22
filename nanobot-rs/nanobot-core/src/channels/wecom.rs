@@ -7,18 +7,16 @@
 //! Also supports receiving callback messages with signature verification
 //! and AES-256-CBC decryption (using token + EncodingAESKey).
 
-use std::sync::Arc;
-
 use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, instrument, warn};
 
 use super::base::Channel;
-use super::middleware::InboundProcessor;
 use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
@@ -225,13 +223,12 @@ struct WeComApiResponse {
 
 // ── Channel ──────────────────────────────────────────────────
 
-/// WeCom bot channel with middleware support.
+/// WeCom bot channel.
 ///
-/// Uses `InboundProcessor` to process incoming messages through
-/// the middleware stack before publishing to the bus.
+/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
 pub struct WeComChannel {
     config: WeComConfig,
-    inbound_processor: Arc<dyn InboundProcessor>,
+    inbound_sender: Sender<InboundMessage>,
     client: Client,
     access_token: Option<String>,
     /// Cached decoded AES key (32 bytes), derived from `encoding_aes_key`.
@@ -239,11 +236,11 @@ pub struct WeComChannel {
 }
 
 impl WeComChannel {
-    /// Create a new WeCom bot channel with an inbound processor.
-    pub fn new(config: WeComConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+    /// Create a new WeCom bot channel with an inbound message sender.
+    pub fn new(config: WeComConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         Self {
             config,
-            inbound_processor,
+            inbound_sender,
             client: Client::new(),
             access_token: None,
             aes_key: None,
@@ -517,7 +514,7 @@ impl WeComChannel {
                     trace_id: ctx_trace_id,
                 };
 
-                self.inbound_processor.process(inbound).await?;
+                self.inbound_sender.send(inbound).await?;
             }
             "event" => {
                 debug!(
@@ -686,7 +683,14 @@ impl Channel for WeComChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::middleware::NoopInboundProcessor;
+    use tokio::sync::mpsc;
+
+    fn create_test_sender() -> Sender<InboundMessage> {
+        let (tx, rx) = mpsc::channel(100);
+        // Leak the receiver to keep the channel open for tests
+        std::mem::forget(rx);
+        tx
+    }
 
     #[test]
     fn test_wecom_config_creation() {
@@ -719,7 +723,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = WeComChannel::new(config, create_test_sender());
         assert_eq!(channel.name(), "wecom");
     }
 
@@ -957,7 +961,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
         channel.aes_key = Some(b"0123456789abcdef0123456789abcdef".to_vec());
 
         let query = WeComCallbackQuery {
@@ -983,7 +987,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = WeComChannel::new(config, create_test_sender());
 
         let query = WeComCallbackQuery {
             msg_signature: "sig".to_string(),
@@ -1044,7 +1048,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
         channel.aes_key = Some(aes_key_bytes.to_vec());
 
         let query = WeComCallbackQuery {
@@ -1113,7 +1117,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
         channel.aes_key = Some(aes_key_bytes.to_vec());
 
         let query = WeComCallbackQuery {
@@ -1183,7 +1187,7 @@ mod tests {
             allow_from: vec!["allowed_user".to_string()],
         };
 
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
         channel.aes_key = Some(aes_key_bytes.to_vec());
 
         let query = WeComCallbackQuery {

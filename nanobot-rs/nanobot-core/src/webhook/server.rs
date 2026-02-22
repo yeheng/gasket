@@ -1,17 +1,20 @@
 //! Webhook HTTP server implementation
+//!
+//! Uses Axum's native routing with path-based handler dispatch.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
-    http::{Method, StatusCode, Uri},
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
     Router,
 };
 use tower_http::trace::TraceLayer;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use super::types::{BoxedWebhookHandler, WebhookError, WebhookResult};
 
@@ -37,13 +40,14 @@ impl Default for WebhookConfig {
 /// State shared across all request handlers
 #[derive(Clone)]
 pub struct WebhookState {
-    pub handlers: Vec<BoxedWebhookHandler>,
+    /// Map from path to handler
+    handlers: Arc<HashMap<String, Arc<dyn super::types::WebhookHandler>>>,
 }
 
 /// Webhook HTTP server for handling callbacks from messaging platforms
 pub struct WebhookServer {
     config: WebhookConfig,
-    handlers: Vec<BoxedWebhookHandler>,
+    handlers: HashMap<String, BoxedWebhookHandler>,
 }
 
 impl WebhookServer {
@@ -51,35 +55,46 @@ impl WebhookServer {
     pub fn new(config: WebhookConfig) -> Self {
         Self {
             config,
-            handlers: Vec::new(),
+            handlers: HashMap::new(),
         }
     }
 
     /// Add a webhook handler
     pub fn add_handler(mut self, handler: BoxedWebhookHandler) -> Self {
-        self.handlers.push(handler);
+        let path = handler.path().to_string();
+        self.handlers.insert(path, handler);
         self
     }
 
     /// Add multiple webhook handlers
     pub fn add_handlers(mut self, handlers: Vec<BoxedWebhookHandler>) -> Self {
-        self.handlers.extend(handlers);
+        for handler in handlers {
+            let path = handler.path().to_string();
+            self.handlers.insert(path, handler);
+        }
         self
     }
 
-    /// Build the router with all registered handlers
-    fn build_router(&self) -> Router {
+    /// Build the router with all registered handlers using native Axum routing
+    fn build_router(self) -> Router {
+        // Convert to Arc HashMap for shared state
+        let handlers_map: HashMap<String, Arc<dyn super::types::WebhookHandler>> = self
+            .handlers
+            .into_iter()
+            .map(|(k, v)| (k, Arc::from(v)))
+            .collect();
+
         let state = Arc::new(WebhookState {
-            handlers: self.handlers.clone(),
+            handlers: Arc::new(handlers_map),
         });
 
-        let router = Router::new()
+        // Build router with catch-all path for webhooks
+        Router::new()
             .route("/health", get(health_check))
-            .fallback(handle_request)
+            .route("/webhook/{*path}", get(handle_get).post(handle_post))
+            .route("/{*path}", get(handle_get).post(handle_post))
             .with_state(state)
-            .layer(TraceLayer::new_for_http());
-
-        router
+            .layer(TraceLayer::new_for_http())
     }
 
     /// Start the webhook server
@@ -132,46 +147,76 @@ async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
-/// Fallback handler that routes to the appropriate platform handler
-async fn handle_request(
+/// Find handler for the given path
+fn find_handler<'a>(
+    state: &'a WebhookState,
+    path: &str,
+) -> Option<&'a Arc<dyn super::types::WebhookHandler>> {
+    // Normalize path
+    let normalized = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{}", path)
+    };
+
+    // Try exact match first
+    if let Some(handler) = state.handlers.get(&normalized) {
+        return Some(handler);
+    }
+
+    // Try prefix match (e.g., /wecom/callback matches /wecom)
+    for (prefix, handler) in state.handlers.iter() {
+        if normalized.starts_with(prefix) || path.starts_with(prefix.trim_start_matches('/')) {
+            return Some(handler);
+        }
+    }
+
+    None
+}
+
+/// Generic GET handler for webhooks
+async fn handle_get(
     State(state): State<Arc<WebhookState>>,
-    method: Method,
-    uri: Uri,
-    headers: axum::http::HeaderMap,
-    query: axum::extract::Query<serde_json::Value>,
+    Path(path): Path<String>,
+    Query(query): Query<serde_json::Value>,
+) -> impl IntoResponse {
+    debug!("Webhook GET request on /{}", path);
+
+    match find_handler(&state, &path) {
+        Some(handler) => match handler.handle_get(Query(query)).await {
+            Ok(response) => response,
+            Err(e) => {
+                error!("Webhook GET error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response()
+            }
+        },
+        None => {
+            debug!("No handler found for /{}", path);
+            (StatusCode::NOT_FOUND, "Not Found").into_response()
+        }
+    }
+}
+
+/// Generic POST handler for webhooks
+async fn handle_post(
+    State(state): State<Arc<WebhookState>>,
+    Path(path): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<serde_json::Value>,
     body: bytes::Bytes,
 ) -> impl IntoResponse {
-    let path = uri.path();
+    debug!("Webhook POST request on /{}", path);
 
-    debug!("Received {} request on {}", method, path);
-
-    // Find a handler that matches this path
-    let handler = state.handlers.iter().find(|h| path.starts_with(h.path()));
-
-    match handler {
-        Some(h) => {
-            let result = match method {
-                Method::GET => h.handle_get(query).await,
-                Method::POST => h.handle_post(headers, query, body).await,
-                _ => {
-                    warn!("Unsupported method {} for path {}", method, path);
-                    Err(WebhookError::InvalidBody(format!(
-                        "Unsupported method: {}",
-                        method
-                    )))
-                }
-            };
-
-            match result {
-                Ok(response) => response,
-                Err(e) => {
-                    error!("Webhook handler error for {}: {}", path, e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response()
-                }
+    match find_handler(&state, &path) {
+        Some(handler) => match handler.handle_post(headers, Query(query), body).await {
+            Ok(response) => response,
+            Err(e) => {
+                error!("Webhook POST error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {}", e)).into_response()
             }
-        }
+        },
         None => {
-            warn!("No handler found for path {}", path);
+            debug!("No handler found for /{}", path);
             (StatusCode::NOT_FOUND, "Not Found").into_response()
         }
     }

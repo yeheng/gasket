@@ -4,18 +4,16 @@
 //! - `lettre` for SMTP (sending emails)
 //! - `async-imap` for IMAP (receiving emails)
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use lettre::{
     message::{header::ContentType, Mailbox},
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument, warn};
 
 use super::base::Channel;
-use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
 
@@ -35,21 +33,20 @@ pub struct EmailConfig {
     pub consent_granted: bool,
 }
 
-/// Email channel with middleware support.
+/// Email channel.
 ///
-/// Uses `InboundProcessor` to process incoming messages through
-/// the middleware stack before publishing to the bus.
+/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
 pub struct EmailChannel {
     config: EmailConfig,
-    inbound_processor: Arc<dyn InboundProcessor>,
+    inbound_sender: Sender<InboundMessage>,
 }
 
 impl EmailChannel {
-    /// Create a new Email channel with an inbound processor.
-    pub fn new(config: EmailConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+    /// Create a new Email channel with an inbound message sender.
+    pub fn new(config: EmailConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         Self {
             config,
-            inbound_processor,
+            inbound_sender,
         }
     }
 
@@ -76,8 +73,8 @@ impl EmailChannel {
                 trace_id: None,
             };
 
-            if let Err(e) = self.inbound_processor.process(inbound).await {
-                warn!("Failed to process inbound email: {}", e);
+            if let Err(e) = self.inbound_sender.send(inbound).await {
+                warn!("Failed to send inbound email: {}", e);
             }
         }
 

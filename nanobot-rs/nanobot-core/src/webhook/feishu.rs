@@ -8,11 +8,12 @@ use axum::{
     extract::Query,
     http::{HeaderMap, Response},
 };
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info};
 
 use super::handlers;
 use super::types::{WebhookError, WebhookHandler, WebhookResult};
-use crate::channels::middleware::InboundProcessor;
+use crate::bus::events::InboundMessage;
 use crate::channels::feishu::{FeishuChannel, FeishuConfig, FeishuEvent, FeishuChallenge, FeishuChallengeResponse};
 
 /// Feishu webhook handler that wraps a FeishuChannel
@@ -30,13 +31,13 @@ impl FeishuWebhookHandler {
         }
     }
 
-    /// Create from config and inbound processor
+    /// Create from config and inbound sender
     pub fn from_config(
         config: FeishuConfig,
-        inbound_processor: Arc<dyn InboundProcessor>,
+        inbound_sender: Sender<InboundMessage>,
         path: Option<&str>,
     ) -> Self {
-        let channel = FeishuChannel::new(config, inbound_processor);
+        let channel = FeishuChannel::new(config, inbound_sender);
         Self::new(channel, path)
     }
 }
@@ -126,7 +127,12 @@ impl FeishuWebhookHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::middleware::NoopInboundProcessor;
+    use tokio::sync::mpsc;
+
+    fn create_test_sender() -> Sender<InboundMessage> {
+        let (tx, _rx) = mpsc::channel(100);
+        tx
+    }
 
     fn create_test_config() -> FeishuConfig {
         FeishuConfig {
@@ -143,7 +149,7 @@ mod tests {
         let config = create_test_config();
         let handler = FeishuWebhookHandler::from_config(
             config,
-            Arc::new(NoopInboundProcessor),
+            create_test_sender(),
             Some("/custom/feishu"),
         );
         assert_eq!(handler.path(), "/custom/feishu");
@@ -152,7 +158,7 @@ mod tests {
     #[test]
     fn test_default_path() {
         let config = create_test_config();
-        let handler = FeishuWebhookHandler::from_config(config, Arc::new(NoopInboundProcessor), None);
+        let handler = FeishuWebhookHandler::from_config(config, create_test_sender(), None);
         assert_eq!(handler.path(), "/feishu/events");
     }
 

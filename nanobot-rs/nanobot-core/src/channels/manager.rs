@@ -4,23 +4,26 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::base::Channel;
+use super::middleware::{log_inbound, log_outbound, SimpleAuthChecker, SimpleRateLimiter};
 use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
 use crate::bus::MessageBus;
-use crate::trail::{Handler, Middleware, MiddlewareStack};
 
 /// Manager for coordinating multiple channels.
 ///
 /// Owns the `MessageBus` and drives the outbound message routing loop.
-/// Supports inbound and outbound middleware stacks.
+/// Uses simple, direct method calls instead of over-engineered middleware stacks.
 pub struct ChannelManager {
     channels: Arc<RwLock<HashMap<ChannelType, Box<dyn Channel>>>>,
     bus: Arc<MessageBus>,
-    inbound_middleware: MiddlewareStack<InboundMessage, InboundMessage>,
-    outbound_middleware: MiddlewareStack<OutboundMessage, ()>,
+    /// Optional rate limiter for inbound messages
+    rate_limiter: Option<SimpleRateLimiter>,
+    /// Optional auth checker for inbound messages
+    auth_checker: Option<SimpleAuthChecker>,
 }
 
 impl ChannelManager {
@@ -29,25 +32,21 @@ impl ChannelManager {
         Self {
             channels: Arc::new(RwLock::new(HashMap::new())),
             bus,
-            inbound_middleware: MiddlewareStack::new(),
-            outbound_middleware: MiddlewareStack::new(),
+            rate_limiter: None,
+            auth_checker: None,
         }
     }
 
-    /// Add an inbound middleware (applied to messages received from channels).
-    pub fn add_inbound_middleware(
-        &mut self,
-        mw: Arc<dyn Middleware<InboundMessage, InboundMessage> + Send + Sync>,
-    ) {
-        self.inbound_middleware.push(mw);
+    /// Create a new channel manager with rate limiting
+    pub fn with_rate_limit(mut self, max_messages: u32, window: std::time::Duration) -> Self {
+        self.rate_limiter = Some(SimpleRateLimiter::new(max_messages, window));
+        self
     }
 
-    /// Add an outbound middleware (applied to messages sent to channels).
-    pub fn add_outbound_middleware(
-        &mut self,
-        mw: Arc<dyn Middleware<OutboundMessage, ()> + Send + Sync>,
-    ) {
-        self.outbound_middleware.push(mw);
+    /// Create a new channel manager with auth checking
+    pub fn with_auth(mut self, allowed_senders: Vec<String>) -> Self {
+        self.auth_checker = Some(SimpleAuthChecker::new(allowed_senders));
+        self
     }
 
     /// Register a channel
@@ -82,24 +81,38 @@ impl ChannelManager {
         Ok(())
     }
 
-    /// Process an inbound message through the middleware stack, then publish to the bus.
+    /// Process an inbound message through simple checks, then publish to the bus.
     pub async fn process_inbound(&self, msg: InboundMessage) -> Result<()> {
-        let handler = InboundPassthroughHandler;
-        let processed = self.inbound_middleware.execute(msg, &handler).await?;
-        self.bus.publish_inbound(processed).await;
+        // Log the message
+        log_inbound(&msg);
+
+        // Check auth if configured
+        if let Some(ref auth) = self.auth_checker {
+            if !auth.check_and_log(&msg) {
+                return Ok(()); // Silently drop unauthorized messages
+            }
+        }
+
+        // Check rate limit if configured
+        if let Some(ref rl) = self.rate_limiter {
+            if !rl.check_and_log(&msg) {
+                return Ok(()); // Silently drop rate-limited messages
+            }
+        }
+
+        // Publish to bus
+        self.bus.publish_inbound(msg).await;
         Ok(())
     }
 
-    /// Send a message through a specific channel (with outbound middleware).
+    /// Send a message through a specific channel.
     pub async fn send(&self, msg: OutboundMessage) -> Result<()> {
         let channels = self.channels.read().await;
         if let Some(channel) = channels.get(&msg.channel) {
-            let handler = OutboundChannelHandler {
-                channel: channel.as_ref(),
-            };
-            self.outbound_middleware
-                .execute(msg, &handler)
-                .await?;
+            // Log outbound message
+            log_outbound(&msg.channel.to_string(), &msg.chat_id, msg.content.len());
+
+            channel.send(msg).await?;
         } else {
             warn!(
                 "No channel registered for type {:?}, dropping outbound message to {}",
@@ -112,6 +125,12 @@ impl ChannelManager {
     /// Get a reference to the inner bus
     pub fn bus(&self) -> &Arc<MessageBus> {
         &self.bus
+    }
+
+    /// Get a cloneable sender for inbound messages.
+    /// Channels can use this to send messages directly to the bus.
+    pub fn inbound_sender(&self) -> Sender<InboundMessage> {
+        self.bus.inbound_sender()
     }
 
     /// Spawn the outbound routing loop.
@@ -131,29 +150,5 @@ impl ChannelManager {
             }
             info!("Outbound router exited");
         })
-    }
-}
-
-// ── Internal handlers ───────────────────────────────────
-
-/// Handler that passes inbound messages through unchanged.
-struct InboundPassthroughHandler;
-
-#[async_trait::async_trait]
-impl Handler<InboundMessage, InboundMessage> for InboundPassthroughHandler {
-    async fn handle(&self, request: InboundMessage) -> Result<InboundMessage> {
-        Ok(request)
-    }
-}
-
-/// Handler that sends outbound messages to the actual channel.
-struct OutboundChannelHandler<'a> {
-    channel: &'a dyn Channel,
-}
-
-#[async_trait::async_trait]
-impl<'a> Handler<OutboundMessage, ()> for OutboundChannelHandler<'a> {
-    async fn handle(&self, request: OutboundMessage) -> Result<()> {
-        self.channel.send(request).await
     }
 }

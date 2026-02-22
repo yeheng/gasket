@@ -2,15 +2,13 @@
 //!
 //! Supports Feishu/Lark bot messaging via webhook and API
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, instrument};
 
 use super::base::Channel;
-use super::middleware::InboundProcessor;
 use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
 
 /// Feishu channel configuration
@@ -32,23 +30,22 @@ pub struct FeishuConfig {
     pub allow_from: Vec<String>,
 }
 
-/// Feishu channel with middleware support.
+/// Feishu channel.
 ///
-/// Uses `InboundProcessor` to process incoming messages through
-/// the middleware stack before publishing to the bus.
+/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
 pub struct FeishuChannel {
     config: FeishuConfig,
-    inbound_processor: Arc<dyn InboundProcessor>,
+    inbound_sender: Sender<InboundMessage>,
     client: Client,
     access_token: Option<String>,
 }
 
 impl FeishuChannel {
-    /// Create a new Feishu channel with an inbound processor.
-    pub fn new(config: FeishuConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+    /// Create a new Feishu channel with an inbound message sender.
+    pub fn new(config: FeishuConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         Self {
             config,
-            inbound_processor,
+            inbound_sender,
             client: Client::new(),
             access_token: None,
         }
@@ -178,7 +175,7 @@ impl FeishuChannel {
                 trace_id: None,
             };
 
-            self.inbound_processor.process(inbound).await?;
+            self.inbound_sender.send(inbound).await?;
         }
 
         Ok(())
@@ -373,7 +370,12 @@ pub struct FeishuChallengeResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::middleware::NoopInboundProcessor;
+    use tokio::sync::mpsc;
+
+    fn create_test_sender() -> Sender<InboundMessage> {
+        let (tx, _rx) = mpsc::channel(100);
+        tx
+    }
 
     #[test]
     fn test_feishu_config_creation() {
@@ -399,7 +401,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = FeishuChannel::new(config, create_test_sender());
 
         assert_eq!(channel.name(), "feishu");
     }

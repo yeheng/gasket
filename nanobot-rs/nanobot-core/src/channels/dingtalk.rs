@@ -2,17 +2,15 @@
 //!
 //! Supports DingTalk robot messaging via webhook and API
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
 
@@ -32,22 +30,21 @@ pub struct DingTalkConfig {
     pub allow_from: Vec<String>,
 }
 
-/// DingTalk channel with middleware support.
+/// DingTalk channel.
 ///
-/// Uses `InboundProcessor` to process incoming messages through
-/// the middleware stack before publishing to the bus.
+/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
 pub struct DingTalkChannel {
     config: DingTalkConfig,
-    inbound_processor: Arc<dyn InboundProcessor>,
+    inbound_sender: Sender<InboundMessage>,
     client: Client,
 }
 
 impl DingTalkChannel {
-    /// Create a new DingTalk channel with an inbound processor.
-    pub fn new(config: DingTalkConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+    /// Create a new DingTalk channel with an inbound message sender.
+    pub fn new(config: DingTalkConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         Self {
             config,
-            inbound_processor,
+            inbound_sender,
             client: Client::new(),
         }
     }
@@ -209,7 +206,8 @@ impl DingTalkChannel {
             trace_id: None,
         };
 
-        self.inbound_processor.process(inbound).await
+        self.inbound_sender.send(inbound).await?;
+        Ok(())
     }
 }
 
@@ -287,7 +285,12 @@ pub struct DingTalkWebhookResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::middleware::NoopInboundProcessor;
+    use tokio::sync::mpsc;
+
+    fn create_test_sender() -> Sender<InboundMessage> {
+        let (tx, _rx) = mpsc::channel(100);
+        tx
+    }
 
     #[test]
     fn test_dingtalk_config_creation() {
@@ -313,7 +316,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = DingTalkChannel::new(config, create_test_sender());
 
         assert_eq!(channel.name(), "dingtalk");
     }
@@ -327,7 +330,7 @@ mod tests {
             allow_from: vec![],
         };
 
-        let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = DingTalkChannel::new(config, create_test_sender());
 
         let url = channel.get_signed_webhook_url();
         assert_eq!(url, "https://oapi.dingtalk.com/robot/send?access_token=test");

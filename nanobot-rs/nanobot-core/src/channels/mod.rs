@@ -27,8 +27,4 @@ pub mod wecom;
 
 pub use base::Channel;
 pub use manager::ChannelManager;
-pub use middleware::{
-    BusInboundProcessor, ChannelAuthMiddleware, ChannelError, ChannelInboundMiddleware,
-    ChannelLoggingMiddleware, ChannelOutboundLoggingMiddleware, ChannelOutboundMiddleware,
-    ChannelRateLimitMiddleware, InboundProcessor, MiddlewareInboundProcessor, NoopInboundProcessor,
-};
+pub use middleware::{ChannelError, SimpleAuthChecker, SimpleRateLimiter, log_inbound, log_outbound};

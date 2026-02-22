@@ -44,6 +44,14 @@ macro_rules! env_or_skip {
     };
 }
 
+/// Create a test sender for inbound messages.
+/// The receiver is leaked to keep the channel open for the test duration.
+fn create_test_sender() -> tokio::sync::mpsc::Sender<nanobot_core::bus::events::InboundMessage> {
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    std::mem::forget(rx);
+    tx
+}
+
 // =============================================================================
 // DingTalk E2E Tests
 // =============================================================================
@@ -52,7 +60,6 @@ macro_rules! env_or_skip {
 mod dingtalk_e2e {
     use super::*;
     use nanobot_core::channels::dingtalk::{DingTalkChannel, DingTalkConfig};
-    use nanobot_core::channels::middleware::NoopInboundProcessor;
 
     macro_rules! make_config {
         () => {{
@@ -72,7 +79,7 @@ mod dingtalk_e2e {
     async fn test_dingtalk_send_text_real_api() {
         load_env();
         let config = make_config!();
-        let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = DingTalkChannel::new(config, create_test_sender());
 
         let result = channel
             .send_text("[E2E Test] DingTalk send_text - nanobot channel test")
@@ -86,7 +93,7 @@ mod dingtalk_e2e {
     async fn test_dingtalk_send_markdown_real_api() {
         load_env();
         let config = make_config!();
-        let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = DingTalkChannel::new(config, create_test_sender());
 
         let result = channel
             .send_markdown(
@@ -110,7 +117,7 @@ mod dingtalk_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = DingTalkChannel::new(config, create_test_sender());
 
         let msg = OutboundMessage {
             channel: ChannelType::DingTalk,
@@ -135,7 +142,7 @@ mod dingtalk_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = DingTalkChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = DingTalkChannel::new(config, create_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -161,7 +168,6 @@ mod dingtalk_e2e {
 mod feishu_e2e {
     use super::*;
     use nanobot_core::channels::feishu::{FeishuChannel, FeishuConfig};
-    use nanobot_core::channels::middleware::NoopInboundProcessor;
 
     macro_rules! make_config {
         () => {{
@@ -182,7 +188,7 @@ mod feishu_e2e {
     async fn test_feishu_get_access_token_real_api() {
         load_env();
         let config = make_config!();
-        let mut channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = FeishuChannel::new(config, create_test_sender());
 
         // start() internally calls get_access_token()
         let result = nanobot_core::channels::base::Channel::start(&mut channel).await;
@@ -200,7 +206,7 @@ mod feishu_e2e {
         let config = make_config!();
         let chat_id = env_or_skip!("FEISHU_CHAT_ID");
 
-        let mut channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = FeishuChannel::new(config, create_test_sender());
 
         // Must get access token first
         let start_result = nanobot_core::channels::base::Channel::start(&mut channel).await;
@@ -231,7 +237,7 @@ mod feishu_e2e {
         let config = make_config!();
         let chat_id = env_or_skip!("FEISHU_CHAT_ID");
 
-        let mut channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = FeishuChannel::new(config, create_test_sender());
 
         // Must start to get access token
         Channel::start(&mut channel)
@@ -261,7 +267,7 @@ mod feishu_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = FeishuChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = FeishuChannel::new(config, create_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -286,7 +292,6 @@ mod feishu_e2e {
 #[cfg(feature = "slack")]
 mod slack_e2e {
     use super::*;
-    use nanobot_core::channels::middleware::NoopInboundProcessor;
     use nanobot_core::channels::slack::{SlackChannel, SlackConfig};
 
     macro_rules! make_config {
@@ -309,7 +314,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = SlackChannel::new(config, create_test_sender());
 
         let result = channel
             .send_message(
@@ -333,7 +338,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = SlackChannel::new(config, create_test_sender());
 
         // Send a parent message first
         let result = channel
@@ -361,7 +366,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = SlackChannel::new(config, create_test_sender());
 
         let msg = OutboundMessage {
             channel: ChannelType::Slack,
@@ -389,7 +394,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = SlackChannel::new(config, create_test_sender());
 
         // Send with thread_ts metadata (thread_ts is null, but the code path is exercised)
         let msg = OutboundMessage {
@@ -417,7 +422,7 @@ mod slack_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = SlackChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = SlackChannel::new(config, create_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -443,7 +448,6 @@ mod slack_e2e {
 mod email_e2e {
     use super::*;
     use nanobot_core::channels::email::{EmailChannel, EmailConfig};
-    use nanobot_core::channels::middleware::NoopInboundProcessor;
 
     /// Build an SMTP-only config (IMAP fields set to placeholders).
     macro_rules! make_smtp_config {
@@ -504,7 +508,7 @@ mod email_e2e {
         let config = make_smtp_config!();
         let to_address = env_or_skip!("EMAIL_TO_ADDRESS");
 
-        let channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = EmailChannel::new(config, create_test_sender());
 
         let result = channel
             .send_email(
@@ -527,7 +531,7 @@ mod email_e2e {
         load_env();
         let config = make_imap_config!();
 
-        let channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = EmailChannel::new(config, create_test_sender());
 
         // poll() connects to IMAP and fetches unread emails
         let result = channel.poll().await;
@@ -552,7 +556,7 @@ mod email_e2e {
         let config = make_smtp_config!();
         let to_address = env_or_skip!("EMAIL_TO_ADDRESS");
 
-        let channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = EmailChannel::new(config, create_test_sender());
 
         // Channel::send parses chat_id as "email:recipient@example.com"
         let msg = OutboundMessage {
@@ -578,7 +582,7 @@ mod email_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_smtp_config!();
-        let mut channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = EmailChannel::new(config, create_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -602,7 +606,7 @@ mod email_e2e {
         let mut config = make_imap_config!();
         config.consent_granted = false;
 
-        let channel = EmailChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = EmailChannel::new(config, create_test_sender());
 
         let result = channel.poll().await;
         assert!(result.is_ok(), "poll() should succeed even without consent");
@@ -623,7 +627,6 @@ mod email_e2e {
 #[cfg(feature = "telegram")]
 mod telegram_e2e {
     use super::*;
-    use nanobot_core::channels::middleware::NoopInboundProcessor;
     use nanobot_core::channels::telegram::{TelegramChannel, TelegramConfig};
 
     macro_rules! make_config {
@@ -646,7 +649,7 @@ mod telegram_e2e {
         let config = make_config!();
         let chat_id = env_or_skip!("TELEGRAM_CHAT_ID");
 
-        let channel = TelegramChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = TelegramChannel::new(config, create_test_sender());
 
         let msg = OutboundMessage {
             channel: ChannelType::Telegram,
@@ -710,7 +713,7 @@ mod telegram_e2e {
         let config = make_config!();
         let chat_id = env_or_skip!("TELEGRAM_CHAT_ID");
 
-        let channel = TelegramChannel::new(config, Arc::new(NoopInboundProcessor));
+        let channel = TelegramChannel::new(config, create_test_sender());
 
         let long_content = format!(
             "[E2E Test] Telegram long message test - nanobot\n\n{}\n\nEnd of message.",
@@ -740,7 +743,7 @@ mod telegram_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = TelegramChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = TelegramChannel::new(config, create_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -766,7 +769,6 @@ mod telegram_e2e {
 mod discord_e2e {
     use super::*;
     use nanobot_core::channels::discord::{DiscordChannel, DiscordConfig};
-    use nanobot_core::channels::middleware::NoopInboundProcessor;
 
     macro_rules! make_config {
         () => {{
@@ -905,7 +907,7 @@ mod discord_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = DiscordChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = DiscordChannel::new(config, create_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -972,7 +974,6 @@ mod discord_e2e {
 #[cfg(feature = "wecom")]
 mod wecom_e2e {
     use super::*;
-    use nanobot_core::channels::middleware::NoopInboundProcessor;
     use nanobot_core::channels::wecom::{WeComChannel, WeComConfig};
 
     macro_rules! make_config {
@@ -998,7 +999,7 @@ mod wecom_e2e {
     async fn test_wecom_get_access_token_real_api() {
         load_env();
         let config = make_config!();
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
 
         let result = channel.get_access_token().await;
         assert!(
@@ -1015,7 +1016,7 @@ mod wecom_e2e {
         let config = make_config!();
         let to_user = env_or_skip!("WECOM_TO_USER");
 
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
         nanobot_core::channels::base::Channel::start(&mut channel)
             .await
             .expect("WeCom start failed");
@@ -1041,7 +1042,7 @@ mod wecom_e2e {
         let config = make_config!();
         let to_user = env_or_skip!("WECOM_TO_USER");
 
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
         nanobot_core::channels::base::Channel::start(&mut channel)
             .await
             .expect("WeCom start failed");
@@ -1070,7 +1071,7 @@ mod wecom_e2e {
         let config = make_config!();
         let to_user = env_or_skip!("WECOM_TO_USER");
 
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
         Channel::start(&mut channel)
             .await
             .expect("WeCom start failed");
@@ -1098,7 +1099,7 @@ mod wecom_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = WeComChannel::new(config, Arc::new(NoopInboundProcessor));
+        let mut channel = WeComChannel::new(config, create_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(

@@ -1,14 +1,12 @@
 //! Slack channel implementation using Socket Mode
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
 
@@ -37,21 +35,20 @@ struct SlackMessage {
     thread_ts: Option<String>,
 }
 
-/// Slack channel using Socket Mode with middleware support.
+/// Slack channel using Socket Mode.
 ///
-/// Uses `InboundProcessor` to process incoming messages through
-/// the middleware stack before publishing to the bus.
+/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
 pub struct SlackChannel {
     config: SlackConfig,
-    inbound_processor: Arc<dyn InboundProcessor>,
+    inbound_sender: Sender<InboundMessage>,
 }
 
 impl SlackChannel {
-    /// Create a new Slack channel with an inbound processor.
-    pub fn new(config: SlackConfig, inbound_processor: Arc<dyn InboundProcessor>) -> Self {
+    /// Create a new Slack channel with an inbound message sender.
+    pub fn new(config: SlackConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         Self {
             config,
-            inbound_processor,
+            inbound_sender,
         }
     }
 
@@ -71,7 +68,7 @@ impl SlackChannel {
 
         info!("Slack WebSocket connected");
 
-        let inbound_processor = self.inbound_processor.clone();
+        let inbound_sender = self.inbound_sender.clone();
         let group_policy = self.config.group_policy.clone();
 
         // Handle messages
@@ -82,7 +79,7 @@ impl SlackChannel {
                         Self::handle_event(
                             &event,
                             &mut write,
-                            &inbound_processor,
+                            &inbound_sender,
                             &group_policy,
                         )
                         .await;
@@ -133,7 +130,7 @@ impl SlackChannel {
     async fn handle_event<W>(
         event: &serde_json::Value,
         write: &mut W,
-        inbound_processor: &Arc<dyn InboundProcessor>,
+        inbound_sender: &Sender<InboundMessage>,
         group_policy: &Option<String>,
     ) where
         W: SinkExt<tokio_tungstenite::tungstenite::Message> + Unpin,
@@ -201,8 +198,8 @@ impl SlackChannel {
                                 trace_id: None,
                             };
 
-                            if let Err(e) = inbound_processor.process(inbound).await {
-                                debug!("Failed to process inbound message: {}", e);
+                            if let Err(e) = inbound_sender.send(inbound).await {
+                                debug!("Failed to send inbound message: {}", e);
                             }
                         }
                     }
