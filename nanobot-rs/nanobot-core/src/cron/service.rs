@@ -136,8 +136,13 @@ impl CronService {
     /// Force-flush jobs to disk immediately
     fn flush_sync(&self, jobs: &HashMap<String, CronJob>) {
         let path = self.jobs_dir.join("jobs.json");
-        if let Ok(content) = serde_json::to_string_pretty(jobs) {
-            let _ = std::fs::write(&path, content);
+        match serde_json::to_string_pretty(jobs) {
+            Ok(content) => {
+                if let Err(e) = std::fs::write(&path, content) {
+                    warn!("Failed to flush cron jobs to {}: {}", path.display(), e);
+                }
+            }
+            Err(e) => warn!("Failed to serialize cron jobs: {}", e),
         }
     }
 
@@ -191,12 +196,18 @@ impl CronService {
     #[instrument(name = "cron.mark_job_run", skip(self), fields(job_id = %id))]
     pub async fn mark_job_run(&self, id: &str) {
         let mut jobs = self.jobs.write().await;
-        if let Some(job) = jobs.get_mut(id) {
+        let found = if let Some(job) = jobs.get_mut(id) {
             job.update_next_run();
+            true
+        } else {
+            false
+        };
+
+        if found {
+            let jobs_clone = jobs.clone();
+            drop(jobs);
+            self.flush_sync(&jobs_clone);
+            debug!("Marked job {} as run", id);
         }
-        let jobs_clone = jobs.clone();
-        drop(jobs);
-        self.flush_sync(&jobs_clone);
-        debug!("Marked job {} as run", id);
     }
 }
