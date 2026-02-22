@@ -147,7 +147,7 @@ async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
-/// Find handler for the given path
+/// Find handler for the given path via exact match on the handlers map.
 fn find_handler<'a>(
     state: &'a WebhookState,
     path: &str,
@@ -159,19 +159,13 @@ fn find_handler<'a>(
         format!("/{}", path)
     };
 
-    // Try exact match first
+    // Exact match
     if let Some(handler) = state.handlers.get(&normalized) {
         return Some(handler);
     }
 
-    // Try prefix match (e.g., /wecom/callback matches /wecom)
-    for (prefix, handler) in state.handlers.iter() {
-        if normalized.starts_with(prefix) || path.starts_with(prefix.trim_start_matches('/')) {
-            return Some(handler);
-        }
-    }
-
-    None
+    // Try without leading slash
+    state.handlers.get(path)
 }
 
 /// Generic GET handler for webhooks

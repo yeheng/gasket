@@ -5,6 +5,10 @@ pub mod executor;
 pub mod loop_;
 pub mod memory;
 pub mod subagent;
+pub mod task_store;
+
+#[cfg(feature = "sqlite")]
+pub mod task_store_sqlite;
 
 pub use context::ContextBuilder;
 pub use executor::ToolExecutor;

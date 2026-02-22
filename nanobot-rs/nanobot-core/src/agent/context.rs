@@ -173,12 +173,23 @@ const DEFAULT_INSTRUCTIONS: &str = r#"You have access to tools for reading files
 
 Be concise and helpful. When using tools, explain what you're doing before and after the tool call."#;
 
-/// Truncate text to `max_chars`, appending "..." if shortened.
+/// Truncate text to `max_chars` for context trimming.
+///
+/// If the content looks like structured data (JSON/XML), replace it entirely
+/// with a placeholder to avoid feeding broken syntax to the LLM.
 fn truncate_content(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
     }
-    // Find a safe char boundary
+    // If it looks like structured data, don't truncate mid-stream
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with('<')
+    {
+        return "[Content too long, omitted to save context]".to_string();
+    }
+    // Plain text: find a safe char boundary
     let mut end = max_chars;
     while !text.is_char_boundary(end) && end > 0 {
         end -= 1;

@@ -18,6 +18,10 @@ use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
 use super::loop_::{AgentConfig, AgentLoop};
+use super::task_store::{JsonTaskStore, TaskStore};
+
+#[cfg(feature = "sqlite")]
+use super::task_store_sqlite::SqliteTaskStore;
 
 /// Status of a subagent task
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,7 +219,8 @@ impl Default for SubagentConfig {
 /// Each spawned task creates an independent `AgentLoop` that shares the same
 /// LLM provider but operates in its own session.
 ///
-/// Task state is persisted to disk immediately on changes - KISS.
+/// Task state is persisted via a `TaskStore` backend (SQLite when available,
+/// JSON file otherwise).
 pub struct SubagentManager {
     /// Active tasks
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
@@ -235,8 +240,8 @@ pub struct SubagentManager {
     /// Factory that produces a fresh ToolRegistry for each subagent
     tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
 
-    /// Path to the tasks persistence file
-    tasks_file: PathBuf,
+    /// Persistence backend
+    store: Arc<dyn TaskStore>,
 }
 
 impl SubagentManager {
@@ -247,10 +252,41 @@ impl SubagentManager {
         config: SubagentConfig,
         tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
     ) -> Self {
-        let tasks_file = workspace.join("data").join("tasks.json");
+        let data_dir = workspace.join("data");
+        let json_path = data_dir.join("tasks.json");
 
-        // Load existing tasks from disk
-        let tasks = Self::load_tasks(&tasks_file);
+        // Select persistence backend: SQLite when available, JSON fallback.
+        #[cfg(feature = "sqlite")]
+        let store: Arc<dyn TaskStore> = {
+            let db_path = data_dir.join("tasks.db");
+            match SqliteTaskStore::new(db_path) {
+                Ok(s) => {
+                    // One-time migration from legacy JSON
+                    if json_path.exists() {
+                        if let Err(e) = s.migrate_from_json(&json_path) {
+                            warn!("JSON→SQLite migration failed: {}", e);
+                        }
+                    }
+                    Arc::new(s)
+                }
+                Err(e) => {
+                    warn!("Failed to open SqliteTaskStore, falling back to JSON: {}", e);
+                    Arc::new(JsonTaskStore::new(json_path))
+                }
+            }
+        };
+
+        #[cfg(not(feature = "sqlite"))]
+        let store: Arc<dyn TaskStore> = Arc::new(JsonTaskStore::new(json_path));
+
+        // Load existing tasks from the store (sync at init is acceptable)
+        let tasks = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(store.load_all())
+        })
+        .unwrap_or_else(|e| {
+            warn!("Failed to load tasks: {}, starting fresh", e);
+            HashMap::new()
+        });
 
         let tasks = Arc::new(RwLock::new(tasks));
 
@@ -261,86 +297,55 @@ impl SubagentManager {
             workspace,
             config,
             tool_factory,
-            tasks_file,
+            store,
         }
     }
 
-    /// Load tasks from the persistence file
-    fn load_tasks(path: &PathBuf) -> HashMap<String, SubagentTask> {
-        if !path.exists() {
-            return HashMap::new();
-        }
-
-        match std::fs::read_to_string(path) {
-            Ok(content) => match serde_json::from_str::<Vec<SubagentTask>>(&content) {
-                Ok(tasks) => {
-                    let map: HashMap<String, SubagentTask> =
-                        tasks.into_iter().map(|t| (t.id.clone(), t)).collect();
-                    info!("Loaded {} persisted tasks from {:?}", map.len(), path);
-                    map
-                }
-                Err(e) => {
-                    warn!("Failed to parse tasks file: {}, starting fresh", e);
-                    HashMap::new()
-                }
-            },
-            Err(e) => {
-                warn!("Failed to read tasks file: {}, starting fresh", e);
-                HashMap::new()
-            }
-        }
-    }
-
-    /// Flush tasks to disk immediately - KISS (internal implementation)
-    async fn flush_to_disk_internal(
+    /// Persist a single task and the full snapshot (for JSON backend compat).
+    async fn persist_task(
+        store: &Arc<dyn TaskStore>,
+        task: &SubagentTask,
         tasks: &RwLock<HashMap<String, SubagentTask>>,
-        tasks_file: &PathBuf,
     ) {
-        let tasks_vec: Vec<SubagentTask> = tasks.read().await.values().cloned().collect();
-
-        if let Some(parent) = tasks_file.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+        if let Err(e) = store.save_task(task).await {
+            warn!("Failed to persist task {}: {}", task.id, e);
         }
-
-        match serde_json::to_string_pretty(&tasks_vec) {
-            Ok(content) => {
-                if let Err(e) = tokio::fs::write(tasks_file, content).await {
-                    warn!("Failed to save tasks file: {}", e);
-                } else {
-                    debug!("Flushed {} tasks to {:?}", tasks_vec.len(), tasks_file);
-                }
-            }
-            Err(e) => {
-                warn!("Failed to serialize tasks: {}", e);
-            }
+        let all: Vec<SubagentTask> = tasks.read().await.values().cloned().collect();
+        if let Err(e) = store.save_all(&all).await {
+            warn!("Failed to flush tasks: {}", e);
         }
     }
 
-    /// Force-flush to disk immediately (for shutdown or critical transitions)
+    /// Force-flush all tasks to disk (for shutdown or batch operations).
     pub async fn flush(&self) {
-        Self::flush_to_disk_internal(&self.tasks, &self.tasks_file).await;
+        let all: Vec<SubagentTask> = self.tasks.read().await.values().cloned().collect();
+        if let Err(e) = self.store.save_all(&all).await {
+            warn!("Failed to flush tasks: {}", e);
+        }
     }
 
     /// Recover tasks that were interrupted (mark running tasks as failed)
     #[instrument(name = "subagent.recover", skip_all)]
     pub async fn recover_interrupted_tasks(&self) {
         let mut tasks = self.tasks.write().await;
-        let mut recovered = 0;
+        let mut recovered = Vec::new();
 
         for task in tasks.values_mut() {
             if task.status == TaskStatus::Running || task.status == TaskStatus::Pending {
                 task.status = TaskStatus::Failed;
                 task.error = Some("Task interrupted by process restart".to_string());
                 task.completed_at = Some(Utc::now());
-                recovered += 1;
+                recovered.push(task.clone());
             }
         }
 
-        drop(tasks); // Release lock before saving
+        drop(tasks); // Release lock before I/O
 
-        if recovered > 0 {
-            info!("Recovered {} interrupted tasks", recovered);
-            self.flush().await;
+        if !recovered.is_empty() {
+            info!("Recovered {} interrupted tasks", recovered.len());
+            for task in &recovered {
+                Self::persist_task(&self.store, task, &self.tasks).await;
+            }
         }
     }
 
@@ -367,12 +372,12 @@ impl SubagentManager {
         let prompt = task.prompt.clone();
         let timeout = Duration::from_secs(task.timeout_secs);
 
-        // Flush immediately - KISS
-        self.flush().await;
+        // Persist the newly inserted task
+        Self::persist_task(&self.store, &task, &self.tasks).await;
 
         // Spawn the actual execution
         let tasks_ref = self.tasks.clone();
-        let tasks_file = self.tasks_file.clone();
+        let store = self.store.clone();
         let provider = self.provider.clone();
         let workspace = self.workspace.clone();
         let tid = task_id.clone();
@@ -380,14 +385,17 @@ impl SubagentManager {
 
         let handle = tokio::spawn(async move {
             // Mark as running
-            {
+            let task_snapshot = {
                 let mut tasks = tasks_ref.write().await;
                 if let Some(t) = tasks.get_mut(&tid) {
                     t.status = TaskStatus::Running;
                     t.started_at = Some(Utc::now());
                 }
+                tasks.get(&tid).cloned()
+            };
+            if let Some(snap) = &task_snapshot {
+                Self::persist_task(&store, snap, &tasks_ref).await;
             }
-            Self::flush_to_disk_internal(&tasks_ref, &tasks_file).await;
 
             info!(
                 "Subagent task {} started: {}",
@@ -405,13 +413,17 @@ impl SubagentManager {
             let agent = match AgentLoop::new(provider, workspace, agent_config, tools) {
                 Ok(a) => a,
                 Err(e) => {
-                    let mut tasks = tasks_ref.write().await;
-                    if let Some(t) = tasks.get_mut(&tid) {
-                        t.status = TaskStatus::Failed;
-                        t.error = Some(format!("Failed to initialise subagent: {}", e));
+                    let snap = {
+                        let mut tasks = tasks_ref.write().await;
+                        if let Some(t) = tasks.get_mut(&tid) {
+                            t.status = TaskStatus::Failed;
+                            t.error = Some(format!("Failed to initialise subagent: {}", e));
+                        }
+                        tasks.get(&tid).cloned()
+                    };
+                    if let Some(snap) = &snap {
+                        Self::persist_task(&store, snap, &tasks_ref).await;
                     }
-                    drop(tasks);
-                    Self::flush_to_disk_internal(&tasks_ref, &tasks_file).await;
                     return;
                 }
             };
@@ -422,7 +434,7 @@ impl SubagentManager {
                 tokio::time::timeout(timeout, agent.process_direct(&prompt, &session_key)).await;
 
             // Update task state
-            {
+            let snap = {
                 let mut tasks = tasks_ref.write().await;
                 if let Some(t) = tasks.get_mut(&tid) {
                     match result {
@@ -447,8 +459,11 @@ impl SubagentManager {
                         }
                     }
                 }
+                tasks.get(&tid).cloned()
+            };
+            if let Some(snap) = &snap {
+                Self::persist_task(&store, snap, &tasks_ref).await;
             }
-            Self::flush_to_disk_internal(&tasks_ref, &tasks_file).await;
         });
 
         self.handles.write().await.insert(task_id.clone(), handle);
@@ -484,16 +499,24 @@ impl SubagentManager {
         if let Some(handle) = self.handles.write().await.remove(task_id) {
             handle.abort();
         }
-        let mut tasks = self.tasks.write().await;
-        if let Some(task) = tasks.get_mut(task_id) {
-            if !task.is_finished() {
-                task.status = TaskStatus::Cancelled;
-                task.completed_at = Some(Utc::now());
-                info!("Cancelled task: {}", task_id);
-                drop(tasks);
-                self.flush().await;
-                return true;
+        let snap = {
+            let mut tasks = self.tasks.write().await;
+            if let Some(task) = tasks.get_mut(task_id) {
+                if !task.is_finished() {
+                    task.status = TaskStatus::Cancelled;
+                    task.completed_at = Some(Utc::now());
+                    info!("Cancelled task: {}", task_id);
+                    Some(task.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+        if let Some(snap) = &snap {
+            Self::persist_task(&self.store, snap, &self.tasks).await;
+            return true;
         }
         false
     }
@@ -505,18 +528,29 @@ impl SubagentManager {
         let cutoff =
             Utc::now() - chrono::Duration::from_std(older_than).unwrap_or(chrono::Duration::zero());
 
-        let initial_count = tasks.len();
-        tasks.retain(|_, t| {
+        let mut removed_ids = Vec::new();
+        tasks.retain(|id, t| {
             if t.is_finished() {
                 if let Some(completed) = t.completed_at {
-                    return completed > cutoff;
+                    if completed <= cutoff {
+                        removed_ids.push(id.clone());
+                        return false;
+                    }
                 }
             }
             true
         });
 
-        let removed = initial_count - tasks.len();
+        let removed = removed_ids.len();
         if removed > 0 {
+            let remaining: Vec<SubagentTask> = tasks.values().cloned().collect();
+            drop(tasks);
+            if let Err(e) = self.store.remove_tasks(&removed_ids).await {
+                warn!("Failed to remove tasks from store: {}", e);
+            }
+            if let Err(e) = self.store.save_all(&remaining).await {
+                warn!("Failed to flush remaining tasks: {}", e);
+            }
             debug!("Cleaned up {} old tasks", removed);
         }
         removed

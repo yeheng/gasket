@@ -104,13 +104,14 @@ fn decrypt_message(
         .try_into()
         .map_err(|_| anyhow::anyhow!("AES key must be 32 bytes"))?;
 
-    // Decrypt (NoPadding — we handle PKCS#7 ourselves)
+    // Decrypt with NoPadding — WeCom uses PKCS#7 padding to a 32-byte boundary
+    // (not the standard 16-byte AES block size), so we must handle it manually.
     let mut buf = ciphertext.clone();
     let decrypted = Aes256CbcDec::new(key.into(), iv.into())
         .decrypt_padded_mut::<NoPadding>(&mut buf)
         .map_err(|e| anyhow::anyhow!("AES decryption failed: {}", e))?;
 
-    // Remove PKCS#7 padding
+    // Remove PKCS#7 padding (32-byte boundary, per WeCom spec)
     if decrypted.is_empty() {
         anyhow::bail!("Decrypted data is empty");
     }
@@ -118,29 +119,29 @@ fn decrypt_message(
     if pad_len == 0 || pad_len > 32 || pad_len > decrypted.len() {
         anyhow::bail!("Invalid PKCS#7 padding value: {}", pad_len);
     }
-    let unpadded = &decrypted[..decrypted.len() - pad_len];
+    let decrypted = &decrypted[..decrypted.len() - pad_len];
 
     // Parse: random(16) + msg_len(4) + msg + receiveid
-    if unpadded.len() < 20 {
+    if decrypted.len() < 20 {
         anyhow::bail!(
             "Decrypted data too short: {} bytes (need at least 20)",
-            unpadded.len()
+            decrypted.len()
         );
     }
 
     let msg_len =
-        u32::from_be_bytes(unpadded[16..20].try_into().unwrap()) as usize;
+        u32::from_be_bytes(decrypted[16..20].try_into().unwrap()) as usize;
 
-    if 20 + msg_len > unpadded.len() {
+    if 20 + msg_len > decrypted.len() {
         anyhow::bail!(
             "msg_len={} exceeds available data ({})",
             msg_len,
-            unpadded.len() - 20
+            decrypted.len() - 20
         );
     }
 
-    let msg = &unpadded[20..20 + msg_len];
-    let receiveid = &unpadded[20 + msg_len..];
+    let msg = &decrypted[20..20 + msg_len];
+    let receiveid = &decrypted[20 + msg_len..];
 
     // Verify receiveid matches corpid
     if receiveid != expected_receiveid.as_bytes() {

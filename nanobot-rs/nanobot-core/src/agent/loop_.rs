@@ -274,8 +274,7 @@ impl AgentLoop {
                 // Re-add the tool_calls on the last assistant message so the
                 // provider can see them in the next request
                 if let Some(last) = messages.last_mut() {
-                    last.tool_calls = Some(std::mem::take(&mut { response.tool_calls.clone() }));
-                    // Minor optimization
+                    last.tool_calls = Some(response.tool_calls.clone());
                 }
 
                 // Execute each tool call via ToolExecutor

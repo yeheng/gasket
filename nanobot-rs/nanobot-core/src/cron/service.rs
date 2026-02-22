@@ -133,13 +133,18 @@ impl CronService {
         }
     }
 
-    /// Force-flush jobs to disk immediately
-    fn flush_sync(&self, jobs: &HashMap<String, CronJob>) {
+    /// Force-flush jobs to disk immediately (async, atomic write via temp file)
+    async fn flush_async(&self, jobs: &HashMap<String, CronJob>) {
         let path = self.jobs_dir.join("jobs.json");
         match serde_json::to_string_pretty(jobs) {
             Ok(content) => {
-                if let Err(e) = std::fs::write(&path, content) {
-                    warn!("Failed to flush cron jobs to {}: {}", path.display(), e);
+                let tmp_path = path.with_extension("json.tmp");
+                if let Err(e) = tokio::fs::write(&tmp_path, &content).await {
+                    warn!("Failed to write cron jobs tmp file: {}", e);
+                    return;
+                }
+                if let Err(e) = tokio::fs::rename(&tmp_path, &path).await {
+                    warn!("Failed to rename cron jobs file: {}", e);
                 }
             }
             Err(e) => warn!("Failed to serialize cron jobs: {}", e),
@@ -151,7 +156,7 @@ impl CronService {
     pub async fn add_job(&self, job: CronJob) -> anyhow::Result<()> {
         let mut jobs = self.jobs.write().await;
         jobs.insert(job.id.clone(), job.clone());
-        self.flush_sync(&jobs);
+        self.flush_async(&jobs).await;
         info!("Added cron job: {} ({})", job.name, job.id);
         Ok(())
     }
@@ -162,7 +167,7 @@ impl CronService {
         let mut jobs = self.jobs.write().await;
         let removed = jobs.remove(id).is_some();
         if removed {
-            self.flush_sync(&jobs);
+            self.flush_async(&jobs).await;
             info!("Removed cron job: {}", id);
         }
         Ok(removed)
@@ -204,9 +209,9 @@ impl CronService {
         };
 
         if found {
-            let jobs_clone = jobs.clone();
+            let jobs_snapshot = jobs.clone();
             drop(jobs);
-            self.flush_sync(&jobs_clone);
+            self.flush_async(&jobs_snapshot).await;
             debug!("Marked job {} as run", id);
         }
     }
