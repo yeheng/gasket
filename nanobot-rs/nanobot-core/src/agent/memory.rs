@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use tracing::instrument;
 
 use crate::memory::{FileMemoryStore, MemoryStore as MemoryStoreTrait};
 
@@ -26,6 +27,7 @@ impl MemoryStore {
     }
 
     /// Read long-term memory (`MEMORY.md`).
+    #[instrument(name = "memory.read_long_term", skip_all)]
     pub async fn read_long_term(&self) -> Result<String> {
         Ok(self
             .store
@@ -35,11 +37,13 @@ impl MemoryStore {
     }
 
     /// Write long-term memory (`MEMORY.md`).
+    #[instrument(name = "memory.write_long_term", skip_all)]
     pub async fn write_long_term(&self, content: &str) -> Result<()> {
         self.store.write("MEMORY.md", content).await
     }
 
     /// Read history (`HISTORY.md`).
+    #[instrument(name = "memory.read_history", skip_all)]
     pub async fn read_history(&self) -> Result<String> {
         Ok(self
             .store
@@ -49,6 +53,7 @@ impl MemoryStore {
     }
 
     /// Append to history (`HISTORY.md`).
+    #[instrument(name = "memory.append_history", skip_all)]
     pub async fn append_history(&self, entry: &str) -> Result<()> {
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M");
         let content = format!("\n[{}] {}\n", timestamp, entry);

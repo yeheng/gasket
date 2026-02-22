@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::instrument;
 
 use super::{Tool, ToolError, ToolResult};
 use crate::bus::events::ChannelType;
@@ -64,6 +65,7 @@ impl Tool for MessageTool {
         })
     }
 
+    #[instrument(name = "tool.send_message", skip_all)]
     async fn execute(&self, params: Value) -> ToolResult {
         let params: MessageParams = serde_json::from_value(params)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;

@@ -12,7 +12,7 @@ use lettre::{
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::base::Channel;
 use super::middleware::InboundProcessor;
@@ -54,6 +54,7 @@ impl EmailChannel {
     }
 
     /// Poll for new emails
+    #[instrument(name = "channel.email.poll", skip_all)]
     pub async fn poll(&self) -> anyhow::Result<Vec<InboundMessage>> {
         if !self.config.consent_granted {
             return Ok(vec![]);
@@ -239,6 +240,7 @@ impl EmailChannel {
     }
 
     /// Send an email using lettre
+    #[instrument(name = "channel.email.send_email", skip(self, body), fields(to = %to))]
     pub async fn send_email(&self, to: &str, subject: &str, body: &str) -> anyhow::Result<()> {
         let from: Mailbox = self.config.from_address.parse()?;
         let to_mailbox: Mailbox = to.parse()?;

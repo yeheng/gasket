@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use serde_json::Value;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::providers::ToolCall;
 use crate::tools::ToolRegistry;
@@ -39,6 +39,7 @@ impl<'a> ToolExecutor<'a> {
     }
 
     /// Execute a single tool call and return the result.
+    #[instrument(name = "executor.execute_one", skip_all, fields(tool = %tool_call.function.name))]
     pub async fn execute_one(&self, tool_call: &ToolCall) -> ToolCallResult {
         info!(
             "Tool call: {}({:?})",
@@ -90,6 +91,7 @@ impl<'a> ToolExecutor<'a> {
     }
 
     /// Execute a batch of tool calls concurrently and return all results.
+    #[instrument(name = "executor.execute_batch", skip_all, fields(count = tool_calls.len()))]
     pub async fn execute_batch(&self, tool_calls: &[ToolCall]) -> Vec<ToolCallResult> {
         let futures = tool_calls.iter().map(|tc| self.execute_one(tc));
         futures_util::future::join_all(futures).await

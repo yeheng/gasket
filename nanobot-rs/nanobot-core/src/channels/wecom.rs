@@ -15,7 +15,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use super::base::Channel;
 use super::middleware::InboundProcessor;
@@ -255,6 +255,7 @@ impl WeComChannel {
     /// Get access_token via corpid + corpsecret.
     ///
     /// Caches the token in `self.access_token`. Called automatically during `start()`.
+    #[instrument(name = "channel.wecom.get_token", skip_all)]
     pub async fn get_access_token(&mut self) -> anyhow::Result<&str> {
         if let Some(ref token) = self.access_token {
             return Ok(token);
@@ -340,6 +341,7 @@ impl WeComChannel {
     /// Send a text message to users.
     ///
     /// `to_user` — pipe-separated user IDs, e.g. `"UserID1|UserID2"` or `"@all"`.
+    #[instrument(name = "channel.wecom.send_text", skip(self, text), fields(to = %to_user))]
     pub async fn send_text(&self, to_user: &str, text: &str) -> anyhow::Result<()> {
         #[derive(Serialize)]
         struct Msg {
@@ -370,6 +372,7 @@ impl WeComChannel {
     /// Send a markdown message to users.
     ///
     /// `to_user` — pipe-separated user IDs, e.g. `"UserID1|UserID2"` or `"@all"`.
+    #[instrument(name = "channel.wecom.send_markdown", skip(self, content), fields(to = %to_user))]
     pub async fn send_markdown(&self, to_user: &str, content: &str) -> anyhow::Result<()> {
         #[derive(Serialize)]
         struct Msg {
@@ -445,6 +448,7 @@ impl WeComChannel {
     ///
     /// Verifies signature, decrypts the message, parses it, and publishes
     /// through the inbound processor middleware.
+    #[instrument(name = "channel.wecom.handle_callback", skip_all)]
     pub async fn handle_callback_message(
         &self,
         query: &WeComCallbackQuery,

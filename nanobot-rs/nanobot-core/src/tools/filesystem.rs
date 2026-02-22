@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
@@ -65,6 +65,7 @@ impl Tool for ReadFileTool {
         ])
     }
 
+    #[instrument(name = "tool.read_file", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
@@ -135,6 +136,7 @@ impl Tool for WriteFileTool {
         ])
     }
 
+    #[instrument(name = "tool.write_file", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
@@ -236,6 +238,7 @@ impl Tool for EditFileTool {
         })
     }
 
+    #[instrument(name = "tool.edit_file", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
@@ -318,6 +321,7 @@ impl Tool for ListDirTool {
         )])
     }
 
+    #[instrument(name = "tool.list_dir", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

@@ -28,7 +28,8 @@ async fn test_agent_initialization() {
 
     let tools = nanobot_core::tools::ToolRegistry::new();
     let agent =
-        nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config, tools).unwrap();
+        nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config, tools)
+            .unwrap();
 
     assert_eq!(agent.model(), "gpt-4o");
     assert_eq!(agent.workspace(), &workspace);
@@ -352,7 +353,9 @@ async fn test_memory_store() {
     let content = memory.read_long_term().await.unwrap_or_default();
     assert!(content.contains("pizza"));
 
-    let _ = memory.append_history("[2024-01-01] User asked about pizza.").await;
+    let _ = memory
+        .append_history("[2024-01-01] User asked about pizza.")
+        .await;
 
     let history = memory.read_history().await.unwrap_or_default();
     assert!(history.contains("pizza"));
@@ -1160,6 +1163,7 @@ async fn test_session_manager_save() {
     session.add_message("assistant", "Hi!", None);
 
     manager.save(&session).await;
+    manager.flush_dirty().await;
 
     // Invalidate and reload
     manager.invalidate("test:save").await;
@@ -1183,6 +1187,7 @@ async fn test_session_manager_invalidate() {
     let mut session = manager.get_or_create("test:invalidate").await;
     session.add_message("user", "Test", None);
     manager.save(&session).await;
+    manager.flush_dirty().await;
 
     manager.invalidate("test:invalidate").await;
 
@@ -1480,10 +1485,12 @@ async fn test_heartbeat_service_workspace() {
 #[tokio::test]
 async fn test_channel_logging_middleware() {
     use nanobot_core::bus::events::ChannelType;
-    use nanobot_core::bus::MessageBus;
-    use nanobot_core::channels::middleware::{MiddlewareInboundProcessor, ChannelLoggingMiddleware, InboundProcessor};
-    use nanobot_core::trail::MiddlewareStack;
     use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::middleware::{
+        ChannelLoggingMiddleware, InboundProcessor, MiddlewareInboundProcessor,
+    };
+    use nanobot_core::trail::MiddlewareStack;
     use std::sync::Arc;
 
     let (bus, mut rx, _) = MessageBus::new(10);
@@ -1514,17 +1521,19 @@ async fn test_channel_logging_middleware() {
 #[tokio::test]
 async fn test_channel_auth_middleware() {
     use nanobot_core::bus::events::ChannelType;
-    use nanobot_core::bus::MessageBus;
-    use nanobot_core::channels::middleware::{MiddlewareInboundProcessor, ChannelAuthMiddleware, InboundProcessor};
-    use nanobot_core::trail::MiddlewareStack;
     use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::middleware::{
+        ChannelAuthMiddleware, InboundProcessor, MiddlewareInboundProcessor,
+    };
+    use nanobot_core::trail::MiddlewareStack;
     use std::sync::Arc;
 
     let (bus, _, _) = MessageBus::new(10);
 
     let mut stack = MiddlewareStack::new();
     stack.push(Arc::new(ChannelAuthMiddleware::new(vec![
-        "allowed_user".to_string(),
+        "allowed_user".to_string()
     ])));
 
     let processor = MiddlewareInboundProcessor::new(stack, bus);
@@ -1545,7 +1554,7 @@ async fn test_channel_auth_middleware() {
     // Non-allowed user should be rejected
     let mut stack2 = MiddlewareStack::new();
     stack2.push(Arc::new(ChannelAuthMiddleware::new(vec![
-        "allowed_user".to_string(),
+        "allowed_user".to_string()
     ])));
     let (bus2, _, _) = MessageBus::new(10);
     let processor2 = MiddlewareInboundProcessor::new(stack2, bus2);
@@ -1566,10 +1575,12 @@ async fn test_channel_auth_middleware() {
 #[tokio::test]
 async fn test_channel_rate_limit_middleware() {
     use nanobot_core::bus::events::ChannelType;
-    use nanobot_core::bus::MessageBus;
-    use nanobot_core::channels::middleware::{MiddlewareInboundProcessor, ChannelRateLimitMiddleware, InboundProcessor};
-    use nanobot_core::trail::MiddlewareStack;
     use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::bus::MessageBus;
+    use nanobot_core::channels::middleware::{
+        ChannelRateLimitMiddleware, InboundProcessor, MiddlewareInboundProcessor,
+    };
+    use nanobot_core::trail::MiddlewareStack;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -1577,7 +1588,10 @@ async fn test_channel_rate_limit_middleware() {
 
     let mut stack = MiddlewareStack::new();
     // Allow 3 messages per 60 seconds
-    stack.push(Arc::new(ChannelRateLimitMiddleware::new(3, Duration::from_secs(60))));
+    stack.push(Arc::new(ChannelRateLimitMiddleware::new(
+        3,
+        Duration::from_secs(60),
+    )));
 
     let processor = MiddlewareInboundProcessor::new(stack, bus);
 
@@ -1787,8 +1801,8 @@ async fn test_slack_config_creation() {
 #[cfg(feature = "slack")]
 #[tokio::test]
 async fn test_slack_channel_creation() {
-    use nanobot_core::channels::slack::{SlackChannel, SlackConfig};
     use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::slack::{SlackChannel, SlackConfig};
     use nanobot_core::channels::Channel;
     use std::sync::Arc;
 
@@ -1808,8 +1822,8 @@ async fn test_slack_channel_creation() {
 #[tokio::test]
 async fn test_slack_channel_lifecycle() {
     use nanobot_core::channels::base::Channel;
-    use nanobot_core::channels::slack::{SlackChannel, SlackConfig};
     use nanobot_core::channels::middleware::NoopInboundProcessor;
+    use nanobot_core::channels::slack::{SlackChannel, SlackConfig};
     use std::sync::Arc;
 
     let config = SlackConfig {
@@ -2066,9 +2080,11 @@ async fn test_dingtalk_callback_message_parsing() {
 #[cfg(feature = "dingtalk")]
 #[tokio::test]
 async fn test_dingtalk_callback_message_with_allowlist() {
-    use nanobot_core::channels::dingtalk::{DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig, DingTalkTextContent};
-    use nanobot_core::channels::middleware::InboundProcessor;
     use nanobot_core::bus::events::InboundMessage;
+    use nanobot_core::channels::dingtalk::{
+        DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig, DingTalkTextContent,
+    };
+    use nanobot_core::channels::middleware::InboundProcessor;
     use std::sync::Arc;
 
     // Create a processor that collects messages

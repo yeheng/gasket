@@ -7,7 +7,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 /// A conversation session
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +83,7 @@ struct CachedSession {
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, CachedSession>>>,
     sessions_dir: PathBuf,
+    _flusher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl SessionManager {
@@ -91,9 +92,22 @@ impl SessionManager {
         let sessions_dir = workspace.join("sessions");
         let _ = tokio::fs::create_dir_all(&sessions_dir).await;
 
+        let sessions = Arc::new(RwLock::new(HashMap::new()));
+
+        let sessions_clone = sessions.clone();
+        let dir_clone = sessions_dir.clone();
+        let flusher_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                Self::flush_dirty_internal(&sessions_clone, &dir_clone).await;
+            }
+        });
+
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions,
             sessions_dir,
+            _flusher_handle: Some(flusher_handle),
         }
     }
 
@@ -107,6 +121,7 @@ impl SessionManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             sessions_dir,
+            _flusher_handle: None,
         }
     }
 
@@ -114,9 +129,17 @@ impl SessionManager {
     ///
     /// Reads from memory cache first; falls back to disk; creates new if
     /// neither exists. Does NOT write to disk.
+    #[instrument(name = "session.get_or_create", skip(self), fields(key = %key))]
     pub async fn get_or_create(&self, key: &str) -> Session {
-        let mut sessions = self.sessions.write().await;
+        {
+            let sessions = self.sessions.read().await;
+            if let Some(cached) = sessions.get(key) {
+                return cached.session.clone();
+            }
+        }
 
+        let mut sessions = self.sessions.write().await;
+        // Double check after acquiring write lock
         if let Some(cached) = sessions.get(key) {
             return cached.session.clone();
         }
@@ -142,6 +165,7 @@ impl SessionManager {
     /// to persist. For convenience, this method also flushes the specific
     /// session immediately so callers that rely on the old always-persist
     /// semantics keep working.
+    #[instrument(name = "session.save", skip(self), fields(key = %session.key))]
     pub async fn save(&self, session: &Session) {
         let mut sessions = self.sessions.write().await;
         sessions.insert(
@@ -151,18 +175,24 @@ impl SessionManager {
                 dirty: true,
             },
         );
-        // Persist this session immediately (compatible with old behaviour).
-        // In a future optimisation this can be batched.
-        let _ = self.save_to_disk(session).await;
+        // Disk write is now purely deferred to flush_dirty / background flusher.
     }
 
     /// Flush all dirty sessions to disk.
     #[allow(dead_code)]
+    #[instrument(name = "session.flush_dirty", skip_all)]
     pub async fn flush_dirty(&self) {
-        let mut sessions = self.sessions.write().await;
+        Self::flush_dirty_internal(&self.sessions, &self.sessions_dir).await;
+    }
+
+    async fn flush_dirty_internal(
+        sessions_lock: &Arc<RwLock<HashMap<String, CachedSession>>>,
+        sessions_dir: &PathBuf,
+    ) {
+        let mut sessions = sessions_lock.write().await;
         for cached in sessions.values_mut() {
             if cached.dirty {
-                let _ = self.save_to_disk(&cached.session).await;
+                let _ = Self::save_to_disk_internal(&cached.session, sessions_dir).await;
                 cached.dirty = false;
             }
         }
@@ -192,8 +222,12 @@ impl SessionManager {
         Ok(session)
     }
 
-    async fn save_to_disk(&self, session: &Session) -> anyhow::Result<()> {
-        let path = self.session_path(&session.key);
+    async fn save_to_disk_internal(
+        session: &Session,
+        sessions_dir: &PathBuf,
+    ) -> anyhow::Result<()> {
+        let safe_key = session.key.replace(['/', ':', ' '], "_");
+        let path = sessions_dir.join(format!("{}.json", safe_key));
         let tmp_path = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
 
         // Serialize

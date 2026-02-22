@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serenity::all::{GatewayIntents, Message as DiscordMessage};
 use serenity::prelude::*;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use super::middleware::InboundProcessor;
@@ -38,6 +38,7 @@ impl DiscordChannel {
     }
 
     /// Start the Discord bot
+    #[instrument(name = "channel.discord.start", skip_all)]
     pub async fn start_bot(&self) -> anyhow::Result<()> {
         info!("Starting Discord bot");
 

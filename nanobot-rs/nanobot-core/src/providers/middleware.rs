@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 
 use crate::providers::{ChatRequest, ChatResponse, LlmProvider};
 
@@ -41,6 +41,7 @@ impl LlmProvider for LoggingProvider {
         self.inner.default_model()
     }
 
+    #[instrument(name = "provider.logging", skip_all)]
     async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse> {
         debug!(
             model = %request.model,
@@ -141,6 +142,7 @@ impl LlmProvider for MetricsProvider {
         self.inner.default_model()
     }
 
+    #[instrument(name = "provider.metrics", skip_all)]
     async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse> {
         let start = Instant::now();
         let result = self.inner.chat(request).await;
@@ -202,6 +204,7 @@ impl LlmProvider for RateLimitProvider {
         self.inner.default_model()
     }
 
+    #[instrument(name = "provider.rate_limit", skip_all)]
     async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse> {
         // Wait until we're within the rate limit
         loop {

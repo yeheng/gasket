@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, instrument};
 
 use super::base::Channel;
 use super::middleware::InboundProcessor;
@@ -112,6 +112,7 @@ impl FeishuChannel {
     }
 
     /// Handle incoming webhook event
+    #[instrument(name = "channel.feishu.handle_webhook", skip_all)]
     pub async fn handle_webhook_event(&mut self, event: FeishuEvent) -> anyhow::Result<()> {
         // Verify token if configured
         if let Some(ref token) = self.config.verification_token {
@@ -197,6 +198,7 @@ impl FeishuChannel {
     }
 
     /// Send a text message to a chat
+    #[instrument(name = "channel.feishu.send_text", skip(self, text), fields(chat_id = %chat_id))]
     pub async fn send_text(&self, chat_id: &str, text: &str) -> anyhow::Result<()> {
         let token = self
             .access_token

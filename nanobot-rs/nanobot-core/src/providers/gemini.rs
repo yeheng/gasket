@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
-use tracing::debug;
+use tracing::{debug, instrument};
 
 /// Gemini provider using Google's Generative AI API
 pub struct GeminiProvider {
@@ -237,6 +237,7 @@ impl LlmProvider for GeminiProvider {
         &self.default_model
     }
 
+    #[instrument(skip(self, request), fields(provider = "gemini", model = %request.model))]
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
         let model = if request.model.is_empty() {
             &self.default_model

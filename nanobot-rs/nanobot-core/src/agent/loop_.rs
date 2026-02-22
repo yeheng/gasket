@@ -212,6 +212,7 @@ impl AgentLoop {
     }
 
     /// Run the agent iteration loop
+    #[instrument(name = "agent.run_loop", skip_all, fields(model = %self.config.model))]
     async fn run_agent_loop(
         &self,
         initial_messages: Vec<ChatMessage>,

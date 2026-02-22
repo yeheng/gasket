@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::instrument;
 use uuid::Uuid;
 
 use super::{Tool, ToolError, ToolResult};
@@ -76,6 +77,7 @@ impl Tool for CronTool {
         })
     }
 
+    #[instrument(name = "tool.cron", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

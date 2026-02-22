@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
@@ -271,6 +271,7 @@ impl Tool for WebSearchTool {
         ])
     }
 
+    #[instrument(name = "tool.web_search", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {
@@ -419,6 +420,7 @@ impl Tool for WebFetchTool {
         ])
     }
 
+    #[instrument(name = "tool.web_fetch", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

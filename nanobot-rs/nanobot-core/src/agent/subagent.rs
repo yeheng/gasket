@@ -12,7 +12,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::providers::LlmProvider;
@@ -300,22 +300,18 @@ impl SubagentManager {
         }
 
         match std::fs::read_to_string(path) {
-            Ok(content) => {
-                match serde_json::from_str::<Vec<SubagentTask>>(&content) {
-                    Ok(tasks) => {
-                        let map: HashMap<String, SubagentTask> = tasks
-                            .into_iter()
-                            .map(|t| (t.id.clone(), t))
-                            .collect();
-                        info!("Loaded {} persisted tasks from {:?}", map.len(), path);
-                        map
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse tasks file: {}, starting fresh", e);
-                        HashMap::new()
-                    }
+            Ok(content) => match serde_json::from_str::<Vec<SubagentTask>>(&content) {
+                Ok(tasks) => {
+                    let map: HashMap<String, SubagentTask> =
+                        tasks.into_iter().map(|t| (t.id.clone(), t)).collect();
+                    info!("Loaded {} persisted tasks from {:?}", map.len(), path);
+                    map
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to parse tasks file: {}, starting fresh", e);
+                    HashMap::new()
+                }
+            },
             Err(e) => {
                 warn!("Failed to read tasks file: {}, starting fresh", e);
                 HashMap::new()
@@ -336,12 +332,12 @@ impl SubagentManager {
         let tasks_vec: Vec<SubagentTask> = tasks.read().await.values().cloned().collect();
 
         if let Some(parent) = tasks_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            let _ = tokio::fs::create_dir_all(parent).await;
         }
 
         match serde_json::to_string_pretty(&tasks_vec) {
             Ok(content) => {
-                if let Err(e) = std::fs::write(tasks_file, content) {
+                if let Err(e) = tokio::fs::write(tasks_file, content).await {
                     warn!("Failed to save tasks file: {}", e);
                 } else {
                     debug!("Flushed {} tasks to {:?}", tasks_vec.len(), tasks_file);
@@ -359,6 +355,7 @@ impl SubagentManager {
     }
 
     /// Recover tasks that were interrupted (mark running tasks as failed)
+    #[instrument(name = "subagent.recover", skip_all)]
     pub async fn recover_interrupted_tasks(&self) {
         let mut tasks = self.tasks.write().await;
         let mut recovered = 0;
@@ -382,10 +379,11 @@ impl SubagentManager {
     }
 
     /// Submit a new task for background execution
+    #[instrument(name = "subagent.submit", skip_all, fields(task_id = %task.id))]
     pub async fn submit(&self, task: SubagentTask) -> anyhow::Result<String> {
-        // Check concurrency limit
+        // Check concurrency limit and insert as pending
         {
-            let tasks = self.tasks.read().await;
+            let mut tasks = self.tasks.write().await;
             let running = tasks
                 .values()
                 .filter(|t| t.status == TaskStatus::Running)
@@ -396,14 +394,12 @@ impl SubagentManager {
                     self.config.max_concurrent
                 );
             }
+            tasks.insert(task.id.clone(), task.clone());
         }
 
         let task_id = task.id.clone();
         let prompt = task.prompt.clone();
         let timeout = Duration::from_secs(task.timeout_secs);
-
-        // Store as pending
-        self.tasks.write().await.insert(task_id.clone(), task);
 
         // Mark dirty (background flusher will persist)
         self.mark_dirty();
@@ -516,6 +512,7 @@ impl SubagentManager {
     }
 
     /// Cancel a task
+    #[instrument(name = "subagent.cancel", skip(self), fields(task_id = %task_id))]
     pub async fn cancel(&self, task_id: &str) -> bool {
         if let Some(handle) = self.handles.write().await.remove(task_id) {
             handle.abort();
@@ -535,6 +532,7 @@ impl SubagentManager {
     }
 
     /// Clean up finished tasks older than the specified duration
+    #[instrument(name = "subagent.cleanup", skip_all)]
     pub async fn cleanup_old_tasks(&self, older_than: Duration) -> usize {
         let mut tasks = self.tasks.write().await;
         let cutoff =

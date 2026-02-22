@@ -9,7 +9,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use super::middleware::InboundProcessor;
@@ -82,6 +82,7 @@ impl DingTalkChannel {
     }
 
     /// Send a text message via webhook
+    #[instrument(name = "channel.dingtalk.send_text", skip_all)]
     pub async fn send_text(&self, text: &str) -> anyhow::Result<()> {
         let url = self.get_signed_webhook_url();
 
@@ -127,6 +128,7 @@ impl DingTalkChannel {
     }
 
     /// Send a markdown message via webhook
+    #[instrument(name = "channel.dingtalk.send_markdown", skip_all)]
     pub async fn send_markdown(&self, title: &str, text: &str) -> anyhow::Result<()> {
         let url = self.get_signed_webhook_url();
 
@@ -174,6 +176,7 @@ impl DingTalkChannel {
     }
 
     /// Handle incoming callback message (for 2.0 robots with callback mode)
+    #[instrument(name = "channel.dingtalk.handle_callback", skip_all)]
     pub async fn handle_callback_message(&self, message: DingTalkCallbackMessage) -> anyhow::Result<()> {
         // Check allowlist
         if !self.config.allow_from.is_empty() {

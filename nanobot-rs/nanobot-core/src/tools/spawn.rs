@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::instrument;
 
 use super::base::{Tool, ToolError};
 use crate::agent::subagent::{SubagentManager, SubagentTask};
@@ -83,6 +84,7 @@ impl Tool for SpawnTool {
         })
     }
 
+    #[instrument(name = "tool.spawn", skip_all)]
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let args: SpawnArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;

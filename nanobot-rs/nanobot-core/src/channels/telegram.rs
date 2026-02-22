@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use teloxide::prelude::*;
 use teloxide::types::ChatId;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use super::middleware::InboundProcessor;
@@ -38,6 +38,7 @@ impl TelegramChannel {
     }
 
     /// Start the Telegram bot (blocking)
+    #[instrument(name = "channel.telegram.start", skip_all)]
     pub async fn start(self) -> anyhow::Result<()> {
         info!("Starting Telegram bot");
 
@@ -110,6 +111,7 @@ impl Channel for TelegramChannel {
         Ok(())
     }
 
+    #[instrument(name = "channel.telegram.send", skip_all, fields(chat_id = %msg.chat_id))]
     async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
         let bot = Bot::new(&self.config.token);
         let chat_id: i64 = msg.chat_id.parse()?;

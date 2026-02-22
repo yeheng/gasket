@@ -1,6 +1,7 @@
 //! Message bus for inter-component communication
 
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tracing::instrument;
 
 use super::events::{InboundMessage, OutboundMessage};
 
@@ -41,6 +42,7 @@ impl MessageBus {
     }
 
     /// Publish an inbound message
+    #[instrument(name = "bus.publish_inbound", skip_all)]
     pub async fn publish_inbound(&self, msg: InboundMessage) {
         if let Err(e) = self.inbound_tx.send(msg).await {
             tracing::error!("Failed to publish inbound message: {}", e);
@@ -48,6 +50,7 @@ impl MessageBus {
     }
 
     /// Publish an outbound message
+    #[instrument(name = "bus.publish_outbound", skip_all)]
     pub async fn publish_outbound(&self, msg: OutboundMessage) {
         if let Err(e) = self.outbound_tx.send(msg).await {
             tracing::error!("Failed to publish outbound message: {}", e);

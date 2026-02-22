@@ -15,7 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
@@ -112,6 +112,7 @@ impl Tool for ExecTool {
         ])
     }
 
+    #[instrument(name = "tool.exec", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         #[derive(Deserialize)]
         struct Args {

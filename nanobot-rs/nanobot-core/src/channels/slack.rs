@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, instrument};
 
 use super::base::Channel;
 use super::middleware::InboundProcessor;
@@ -56,6 +56,7 @@ impl SlackChannel {
     }
 
     /// Start the Slack bot using WebSocket
+    #[instrument(name = "channel.slack.start", skip_all)]
     pub async fn start_bot(&self) -> anyhow::Result<()> {
         info!("Starting Slack bot");
 
@@ -211,6 +212,7 @@ impl SlackChannel {
     }
 
     /// Send a message to Slack
+    #[instrument(name = "channel.slack.send_message", skip_all, fields(channel = %channel))]
     pub async fn send_message(
         &self,
         channel: &str,

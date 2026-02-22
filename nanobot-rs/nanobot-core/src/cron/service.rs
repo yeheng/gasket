@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 /// A scheduled job
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +182,7 @@ impl CronService {
     }
 
     /// Add a job (immediately flushed since it's a user-facing mutation)
+    #[instrument(name = "cron.add_job", skip_all, fields(job_id = %job.id))]
     pub async fn add_job(&self, job: CronJob) -> anyhow::Result<()> {
         let mut jobs = self.jobs.write().await;
         jobs.insert(job.id.clone(), job.clone());
@@ -191,6 +192,7 @@ impl CronService {
     }
 
     /// Remove a job (immediately flushed since it's a user-facing mutation)
+    #[instrument(name = "cron.remove_job", skip(self), fields(job_id = %id))]
     pub async fn remove_job(&self, id: &str) -> anyhow::Result<bool> {
         let mut jobs = self.jobs.write().await;
         let removed = jobs.remove(id).is_some();
@@ -214,6 +216,7 @@ impl CronService {
     }
 
     /// Get jobs that are due to run
+    #[instrument(name = "cron.get_due_jobs", skip_all)]
     pub async fn get_due_jobs(&self) -> Vec<CronJob> {
         let jobs = self.jobs.read().await;
         let now = Utc::now();
@@ -225,6 +228,7 @@ impl CronService {
     }
 
     /// Mark a job as run (debounced — only marks dirty, flushed by background task)
+    #[instrument(name = "cron.mark_job_run", skip(self), fields(job_id = %id))]
     pub async fn mark_job_run(&self, id: &str) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.get_mut(id) {
