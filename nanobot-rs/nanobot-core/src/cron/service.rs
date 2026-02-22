@@ -1,13 +1,14 @@
 //! Cron service for scheduled tasks
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// A scheduled job
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,10 +88,15 @@ impl CronJob {
     }
 }
 
-/// Cron service
+/// Cron service with dirty-flag persistence.
+///
+/// Jobs are kept in memory and flushed to disk by a background task
+/// every 5 seconds, but only when changes have actually occurred.
 pub struct CronService {
     jobs: Arc<RwLock<HashMap<String, CronJob>>>,
     jobs_dir: std::path::PathBuf,
+    dirty: Arc<AtomicBool>,
+    _flusher_handle: tokio::task::JoinHandle<()>,
 }
 
 impl CronService {
@@ -99,32 +105,97 @@ impl CronService {
         let jobs_dir = workspace.join("cron");
         let _ = std::fs::create_dir_all(&jobs_dir);
 
-        let service = Self {
-            jobs: Arc::new(RwLock::new(HashMap::new())),
-            jobs_dir,
+        let jobs = Arc::new(RwLock::new(HashMap::new()));
+        let dirty = Arc::new(AtomicBool::new(false));
+
+        // Load existing jobs synchronously during init
+        {
+            let path = jobs_dir.join("jobs.json");
+            if path.exists() {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        if let Ok(loaded) = serde_json::from_str::<HashMap<String, CronJob>>(&content) {
+                            let loaded: HashMap<String, CronJob> = loaded
+                                .into_iter()
+                                .map(|(id, mut job)| {
+                                    job.next_run = CronJob::calculate_next_run(&job.cron);
+                                    (id, job)
+                                })
+                                .collect();
+                            info!("Loaded {} cron jobs", loaded.len());
+                            *jobs.blocking_write() = loaded;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to read cron jobs file: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Spawn background flusher (every 5 seconds)
+        let flusher_handle = {
+            let jobs = jobs.clone();
+            let dirty = dirty.clone();
+            let jobs_dir = jobs_dir.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    if dirty.swap(false, Ordering::AcqRel) {
+                        let jobs_snapshot = jobs.read().await.clone();
+                        let path = jobs_dir.join("jobs.json");
+                        match serde_json::to_string_pretty(&jobs_snapshot) {
+                            Ok(content) => {
+                                if let Err(e) = std::fs::write(&path, content) {
+                                    warn!("Failed to flush cron jobs: {}", e);
+                                } else {
+                                    debug!("Flushed {} cron jobs to disk", jobs_snapshot.len());
+                                }
+                            }
+                            Err(e) => warn!("Failed to serialize cron jobs: {}", e),
+                        }
+                    }
+                }
+            })
         };
 
-        // Load existing jobs
-        let _ = service.load_jobs();
-
-        service
+        Self {
+            jobs,
+            jobs_dir,
+            dirty,
+            _flusher_handle: flusher_handle,
+        }
     }
 
-    /// Add a job
+    /// Mark jobs as dirty (will be flushed by background task)
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Force-flush jobs to disk immediately
+    fn flush_sync(&self, jobs: &HashMap<String, CronJob>) {
+        let path = self.jobs_dir.join("jobs.json");
+        if let Ok(content) = serde_json::to_string_pretty(jobs) {
+            let _ = std::fs::write(&path, content);
+        }
+    }
+
+    /// Add a job (immediately flushed since it's a user-facing mutation)
     pub async fn add_job(&self, job: CronJob) -> anyhow::Result<()> {
         let mut jobs = self.jobs.write().await;
         jobs.insert(job.id.clone(), job.clone());
-        self.save_jobs(&jobs)?;
+        self.flush_sync(&jobs);
         info!("Added cron job: {} ({})", job.name, job.id);
         Ok(())
     }
 
-    /// Remove a job
+    /// Remove a job (immediately flushed since it's a user-facing mutation)
     pub async fn remove_job(&self, id: &str) -> anyhow::Result<bool> {
         let mut jobs = self.jobs.write().await;
         let removed = jobs.remove(id).is_some();
         if removed {
-            self.save_jobs(&jobs)?;
+            self.flush_sync(&jobs);
             info!("Removed cron job: {}", id);
         }
         Ok(removed)
@@ -142,40 +213,6 @@ impl CronService {
         jobs.values().cloned().collect()
     }
 
-    /// Load jobs from disk
-    fn load_jobs(&self) -> anyhow::Result<()> {
-        let path = self.jobs_dir.join("jobs.json");
-        if !path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&path)?;
-        let jobs: HashMap<String, CronJob> = serde_json::from_str(&content)?;
-
-        // Update next_run for loaded jobs
-        let jobs: HashMap<String, CronJob> = jobs
-            .into_iter()
-            .map(|(id, mut job)| {
-                job.next_run = CronJob::calculate_next_run(&job.cron);
-                (id, job)
-            })
-            .collect();
-
-        let mut stored = self.jobs.blocking_write();
-        *stored = jobs;
-
-        info!("Loaded {} cron jobs", stored.len());
-        Ok(())
-    }
-
-    /// Save jobs to disk
-    fn save_jobs(&self, jobs: &HashMap<String, CronJob>) -> anyhow::Result<()> {
-        let path = self.jobs_dir.join("jobs.json");
-        let content = serde_json::to_string_pretty(jobs)?;
-        std::fs::write(&path, content)?;
-        Ok(())
-    }
-
     /// Get jobs that are due to run
     pub async fn get_due_jobs(&self) -> Vec<CronJob> {
         let jobs = self.jobs.read().await;
@@ -187,13 +224,13 @@ impl CronService {
             .collect()
     }
 
-    /// Mark a job as run
+    /// Mark a job as run (debounced — only marks dirty, flushed by background task)
     pub async fn mark_job_run(&self, id: &str) {
         let mut jobs = self.jobs.write().await;
         if let Some(job) = jobs.get_mut(id) {
             job.update_next_run();
         }
-        let _ = self.save_jobs(&jobs);
+        self.mark_dirty();
         debug!("Marked job {} as run", id);
     }
 }

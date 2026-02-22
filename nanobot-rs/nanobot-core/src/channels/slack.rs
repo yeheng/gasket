@@ -11,7 +11,6 @@ use super::base::Channel;
 use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
-use crate::trail::TrailContext;
 
 /// Slack channel configuration
 #[derive(Debug, Clone)]
@@ -45,7 +44,6 @@ struct SlackMessage {
 pub struct SlackChannel {
     config: SlackConfig,
     inbound_processor: Arc<dyn InboundProcessor>,
-    trail_ctx: TrailContext,
 }
 
 impl SlackChannel {
@@ -54,14 +52,7 @@ impl SlackChannel {
         Self {
             config,
             inbound_processor,
-            trail_ctx: TrailContext::default(),
         }
-    }
-
-    /// Set the trail context for this channel.
-    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
-        self.trail_ctx = ctx;
-        self
     }
 
     /// Start the Slack bot using WebSocket
@@ -80,7 +71,6 @@ impl SlackChannel {
         info!("Slack WebSocket connected");
 
         let inbound_processor = self.inbound_processor.clone();
-        let trail_ctx = self.trail_ctx.clone();
         let group_policy = self.config.group_policy.clone();
 
         // Handle messages
@@ -92,7 +82,6 @@ impl SlackChannel {
                             &event,
                             &mut write,
                             &inbound_processor,
-                            &trail_ctx,
                             &group_policy,
                         )
                         .await;
@@ -144,7 +133,6 @@ impl SlackChannel {
         event: &serde_json::Value,
         write: &mut W,
         inbound_processor: &Arc<dyn InboundProcessor>,
-        _trail_ctx: &TrailContext,
         group_policy: &Option<String>,
     ) where
         W: SinkExt<tokio_tungstenite::tungstenite::Message> + Unpin,
@@ -198,9 +186,6 @@ impl SlackChannel {
 
                             debug!("Received Slack message from {}: {}", user, text);
 
-                            // Get current tracing context
-                            let ctx = crate::trail::TrailContext::current();
-
                             let inbound = InboundMessage {
                                 channel: ChannelType::Slack,
                                 sender_id: user.to_string(),
@@ -212,7 +197,7 @@ impl SlackChannel {
                                     "ts": event_data["ts"]
                                 })),
                                 timestamp: chrono::Utc::now(),
-                                trace_id: ctx.trace_id(),
+                                trace_id: None,
                             };
 
                             if let Err(e) = inbound_processor.process(inbound).await {

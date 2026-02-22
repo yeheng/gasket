@@ -11,7 +11,6 @@ use super::base::Channel;
 use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
-use crate::trail::TrailContext;
 
 /// Telegram channel configuration
 #[derive(Debug, Clone)]
@@ -27,7 +26,6 @@ pub struct TelegramConfig {
 pub struct TelegramChannel {
     config: TelegramConfig,
     inbound_processor: Arc<dyn InboundProcessor>,
-    trail_ctx: TrailContext,
 }
 
 impl TelegramChannel {
@@ -36,14 +34,7 @@ impl TelegramChannel {
         Self {
             config,
             inbound_processor,
-            trail_ctx: TrailContext::default(),
         }
-    }
-
-    /// Set the trail context for this channel.
-    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
-        self.trail_ctx = ctx;
-        self
     }
 
     /// Start the Telegram bot (blocking)
@@ -74,10 +65,6 @@ impl TelegramChannel {
 
                         debug!("Received message from {}: {}", user_id, text);
 
-                        // Get current tracing context
-                        let ctx = crate::trail::TrailContext::current();
-
-                        // Process through middleware
                         let inbound = InboundMessage {
                             channel: ChannelType::Telegram,
                             sender_id: user_id_str,
@@ -86,7 +73,7 @@ impl TelegramChannel {
                             media: None,
                             metadata: None,
                             timestamp: chrono::Utc::now(),
-                            trace_id: ctx.trace_id(),
+                            trace_id: None,
                         };
 
                         if let Err(e) = inbound_processor.process(inbound).await {

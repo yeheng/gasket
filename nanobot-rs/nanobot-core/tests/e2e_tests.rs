@@ -20,15 +20,15 @@ async fn test_agent_initialization() {
         temperature: 0.7,
         max_tokens: 1024,
         memory_window: 20,
-        restrict_to_workspace: true,
         max_tool_result_chars: 8000,
     };
 
     let provider =
         nanobot_core::providers::OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
 
+    let tools = nanobot_core::tools::ToolRegistry::new();
     let agent =
-        nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config).unwrap();
+        nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config, tools).unwrap();
 
     assert_eq!(agent.model(), "gpt-4o");
     assert_eq!(agent.workspace(), &workspace);
@@ -44,7 +44,6 @@ async fn test_agent_config_default() {
     assert_eq!(config.temperature, 0.7);
     assert_eq!(config.max_tokens, 4096);
     assert_eq!(config.memory_window, 50);
-    assert!(!config.restrict_to_workspace);
 }
 
 // =============================================================================
@@ -2301,30 +2300,6 @@ async fn test_channel_manager_bus_access() {
 
     // Should be able to get bus reference
     let _bus_ref = manager.bus();
-}
-
-// =============================================================================
-// Message Context Tests
-// =============================================================================
-
-#[tokio::test]
-async fn test_message_context_creation() {
-    use nanobot_core::channels::base::MessageContext;
-    use nanobot_core::trail::TrailContext;
-
-    let trail_ctx = TrailContext::default();
-    let ctx = MessageContext::new(trail_ctx.clone());
-
-    assert_eq!(ctx.trail_ctx.trace_id(), trail_ctx.trace_id());
-    assert!(ctx.metadata.is_empty());
-}
-
-#[tokio::test]
-async fn test_message_context_default() {
-    use nanobot_core::channels::base::MessageContext;
-
-    let ctx = MessageContext::default();
-    assert!(ctx.metadata.is_empty());
 }
 
 // =============================================================================

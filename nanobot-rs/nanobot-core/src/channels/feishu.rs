@@ -12,7 +12,6 @@ use tracing::{debug, error, info};
 use super::base::Channel;
 use super::middleware::InboundProcessor;
 use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
-use crate::trail::TrailContext;
 
 /// Feishu channel configuration
 #[derive(Debug, Clone)]
@@ -40,7 +39,6 @@ pub struct FeishuConfig {
 pub struct FeishuChannel {
     config: FeishuConfig,
     inbound_processor: Arc<dyn InboundProcessor>,
-    trail_ctx: TrailContext,
     client: Client,
     access_token: Option<String>,
 }
@@ -51,16 +49,9 @@ impl FeishuChannel {
         Self {
             config,
             inbound_processor,
-            trail_ctx: TrailContext::default(),
             client: Client::new(),
             access_token: None,
         }
-    }
-
-    /// Set the trail context for this channel.
-    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
-        self.trail_ctx = ctx;
-        self
     }
 
     /// Get tenant access token
@@ -175,9 +166,6 @@ impl FeishuChannel {
 
             let metadata = serde_json::to_value(&message).ok();
 
-            // Get current tracing context
-            let ctx = crate::trail::TrailContext::current();
-
             let inbound = InboundMessage {
                 channel: ChannelType::Feishu,
                 sender_id: sender_info.sender_id.user_id.clone(),
@@ -186,7 +174,7 @@ impl FeishuChannel {
                 media: None,
                 metadata,
                 timestamp: chrono::Utc::now(),
-                trace_id: ctx.trace_id(),
+                trace_id: None,
             };
 
             self.inbound_processor.process(inbound).await?;

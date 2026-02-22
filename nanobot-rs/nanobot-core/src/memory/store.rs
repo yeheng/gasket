@@ -106,17 +106,11 @@ impl MemoryStore for FileMemoryStore {
     async fn read(&self, key: &str) -> anyhow::Result<Option<String>> {
         let path = self.key_to_path(key);
 
-        // Use spawn_blocking to avoid blocking the async runtime
-        let content = tokio::task::spawn_blocking(move || {
-            if path.exists() {
-                std::fs::read_to_string(path).map(Some)
-            } else {
-                Ok(None)
-            }
-        })
-        .await??;
-
-        Ok(content)
+        match tokio::fs::read_to_string(&path).await {
+            Ok(content) => Ok(Some(content)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn write(&self, key: &str, value: &str) -> anyhow::Result<()> {
@@ -124,18 +118,10 @@ impl MemoryStore for FileMemoryStore {
 
         let path = self.key_to_path(key);
         let tmp_path = path.with_extension("tmp");
-        let key_owned = key.to_string();
-        let value_owned = value.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            // Write to tmp file first
-            std::fs::write(&tmp_path, value_owned)?;
-            // Atomic rename
-            std::fs::rename(&tmp_path, &path)?;
-            debug!("Wrote memory key: {}", key_owned);
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
+        tokio::fs::write(&tmp_path, value).await?;
+        tokio::fs::rename(&tmp_path, &path).await?;
+        debug!("Wrote memory key: {}", key);
 
         Ok(())
     }
@@ -145,75 +131,71 @@ impl MemoryStore for FileMemoryStore {
 
         let path = self.key_to_path(key);
 
-        let deleted = tokio::task::spawn_blocking(move || {
-            if path.exists() {
-                std::fs::remove_file(path)?;
-                Ok::<bool, anyhow::Error>(true)
-            } else {
-                Ok(false)
-            }
-        })
-        .await??;
-
-        Ok(deleted)
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn append(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let _guard = self.get_stripe_lock(key).lock().await;
 
         let path = self.key_to_path(key);
-        let key_owned = key.to_string();
-        let value_owned = value.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            use std::io::Write;
-            // O_APPEND is used here for atomic append at the OS level
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)?
-                .write_all(value_owned.as_bytes())?;
-            debug!("Appended to memory key: {}", key_owned);
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+
+        file.write_all(value.as_bytes()).await?;
+        debug!("Appended to memory key: {}", key);
 
         Ok(())
     }
 
     async fn query(&self, query: MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
         let memory_dir = self.memory_dir.clone();
+        let mut entries = Vec::new();
 
-        tokio::task::spawn_blocking(move || {
-            let mut entries = Vec::new();
-            if let Ok(dir) = std::fs::read_dir(&memory_dir) {
-                for entry in dir.flatten() {
-                    let filename = entry.file_name().to_string_lossy().to_string();
-                    if let Some(prefix) = &query.prefix {
-                        if !filename.starts_with(prefix) {
-                            continue;
-                        }
-                    }
-                    let modified = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .map(|t| DateTime::<Utc>::from(t))
-                        .unwrap_or_else(Utc::now);
-                    entries.push(MemoryEntry {
-                        key: filename,
-                        updated_at: modified,
-                    });
-                    if let Some(limit) = query.limit {
-                        if entries.len() >= limit {
-                            break;
-                        }
-                    }
+        let mut dir = match tokio::fs::read_dir(&memory_dir).await {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+            Err(e) => return Err(e.into()),
+        };
+
+        while let Some(entry) = dir.next_entry().await? {
+            let filename = entry.file_name().to_string_lossy().to_string();
+
+            if let Some(prefix) = &query.prefix {
+                if !filename.starts_with(prefix) {
+                    continue;
                 }
             }
-            Ok(entries)
-        })
-        .await?
+
+            let modified = entry
+                .metadata()
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| DateTime::<Utc>::from(t))
+                .unwrap_or_else(Utc::now);
+
+            entries.push(MemoryEntry {
+                key: filename,
+                updated_at: modified,
+            });
+
+            if let Some(limit) = query.limit {
+                if entries.len() >= limit {
+                    break;
+                }
+            }
+        }
+
+        Ok(entries)
     }
 }
 
@@ -301,7 +283,10 @@ mod tests {
         assert_eq!(store.read("key1").await.unwrap(), None);
 
         store.write("key1", "value1").await.unwrap();
-        assert_eq!(store.read("key1").await.unwrap(), Some("value1".to_string()));
+        assert_eq!(
+            store.read("key1").await.unwrap(),
+            Some("value1".to_string())
+        );
     }
 
     #[tokio::test]
@@ -397,7 +382,8 @@ mod tests {
     /// Test that concurrent writes to different keys don't block each other
     #[tokio::test]
     async fn test_file_memory_store_concurrent_different_keys() {
-        let dir = std::env::temp_dir().join(format!("nanobot_test_concurrent_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("nanobot_test_concurrent_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let store = std::sync::Arc::new(FileMemoryStore::new(dir.clone()));

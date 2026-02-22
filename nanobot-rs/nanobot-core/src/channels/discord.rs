@@ -11,7 +11,6 @@ use super::base::Channel;
 use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
-use crate::trail::TrailContext;
 
 /// Discord channel configuration
 #[derive(Debug, Clone)]
@@ -27,7 +26,6 @@ pub struct DiscordConfig {
 pub struct DiscordChannel {
     config: DiscordConfig,
     inbound_processor: Arc<dyn InboundProcessor>,
-    trail_ctx: TrailContext,
 }
 
 impl DiscordChannel {
@@ -36,14 +34,7 @@ impl DiscordChannel {
         Self {
             config,
             inbound_processor,
-            trail_ctx: TrailContext::default(),
         }
-    }
-
-    /// Set the trail context for this channel.
-    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
-        self.trail_ctx = ctx;
-        self
     }
 
     /// Start the Discord bot
@@ -118,9 +109,6 @@ impl EventHandler for DiscordHandler {
 
         debug!("Received message from {}: {}", user_id, msg.content);
 
-        // Get current tracing context
-        let ctx = crate::trail::TrailContext::current();
-
         let inbound = InboundMessage {
             channel: ChannelType::Discord,
             sender_id: user_id,
@@ -129,7 +117,7 @@ impl EventHandler for DiscordHandler {
             media: None,
             metadata: None,
             timestamp: chrono::Utc::now(),
-            trace_id: ctx.trace_id(),
+            trace_id: None,
         };
 
         if let Err(e) = self.inbound_processor.process(inbound).await {

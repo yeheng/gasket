@@ -35,4 +35,3 @@ pub use providers::{
 };
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};
-pub use trail::{Handler, Middleware, MiddlewareStack, TrailContext};

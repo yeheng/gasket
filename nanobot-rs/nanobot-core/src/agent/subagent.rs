@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::providers::LlmProvider;
+use crate::tools::ToolRegistry;
 
 use super::loop_::{AgentConfig, AgentLoop};
 
@@ -214,7 +216,9 @@ impl Default for SubagentConfig {
 /// Each spawned task creates an independent `AgentLoop` that shares the same
 /// LLM provider but operates in its own session.
 ///
-/// Task state is persisted to disk for recovery after restarts.
+/// Task state is persisted to disk using a dirty-flag/debounce mechanism:
+/// instead of writing to disk on every status change, a background flusher
+/// checks every 5 seconds and only writes when there are actual changes.
 pub struct SubagentManager {
     /// Active tasks
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
@@ -231,25 +235,61 @@ pub struct SubagentManager {
     /// Configuration
     config: SubagentConfig,
 
+    /// Factory that produces a fresh ToolRegistry for each subagent
+    tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
+
     /// Path to the tasks persistence file
     tasks_file: PathBuf,
+
+    /// Dirty flag: set to true when in-memory state differs from disk
+    dirty: Arc<AtomicBool>,
+
+    /// Handle to the background flusher task
+    _flusher_handle: tokio::task::JoinHandle<()>,
 }
 
 impl SubagentManager {
     /// Create a new subagent manager
-    pub fn new(provider: Arc<dyn LlmProvider>, workspace: PathBuf, config: SubagentConfig) -> Self {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: SubagentConfig,
+        tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
+    ) -> Self {
         let tasks_file = workspace.join("data").join("tasks.json");
 
         // Load existing tasks from disk
         let tasks = Self::load_tasks(&tasks_file);
 
+        let tasks = Arc::new(RwLock::new(tasks));
+        let dirty = Arc::new(AtomicBool::new(false));
+
+        // Spawn background flusher (every 5 seconds)
+        let flusher_handle = {
+            let tasks = tasks.clone();
+            let dirty = dirty.clone();
+            let tasks_file = tasks_file.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    if dirty.swap(false, Ordering::AcqRel) {
+                        Self::flush_to_disk(&tasks, &tasks_file).await;
+                    }
+                }
+            })
+        };
+
         Self {
-            tasks: Arc::new(RwLock::new(tasks)),
+            tasks,
             handles: Arc::new(RwLock::new(HashMap::new())),
             provider,
             workspace,
             config,
+            tool_factory,
             tasks_file,
+            dirty,
+            _flusher_handle: flusher_handle,
         }
     }
 
@@ -283,27 +323,39 @@ impl SubagentManager {
         }
     }
 
-    /// Save tasks to the persistence file
-    async fn save_tasks(&self) {
-        let tasks: Vec<SubagentTask> = self.tasks.read().await.values().cloned().collect();
+    /// Mark in-memory state as dirty (will be flushed by background task)
+    fn mark_dirty(&self) {
+        self.dirty.store(true, Ordering::Release);
+    }
 
-        // Ensure parent directory exists
-        if let Some(parent) = self.tasks_file.parent() {
+    /// Flush tasks to disk (called by the background flusher)
+    async fn flush_to_disk(
+        tasks: &Arc<RwLock<HashMap<String, SubagentTask>>>,
+        tasks_file: &PathBuf,
+    ) {
+        let tasks_vec: Vec<SubagentTask> = tasks.read().await.values().cloned().collect();
+
+        if let Some(parent) = tasks_file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        match serde_json::to_string_pretty(&tasks) {
+        match serde_json::to_string_pretty(&tasks_vec) {
             Ok(content) => {
-                if let Err(e) = std::fs::write(&self.tasks_file, content) {
+                if let Err(e) = std::fs::write(tasks_file, content) {
                     warn!("Failed to save tasks file: {}", e);
                 } else {
-                    debug!("Saved {} tasks to {:?}", tasks.len(), self.tasks_file);
+                    debug!("Flushed {} tasks to {:?}", tasks_vec.len(), tasks_file);
                 }
             }
             Err(e) => {
                 warn!("Failed to serialize tasks: {}", e);
             }
         }
+    }
+
+    /// Force-flush to disk immediately (for shutdown or critical transitions)
+    pub async fn flush(&self) {
+        Self::flush_to_disk(&self.tasks, &self.tasks_file).await;
     }
 
     /// Recover tasks that were interrupted (mark running tasks as failed)
@@ -324,7 +376,8 @@ impl SubagentManager {
 
         if recovered > 0 {
             info!("Recovered {} interrupted tasks", recovered);
-            self.save_tasks().await;
+            self.mark_dirty();
+            self.flush().await;
         }
     }
 
@@ -352,28 +405,18 @@ impl SubagentManager {
         // Store as pending
         self.tasks.write().await.insert(task_id.clone(), task);
 
-        // Save initial state
-        self.save_tasks().await;
+        // Mark dirty (background flusher will persist)
+        self.mark_dirty();
 
         // Spawn the actual execution
         let tasks_ref = self.tasks.clone();
         let provider = self.provider.clone();
         let workspace = self.workspace.clone();
         let tid = task_id.clone();
-        let tasks_file = self.tasks_file.clone();
+        let dirty = self.dirty.clone();
+        let tool_factory = self.tool_factory.clone();
 
         let handle = tokio::spawn(async move {
-            // Helper function to save tasks
-            let save_to_disk = |tasks: &HashMap<String, SubagentTask>, path: &PathBuf| {
-                let tasks_vec: Vec<SubagentTask> = tasks.values().cloned().collect();
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Ok(content) = serde_json::to_string_pretty(&tasks_vec) {
-                    let _ = std::fs::write(path, content);
-                }
-            };
-
             // Mark as running
             {
                 let mut tasks = tasks_ref.write().await;
@@ -381,8 +424,8 @@ impl SubagentManager {
                     t.status = TaskStatus::Running;
                     t.started_at = Some(Utc::now());
                 }
-                save_to_disk(&tasks, &tasks_file);
             }
+            dirty.store(true, Ordering::Release);
 
             info!(
                 "Subagent task {} started: {}",
@@ -396,7 +439,8 @@ impl SubagentManager {
                 max_iterations: 10,
                 ..Default::default()
             };
-            let agent = match AgentLoop::new(provider, workspace, agent_config) {
+            let tools = tool_factory();
+            let agent = match AgentLoop::new(provider, workspace, agent_config, tools) {
                 Ok(a) => a,
                 Err(e) => {
                     let mut tasks = tasks_ref.write().await;
@@ -404,7 +448,7 @@ impl SubagentManager {
                         t.status = TaskStatus::Failed;
                         t.error = Some(format!("Failed to initialise subagent: {}", e));
                     }
-                    save_to_disk(&tasks, &tasks_file);
+                    dirty.store(true, Ordering::Release);
                     return;
                 }
             };
@@ -440,7 +484,7 @@ impl SubagentManager {
                         }
                     }
                 }
-                save_to_disk(&tasks, &tasks_file);
+                dirty.store(true, Ordering::Release);
             }
         });
 
@@ -482,16 +526,8 @@ impl SubagentManager {
                 task.status = TaskStatus::Cancelled;
                 task.completed_at = Some(Utc::now());
                 info!("Cancelled task: {}", task_id);
-
-                // Save state
-                let tasks_vec: Vec<SubagentTask> = tasks.values().cloned().collect();
-                drop(tasks); // Release lock before I/O
-                if let Some(parent) = self.tasks_file.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Ok(content) = serde_json::to_string_pretty(&tasks_vec) {
-                    let _ = std::fs::write(&self.tasks_file, content);
-                }
+                drop(tasks);
+                self.mark_dirty();
                 return true;
             }
         }

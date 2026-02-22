@@ -5,16 +5,21 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use nanobot_core::channels::manager::ChannelManager;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
-use nanobot_core::agent::{AgentConfig, AgentDependencies, AgentLoop};
-use nanobot_core::channels::{BusInboundProcessor, Channel};
+use nanobot_core::agent::{AgentConfig, AgentLoop};
+use nanobot_core::channels::{BusInboundProcessor, InboundProcessor};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
 use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
+use nanobot_core::tools::{
+    CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
+    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+};
 
 /// 🐈 nanobot - A lightweight AI assistant
 #[derive(Parser)]
@@ -72,9 +77,7 @@ async fn main() -> Result<()> {
 
     // Try to initialize OpenTelemetry, fall back to plain logging if unavailable
     if !init_telemetry(env_filter.clone()) {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     let cli = Cli::parse();
@@ -227,7 +230,6 @@ fn build_agent_config(config: &Config) -> AgentConfig {
             0 => defaults.memory_window,
             v => v,
         },
-        restrict_to_workspace: config.tools.restrict_to_workspace,
         max_tool_result_chars: defaults.max_tool_result_chars,
     }
 }
@@ -253,15 +255,29 @@ async fn cmd_agent(message: Option<String>, logs: bool, no_markdown: bool) -> Re
     let mut agent_config = build_agent_config(&config);
     agent_config.model = model;
 
-    // Build dependencies (CLI mode: no bus/cron, but support web tools)
-    let deps = AgentDependencies {
-        bus: None,
-        cron_service: None,
-        web_tools: Some(config.tools.web.clone()),
-        mcp_tools: Vec::new(),
+    // Build tool registry (CLI mode: no bus/cron, but support web tools)
+    let restrict = config.tools.restrict_to_workspace;
+    let allowed_dir = if restrict {
+        Some(workspace.clone())
+    } else {
+        None
     };
 
-    let agent = AgentLoop::with_dependencies(provider, workspace, agent_config, deps)
+    let mut tools = ToolRegistry::new();
+    tools.register(Box::new(ReadFileTool::new(allowed_dir.clone())));
+    tools.register(Box::new(WriteFileTool::new(allowed_dir.clone())));
+    tools.register(Box::new(EditFileTool::new(allowed_dir.clone())));
+    tools.register(Box::new(ListDirTool::new(allowed_dir)));
+    tools.register(Box::new(ExecTool::new(
+        workspace.clone(),
+        std::time::Duration::from_secs(120),
+        restrict,
+    )));
+    tools.register(Box::new(WebFetchTool::new()));
+    tools.register(Box::new(WebSearchTool::new(Some(config.tools.web.clone()))));
+    tools.register(Box::new(SpawnTool::new()));
+
+    let agent = AgentLoop::new(provider, workspace, agent_config, tools)
         .context("Failed to initialize agent (check workspace bootstrap files)")?;
     let render_md = !no_markdown;
 
@@ -383,15 +399,35 @@ async fn cmd_gateway() -> Result<()> {
         Vec::new()
     };
 
-    let deps = AgentDependencies {
-        bus: Some(bus.clone()),
-        cron_service: Some(cron_service.clone()),
-        web_tools: Some(config.tools.web.clone()),
-        mcp_tools,
+    // Build tool registry externally
+    let restrict = config.tools.restrict_to_workspace;
+    let allowed_dir = if restrict {
+        Some(workspace.clone())
+    } else {
+        None
     };
 
+    let mut tools = ToolRegistry::new();
+    tools.register(Box::new(ReadFileTool::new(allowed_dir.clone())));
+    tools.register(Box::new(WriteFileTool::new(allowed_dir.clone())));
+    tools.register(Box::new(EditFileTool::new(allowed_dir.clone())));
+    tools.register(Box::new(ListDirTool::new(allowed_dir)));
+    tools.register(Box::new(ExecTool::new(
+        workspace.clone(),
+        std::time::Duration::from_secs(120),
+        restrict,
+    )));
+    tools.register(Box::new(WebFetchTool::new()));
+    tools.register(Box::new(WebSearchTool::new(Some(config.tools.web.clone()))));
+    tools.register(Box::new(SpawnTool::new()));
+    tools.register(Box::new(MessageTool::new(bus.clone())));
+    tools.register(Box::new(CronTool::new(cron_service.clone())));
+    for mcp_tool in mcp_tools {
+        tools.register(mcp_tool);
+    }
+
     let agent = Arc::new(
-        AgentLoop::with_dependencies(provider, workspace.clone(), agent_config, deps)
+        AgentLoop::new(provider, workspace.clone(), agent_config, tools)
             .context("Failed to initialize agent (check workspace bootstrap files)")?,
     );
 
@@ -400,12 +436,12 @@ async fn cmd_gateway() -> Result<()> {
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     // --- Channel manager + outbound router ---
-    let channel_manager = Arc::new(nanobot_core::channels::ChannelManager::new(bus.clone()));
+    let channel_manager = Arc::new(ChannelManager::new(bus.clone()));
     tasks.push(channel_manager.spawn_outbound_router(outbound_rx));
 
     // Create inbound processor for channels (applies middleware before publishing to bus)
     #[allow(unused_variables)]
-    let inbound_processor: Arc<dyn nanobot_core::channels::InboundProcessor> =
+    let inbound_processor: Arc<dyn InboundProcessor> =
         Arc::new(BusInboundProcessor::new((*bus).clone()));
 
     // --- Inbound message handler ---
@@ -536,8 +572,10 @@ async fn cmd_gateway() -> Result<()> {
                 allow_from: discord_config.allow_from.clone(),
             };
 
-            let discord_channel =
-                nanobot_core::channels::discord::DiscordChannel::new(discord_cfg, inbound_processor.clone());
+            let discord_channel = nanobot_core::channels::discord::DiscordChannel::new(
+                discord_cfg,
+                inbound_processor.clone(),
+            );
 
             let task = tokio::spawn(async move {
                 let _ = discord_channel.start_bot().await;
@@ -561,8 +599,10 @@ async fn cmd_gateway() -> Result<()> {
                 allow_from: feishu_config.allow_from.clone(),
             };
 
-            let mut feishu_channel =
-                nanobot_core::channels::feishu::FeishuChannel::new(feishu_cfg, inbound_processor.clone());
+            let mut feishu_channel = nanobot_core::channels::feishu::FeishuChannel::new(
+                feishu_cfg,
+                inbound_processor.clone(),
+            );
 
             let task = tokio::spawn(async move {
                 let _ = feishu_channel.start().await;
@@ -846,7 +886,11 @@ async fn cmd_channels_status() -> Result<()> {
     {
         if let Some(feishu) = &config.channels.feishu {
             has_channels = true;
-            let status = if feishu.enabled { "enabled" } else { "disabled" };
+            let status = if feishu.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
             let cred = check_credential(&Some(feishu.app_id.clone()));
 
             println!("{}", "Feishu".magenta().bold());

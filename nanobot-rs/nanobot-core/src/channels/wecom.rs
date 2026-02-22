@@ -20,7 +20,6 @@ use tracing::{debug, error, info, warn};
 use super::base::Channel;
 use super::middleware::InboundProcessor;
 use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
-use crate::trail::TrailContext;
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
@@ -233,7 +232,6 @@ struct WeComApiResponse {
 pub struct WeComChannel {
     config: WeComConfig,
     inbound_processor: Arc<dyn InboundProcessor>,
-    trail_ctx: TrailContext,
     client: Client,
     access_token: Option<String>,
     /// Cached decoded AES key (32 bytes), derived from `encoding_aes_key`.
@@ -246,17 +244,10 @@ impl WeComChannel {
         Self {
             config,
             inbound_processor,
-            trail_ctx: TrailContext::default(),
             client: Client::new(),
             access_token: None,
             aes_key: None,
         }
-    }
-
-    /// Set the trail context for this channel.
-    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
-        self.trail_ctx = ctx;
-        self
     }
 
     // ── Token management ─────────────────────────────────────
@@ -509,7 +500,7 @@ impl WeComChannel {
                     message.from_user_name, content
                 );
 
-                let ctx = TrailContext::current();
+                let ctx_trace_id = None;
 
                 let inbound = InboundMessage {
                     channel: ChannelType::WeCom,
@@ -519,7 +510,7 @@ impl WeComChannel {
                     media: None,
                     metadata: serde_json::to_value(&message).ok(),
                     timestamp: chrono::Utc::now(),
-                    trace_id: ctx.trace_id(),
+                    trace_id: ctx_trace_id,
                 };
 
                 self.inbound_processor.process(inbound).await?;

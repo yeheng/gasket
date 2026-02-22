@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall, ToolDefinition};
-use crate::trail::TrailContext;
 
 /// Common provider configuration
 #[derive(Debug, Clone)]
@@ -223,7 +222,7 @@ impl LlmProvider for OpenAICompatibleProvider {
         &self.config.default_model
     }
 
-    async fn chat(&self, request: ChatRequest, _trail_ctx: &TrailContext) -> anyhow::Result<ChatResponse> {
+    async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.config.api_base);
 
         let openai_request = OpenAICompatibleRequest {

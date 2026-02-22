@@ -9,7 +9,7 @@ mod shell;
 mod spawn;
 mod web;
 
-pub use base::{simple_schema, ExecutionContext, Tool, ToolError, ToolMetadata, ToolResult};
+pub use base::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use message::MessageTool;

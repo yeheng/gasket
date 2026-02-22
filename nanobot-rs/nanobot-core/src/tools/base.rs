@@ -1,11 +1,7 @@
 //! Base trait for tools
 
-use std::collections::HashMap;
-
 use async_trait::async_trait;
 use serde_json::Value;
-
-use crate::trail::TrailContext;
 
 /// Result type for tool execution
 pub type ToolResult = Result<String, ToolError>;
@@ -26,35 +22,6 @@ pub enum ToolError {
     NotFound(String),
 }
 
-/// Execution context passed to tools, carrying trail and metadata.
-#[derive(Debug, Clone)]
-pub struct ExecutionContext {
-    /// Trail context for observability.
-    pub trail_ctx: TrailContext,
-
-    /// Arbitrary key-value metadata (e.g., caller info, permissions).
-    pub metadata: HashMap<String, String>,
-}
-
-impl ExecutionContext {
-    /// Create a new execution context with the given trail context.
-    pub fn new(trail_ctx: TrailContext) -> Self {
-        Self {
-            trail_ctx,
-            metadata: HashMap::new(),
-        }
-    }
-}
-
-impl Default for ExecutionContext {
-    fn default() -> Self {
-        Self {
-            trail_ctx: TrailContext::default(),
-            metadata: HashMap::new(),
-        }
-    }
-}
-
 /// Tool trait for implementing agent tools
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -69,13 +36,6 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with given arguments
     async fn execute(&self, args: Value) -> ToolResult;
-
-    /// Execute the tool with execution context for observability.
-    ///
-    /// Default implementation delegates to `execute()`.
-    async fn execute_with_context(&self, args: Value, _ctx: &ExecutionContext) -> ToolResult {
-        self.execute(args).await
-    }
 }
 
 /// Metadata describing a tool's capabilities, tags, and permission requirements.

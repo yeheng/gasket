@@ -25,7 +25,7 @@ pub mod feishu;
 #[cfg(feature = "wecom")]
 pub mod wecom;
 
-pub use base::{Channel, MessageContext};
+pub use base::Channel;
 pub use manager::ChannelManager;
 pub use middleware::{
     BusInboundProcessor, ChannelAuthMiddleware, ChannelError, ChannelInboundMiddleware,

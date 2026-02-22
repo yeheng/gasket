@@ -18,7 +18,6 @@ use super::base::Channel;
 use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
-use crate::trail::TrailContext;
 
 /// Email channel configuration
 #[derive(Debug, Clone)]
@@ -43,7 +42,6 @@ pub struct EmailConfig {
 pub struct EmailChannel {
     config: EmailConfig,
     inbound_processor: Arc<dyn InboundProcessor>,
-    trail_ctx: TrailContext,
 }
 
 impl EmailChannel {
@@ -52,14 +50,7 @@ impl EmailChannel {
         Self {
             config,
             inbound_processor,
-            trail_ctx: TrailContext::default(),
         }
-    }
-
-    /// Set the trail context for this channel.
-    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
-        self.trail_ctx = ctx;
-        self
     }
 
     /// Poll for new emails
@@ -73,9 +64,6 @@ impl EmailChannel {
         let messages = self.fetch_unread_emails().await?;
 
         for msg in &messages {
-            // Get current tracing context
-            let ctx = TrailContext::current();
-
             let inbound = InboundMessage {
                 channel: ChannelType::Email,
                 sender_id: msg.sender_id.clone(),
@@ -84,7 +72,7 @@ impl EmailChannel {
                 media: None,
                 metadata: None,
                 timestamp: chrono::Utc::now(),
-                trace_id: ctx.trace_id(),
+                trace_id: None,
             };
 
             if let Err(e) = self.inbound_processor.process(inbound).await {

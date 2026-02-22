@@ -9,16 +9,10 @@ use tracing::{debug, info, instrument, warn};
 use crate::agent::context::ContextBuilder;
 use crate::agent::executor::ToolExecutor;
 use crate::agent::memory::MemoryStore;
-use crate::bus::MessageBus;
-use crate::cron::CronService;
 use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
 use crate::session::SessionManager;
 use crate::skills::{SkillsLoader, SkillsRegistry};
-use crate::tools::{
-    CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
-    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
-};
-use crate::trail::TrailContext;
+use crate::tools::ToolRegistry;
 
 /// Agent loop configuration
 pub struct AgentConfig {
@@ -27,7 +21,6 @@ pub struct AgentConfig {
     pub temperature: f32,
     pub max_tokens: u32,
     pub memory_window: usize,
-    pub restrict_to_workspace: bool,
     /// Maximum characters for tool result output (0 = unlimited)
     pub max_tool_result_chars: usize,
 }
@@ -40,33 +33,7 @@ impl Default for AgentConfig {
             temperature: 0.7,
             max_tokens: 4096,
             memory_window: 50,
-            restrict_to_workspace: false,
             max_tool_result_chars: 8000,
-        }
-    }
-}
-
-/// Optional dependencies for AgentLoop that enable additional tools.
-///
-/// When provided, the corresponding tools are registered automatically.
-pub struct AgentDependencies {
-    /// Message bus for the `send_message` tool
-    pub bus: Option<Arc<MessageBus>>,
-    /// Cron service for the `cron` tool
-    pub cron_service: Option<Arc<CronService>>,
-    /// Web tools configuration
-    pub web_tools: Option<crate::config::WebToolsConfig>,
-    /// Pre-started MCP tool bridges (created via `mcp::start_mcp_servers`)
-    pub mcp_tools: Vec<Box<dyn crate::tools::Tool>>,
-}
-
-impl Default for AgentDependencies {
-    fn default() -> Self {
-        Self {
-            bus: None,
-            cron_service: None,
-            web_tools: None,
-            mcp_tools: Vec::new(),
         }
     }
 }
@@ -83,7 +50,11 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    /// Create a new agent loop
+    /// Create a new agent loop with a pre-built tool registry.
+    ///
+    /// The caller is responsible for constructing and populating the
+    /// `ToolRegistry` before passing it in — this keeps the agent loop
+    /// decoupled from specific tool implementations.
     ///
     /// # Errors
     ///
@@ -92,65 +63,10 @@ impl AgentLoop {
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
-    ) -> Result<Self> {
-        Self::with_dependencies(provider, workspace, config, AgentDependencies::default())
-    }
-
-    /// Create a new agent loop with optional dependencies for extra tools
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workspace bootstrap files exist but cannot be read.
-    pub fn with_dependencies(
-        provider: Arc<dyn LlmProvider>,
-        workspace: PathBuf,
-        config: AgentConfig,
-        deps: AgentDependencies,
+        tools: ToolRegistry,
     ) -> Result<Self> {
         let memory = MemoryStore::new(workspace.clone());
         let sessions = SessionManager::new_sync(workspace.clone());
-        let mut tools = ToolRegistry::new();
-
-        // Register filesystem tools
-        let allowed_dir = if config.restrict_to_workspace {
-            Some(workspace.clone())
-        } else {
-            None
-        };
-
-        tools.register(Box::new(ReadFileTool::new(allowed_dir.clone())));
-        tools.register(Box::new(WriteFileTool::new(allowed_dir.clone())));
-        tools.register(Box::new(EditFileTool::new(allowed_dir.clone())));
-        tools.register(Box::new(ListDirTool::new(allowed_dir)));
-
-        // Register shell tool
-        tools.register(Box::new(ExecTool::new(
-            workspace.clone(),
-            std::time::Duration::from_secs(120),
-            config.restrict_to_workspace,
-        )));
-
-        // Register web tools
-        tools.register(Box::new(WebFetchTool::new()));
-        tools.register(Box::new(WebSearchTool::new(deps.web_tools)));
-
-        // Register spawn tool
-        tools.register(Box::new(SpawnTool::new()));
-
-        // Register message tool (requires bus)
-        if let Some(bus) = &deps.bus {
-            tools.register(Box::new(MessageTool::new(bus.clone())));
-        }
-
-        // Register cron tool (requires cron service)
-        if let Some(cron_service) = &deps.cron_service {
-            tools.register(Box::new(CronTool::new(cron_service.clone())));
-        }
-
-        // Register MCP tool bridges
-        for mcp_tool in deps.mcp_tools {
-            tools.register(mcp_tool);
-        }
 
         // Load skills
         let skills_context = Self::load_skills(&workspace);
@@ -306,9 +222,6 @@ impl AgentLoop {
         let mut tools_used = Vec::new();
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
 
-        // Create a trail context for this agent run
-        let trail_ctx = TrailContext::new();
-
         let model_name = Arc::new(self.config.model.clone());
 
         while iteration < self.config.max_iterations {
@@ -326,7 +239,7 @@ impl AgentLoop {
             let mut retries = 0;
             let max_retries = 3;
             let response = loop {
-                match self.provider.chat(request.clone(), &trail_ctx).await {
+                match self.provider.chat(request.clone()).await {
                     Ok(resp) => break resp,
                     Err(e) => {
                         if retries >= max_retries {

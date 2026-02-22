@@ -16,8 +16,8 @@ pub use base::{ChatMessage, ChatRequest, ChatResponse, LlmProvider, ToolCall, To
 pub use common::{OpenAICompatibleProvider, ProviderConfig};
 pub use gemini::GeminiProvider;
 pub use middleware::{
-    ProviderBuilder, ProviderError, ProviderLoggingMiddleware, ProviderMetricsMiddleware,
-    ProviderRateLimitMiddleware, ProviderRetryMiddleware,
+    LoggingProvider, MetricsHandle, MetricsProvider, ProviderBuilder, ProviderError,
+    ProviderMetrics, RateLimitProvider,
 };
 pub use model_spec::ModelSpec;
 pub use registry::{ProviderMetadata, ProviderRegistry};

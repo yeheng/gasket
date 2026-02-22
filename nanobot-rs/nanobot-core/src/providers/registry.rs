@@ -213,7 +213,6 @@ impl ProviderRegistry {
 mod tests {
     use super::*;
     use crate::providers::{ChatRequest, ChatResponse};
-    use crate::trail::TrailContext;
     use anyhow::Result;
     use async_trait::async_trait;
 
@@ -232,7 +231,7 @@ mod tests {
             "mock-model"
         }
 
-        async fn chat(&self, _request: ChatRequest, _trail_ctx: &TrailContext) -> Result<ChatResponse> {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
             Ok(ChatResponse {
                 content: Some("mock response".to_string()),
                 tool_calls: vec![],

@@ -15,7 +15,6 @@ use super::base::Channel;
 use super::middleware::InboundProcessor;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::ChannelType;
-use crate::trail::TrailContext;
 
 /// DingTalk channel configuration
 #[derive(Debug, Clone)]
@@ -40,7 +39,6 @@ pub struct DingTalkConfig {
 pub struct DingTalkChannel {
     config: DingTalkConfig,
     inbound_processor: Arc<dyn InboundProcessor>,
-    trail_ctx: TrailContext,
     client: Client,
 }
 
@@ -50,15 +48,8 @@ impl DingTalkChannel {
         Self {
             config,
             inbound_processor,
-            trail_ctx: TrailContext::default(),
             client: Client::new(),
         }
-    }
-
-    /// Set the trail context for this channel.
-    pub fn with_trail_context(mut self, ctx: TrailContext) -> Self {
-        self.trail_ctx = ctx;
-        self
     }
 
     /// Generate signed webhook URL with timestamp and sign
@@ -204,9 +195,6 @@ impl DingTalkChannel {
 
         let metadata = serde_json::to_value(&message).ok();
 
-        // Get current tracing context
-        let ctx = crate::trail::TrailContext::current();
-
         let inbound = InboundMessage {
             channel: ChannelType::DingTalk,
             sender_id: message.sender_id.clone(),
@@ -215,7 +203,7 @@ impl DingTalkChannel {
             media: None,
             metadata,
             timestamp: chrono::Utc::now(),
-            trace_id: ctx.trace_id(),
+            trace_id: None,
         };
 
         self.inbound_processor.process(inbound).await
