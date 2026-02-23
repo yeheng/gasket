@@ -2,25 +2,16 @@
 //!
 //! Replaces ad-hoc `"provider/model"` string parsing with a single type
 //! that is parsed once at the CLI boundary and passed around as a struct.
+//!
+//! # Parsing Rules
+//!
+//! - If the string contains `/`, the first segment is the provider, the rest is the model.
+//! - If the string does not contain `/`, the entire string is the model (no provider).
+//!
+//! This simple rule allows custom providers without maintaining a hardcoded list.
 
 use std::fmt;
 use std::str::FromStr;
-
-/// Known provider identifiers.
-///
-/// The first path segment of a model spec is treated as a provider only when
-/// it matches one of these names. Otherwise the entire string is the model id.
-const KNOWN_PROVIDERS: &[&str] = &[
-    "deepseek",
-    "openrouter",
-    "openai",
-    "anthropic",
-    "zhipu",
-    "dashscope",
-    "moonshot",
-    "minimax",
-    "ollama",
-];
 
 /// A parsed model identifier, optionally qualified with a provider.
 ///
@@ -41,6 +32,11 @@ const KNOWN_PROVIDERS: &[&str] = &[
 /// let spec: ModelSpec = "openrouter/anthropic/claude-sonnet-4".parse().unwrap();
 /// assert_eq!(spec.provider(), Some("openrouter"));
 /// assert_eq!(spec.model(), "anthropic/claude-sonnet-4");
+///
+/// // Custom provider
+/// let spec: ModelSpec = "my_custom_provider/some-model".parse().unwrap();
+/// assert_eq!(spec.provider(), Some("my_custom_provider"));
+/// assert_eq!(spec.model(), "some-model");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSpec {
@@ -82,19 +78,18 @@ impl FromStr for ModelSpec {
     type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Simple rule: if it contains '/', first segment is provider, rest is model
         if let Some(pos) = s.find('/') {
-            let prefix = &s[..pos];
-            if KNOWN_PROVIDERS.contains(&prefix) {
-                return Ok(Self {
-                    provider: Some(prefix.to_string()),
-                    model: s[pos + 1..].to_string(),
-                });
-            }
+            Ok(Self {
+                provider: Some(s[..pos].to_string()),
+                model: s[pos + 1..].to_string(),
+            })
+        } else {
+            Ok(Self {
+                provider: None,
+                model: s.to_string(),
+            })
         }
-        Ok(Self {
-            provider: None,
-            model: s.to_string(),
-        })
     }
 }
 
@@ -133,10 +128,19 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_provider_treated_as_model() {
-        let spec: ModelSpec = "custom/my-model".parse().unwrap();
-        assert_eq!(spec.provider(), None);
-        assert_eq!(spec.model(), "custom/my-model");
+    fn test_custom_provider_parsed_correctly() {
+        // This is the key fix: custom providers are now recognized
+        let spec: ModelSpec = "custom_provider/my-model".parse().unwrap();
+        assert_eq!(spec.provider(), Some("custom_provider"));
+        assert_eq!(spec.model(), "my-model");
+    }
+
+    #[test]
+    fn test_my_custom_provider() {
+        // The exact test case from task.md
+        let spec: ModelSpec = "my_custom_provider/some-model".parse().unwrap();
+        assert_eq!(spec.provider(), Some("my_custom_provider"));
+        assert_eq!(spec.model(), "some-model");
     }
 
     #[test]
@@ -156,5 +160,13 @@ mod tests {
         let spec = ModelSpec::with_provider("zhipu", "glm-4");
         assert_eq!(spec.provider(), Some("zhipu"));
         assert_eq!(spec.model(), "glm-4");
+    }
+
+    #[test]
+    fn test_model_with_slash() {
+        // Model names can contain slashes (e.g., anthropic/claude-sonnet-4 via openrouter)
+        let spec: ModelSpec = "openrouter/anthropic/claude-sonnet-4".parse().unwrap();
+        assert_eq!(spec.provider(), Some("openrouter"));
+        assert_eq!(spec.model(), "anthropic/claude-sonnet-4");
     }
 }

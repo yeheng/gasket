@@ -18,7 +18,6 @@ use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
 use super::loop_::{AgentConfig, AgentLoop};
-use super::task_store::TaskStore;
 use super::task_store_sqlite::SqliteTaskStore;
 
 /// Status of a subagent task
@@ -212,8 +211,7 @@ impl Default for SubagentConfig {
 /// Each spawned task creates an independent `AgentLoop` that shares the same
 /// LLM provider but operates in its own session.
 ///
-/// Task state is persisted via a `TaskStore` backend (SQLite when available,
-/// JSON file otherwise).
+/// Task state is persisted via SQLite.
 pub struct SubagentManager {
     /// Active tasks
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
@@ -233,8 +231,8 @@ pub struct SubagentManager {
     /// Factory that produces a fresh ToolRegistry for each subagent
     tool_factory: Arc<dyn Fn() -> ToolRegistry + Send + Sync>,
 
-    /// Persistence backend
-    store: Arc<dyn TaskStore>,
+    /// Persistence backend (SQLite)
+    store: Arc<SqliteTaskStore>,
 }
 
 impl SubagentManager {
@@ -247,23 +245,21 @@ impl SubagentManager {
     ) -> Self {
         let data_dir = workspace.join("data");
         let json_path = data_dir.join("tasks.json");
+        let db_path = data_dir.join("tasks.db");
 
         // SQLite persistence backend
-        let store: Arc<dyn TaskStore> = {
-            let db_path = data_dir.join("tasks.db");
-            match SqliteTaskStore::new(db_path) {
-                Ok(s) => {
-                    // One-time migration from legacy JSON
-                    if json_path.exists() {
-                        if let Err(e) = s.migrate_from_json(&json_path) {
-                            warn!("JSON→SQLite migration failed: {}", e);
-                        }
+        let store = match SqliteTaskStore::new(db_path) {
+            Ok(s) => {
+                // One-time migration from legacy JSON
+                if json_path.exists() {
+                    if let Err(e) = s.migrate_from_json(&json_path) {
+                        warn!("JSON→SQLite migration failed: {}", e);
                     }
-                    Arc::new(s)
                 }
-                Err(e) => {
-                    panic!("Failed to open SqliteTaskStore: {}", e);
-                }
+                Arc::new(s)
+            }
+            Err(e) => {
+                panic!("Failed to open SqliteTaskStore: {}", e);
             }
         };
 
@@ -289,27 +285,17 @@ impl SubagentManager {
         }
     }
 
-    /// Persist a single task and the full snapshot (for JSON backend compat).
-    async fn persist_task(
-        store: &Arc<dyn TaskStore>,
-        task: &SubagentTask,
-        tasks: &RwLock<HashMap<String, SubagentTask>>,
-    ) {
+    /// Persist a single task to SQLite.
+    async fn persist_task(store: &SqliteTaskStore, task: &SubagentTask) {
         if let Err(e) = store.save_task(task).await {
             warn!("Failed to persist task {}: {}", task.id, e);
-        }
-        let all: Vec<SubagentTask> = tasks.read().await.values().cloned().collect();
-        if let Err(e) = store.save_all(&all).await {
-            warn!("Failed to flush tasks: {}", e);
         }
     }
 
     /// Force-flush all tasks to disk (for shutdown or batch operations).
     pub async fn flush(&self) {
-        let all: Vec<SubagentTask> = self.tasks.read().await.values().cloned().collect();
-        if let Err(e) = self.store.save_all(&all).await {
-            warn!("Failed to flush tasks: {}", e);
-        }
+        // SQLite saves tasks individually, so this is a no-op.
+        // Kept for API compatibility.
     }
 
     /// Recover tasks that were interrupted (mark running tasks as failed)
@@ -332,7 +318,7 @@ impl SubagentManager {
         if !recovered.is_empty() {
             info!("Recovered {} interrupted tasks", recovered.len());
             for task in &recovered {
-                Self::persist_task(&self.store, task, &self.tasks).await;
+                Self::persist_task(&self.store, task).await;
             }
         }
     }
@@ -361,7 +347,7 @@ impl SubagentManager {
         let timeout = Duration::from_secs(task.timeout_secs);
 
         // Persist the newly inserted task
-        Self::persist_task(&self.store, &task, &self.tasks).await;
+        Self::persist_task(&self.store, &task).await;
 
         // Spawn the actual execution
         let tasks_ref = self.tasks.clone();
@@ -382,7 +368,7 @@ impl SubagentManager {
                 tasks.get(&tid).cloned()
             };
             if let Some(snap) = &task_snapshot {
-                Self::persist_task(&store, snap, &tasks_ref).await;
+                Self::persist_task(&store, snap).await;
             }
 
             info!(
@@ -410,7 +396,7 @@ impl SubagentManager {
                         tasks.get(&tid).cloned()
                     };
                     if let Some(snap) = &snap {
-                        Self::persist_task(&store, snap, &tasks_ref).await;
+                        Self::persist_task(&store, snap).await;
                     }
                     return;
                 }
@@ -450,7 +436,7 @@ impl SubagentManager {
                 tasks.get(&tid).cloned()
             };
             if let Some(snap) = &snap {
-                Self::persist_task(&store, snap, &tasks_ref).await;
+                Self::persist_task(&store, snap).await;
             }
         });
 
@@ -503,7 +489,7 @@ impl SubagentManager {
             }
         };
         if let Some(snap) = &snap {
-            Self::persist_task(&self.store, snap, &self.tasks).await;
+            Self::persist_task(&self.store, snap).await;
             return true;
         }
         false
@@ -531,13 +517,9 @@ impl SubagentManager {
 
         let removed = removed_ids.len();
         if removed > 0 {
-            let remaining: Vec<SubagentTask> = tasks.values().cloned().collect();
             drop(tasks);
             if let Err(e) = self.store.remove_tasks(&removed_ids).await {
                 warn!("Failed to remove tasks from store: {}", e);
-            }
-            if let Err(e) = self.store.save_all(&remaining).await {
-                warn!("Failed to flush remaining tasks: {}", e);
             }
             debug!("Cleaned up {} old tasks", removed);
         }

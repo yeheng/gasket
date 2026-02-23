@@ -1,8 +1,4 @@
-//! Webhook types and error definitions
-
-use async_trait::async_trait;
-use axum::{body::Body, http::Response};
-use std::sync::Arc;
+//! Webhook error definitions
 
 /// Result type for webhook operations
 pub type WebhookResult<T> = Result<T, WebhookError>;
@@ -34,30 +30,3 @@ pub enum WebhookError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 }
-
-/// Trait for platform-specific webhook handlers.
-///
-/// Each messaging platform (WeCom, Feishu, DingTalk, etc.) should implement
-/// this trait to handle their specific webhook callback format.
-#[async_trait]
-pub trait WebhookHandler: Send + Sync {
-    /// Returns the path this handler responds to (e.g., "/wecom/callback")
-    fn path(&self) -> &str;
-
-    /// Handle a GET request (used for URL verification by some platforms)
-    async fn handle_get(
-        &self,
-        query: axum::extract::Query<serde_json::Value>,
-    ) -> WebhookResult<Response<Body>>;
-
-    /// Handle a POST request (actual message callbacks)
-    async fn handle_post(
-        &self,
-        headers: axum::http::HeaderMap,
-        query: axum::extract::Query<serde_json::Value>,
-        body: bytes::Bytes,
-    ) -> WebhookResult<Response<Body>>;
-}
-
-/// A boxed webhook handler
-pub type BoxedWebhookHandler = Arc<dyn WebhookHandler>;

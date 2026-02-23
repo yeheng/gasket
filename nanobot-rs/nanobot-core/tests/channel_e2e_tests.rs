@@ -242,7 +242,7 @@ mod feishu_e2e {
     async fn test_feishu_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
+        use nanobot_core::bus::feishu;
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -372,7 +372,7 @@ mod slack_e2e {
     async fn test_slack_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
+        use nanobot_core::bus::slack;
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -401,7 +401,7 @@ mod slack_e2e {
     async fn test_slack_send_via_channel_trait_with_thread_metadata_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
+        use nanobot_core::bus::slack;
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
@@ -560,7 +560,7 @@ mod email_e2e {
     async fn test_email_send_via_channel_trait_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
+        use nanobot_core::bus::email;
         use nanobot_core::channels::base::Channel;
 
         let config = make_smtp_config!();
@@ -719,7 +719,7 @@ mod telegram_e2e {
     async fn test_telegram_send_long_message_real_api() {
         load_env();
         use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::{dingtalk, email, feishu, slack, telegram, wecom};
+        use nanobot_core::bus::telegram;
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();

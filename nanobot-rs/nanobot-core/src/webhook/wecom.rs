@@ -1,112 +1,121 @@
 //! WeCom (企业微信) webhook handler
+//!
+//! Provides Axum routes for handling WeCom callbacks.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use axum::{
-    body::Body,
-    extract::Query,
-    http::{HeaderMap, Response},
+    extract::{Query, State},
+    http::HeaderMap,
+    response::IntoResponse,
+    routing::get,
+    Router,
 };
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, RwLock};
 use tracing::{debug, error, info};
 
 use super::handlers;
-use super::types::{WebhookError, WebhookHandler, WebhookResult};
 use crate::bus::events::InboundMessage;
 use crate::channels::wecom::{WeComCallbackBody, WeComCallbackQuery, WeComChannel, WeComConfig};
 
-/// WeCom webhook handler that wraps a WeComChannel
-pub struct WeComWebhookHandler {
-    channel: Arc<tokio::sync::RwLock<WeComChannel>>,
-    path: String,
+/// State for WeCom webhook routes
+#[derive(Clone)]
+pub struct WeComState {
+    pub channel: Arc<RwLock<WeComChannel>>,
 }
 
-impl WeComWebhookHandler {
-    /// Create a new WeCom webhook handler
-    pub fn new(channel: WeComChannel, path: Option<&str>) -> Self {
+impl WeComState {
+    /// Create new WeCom state from a channel
+    pub fn new(channel: WeComChannel) -> Self {
         Self {
-            channel: Arc::new(tokio::sync::RwLock::new(channel)),
-            path: path.unwrap_or("/wecom/callback").to_string(),
+            channel: Arc::new(RwLock::new(channel)),
         }
     }
 
     /// Create from config and inbound sender
-    pub fn from_config(
-        config: WeComConfig,
-        inbound_sender: Sender<InboundMessage>,
-        path: Option<&str>,
-    ) -> Self {
+    pub fn from_config(config: WeComConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         let channel = WeComChannel::new(config, inbound_sender);
-        Self::new(channel, path)
+        Self::new(channel)
     }
 }
 
-#[async_trait]
-impl WebhookHandler for WeComWebhookHandler {
-    fn path(&self) -> &str {
-        &self.path
-    }
+/// Create a router for WeCom webhook endpoints
+pub fn create_wecom_routes(state: WeComState, path: Option<&str>) -> Router {
+    let path = path.unwrap_or("/wecom/callback");
+    Router::new()
+        .route(path, get(handle_get).post(handle_post))
+        .with_state(state)
+}
 
-    async fn handle_get(
-        &self,
-        Query(query): Query<serde_json::Value>,
-    ) -> WebhookResult<Response<Body>> {
-        debug!("WeCom URL verification request: {:?}", query);
+/// Handle GET request (URL verification)
+async fn handle_get(
+    State(state): State<WeComState>,
+    Query(query): Query<serde_json::Value>,
+) -> impl IntoResponse {
+    debug!("WeCom URL verification request: {:?}", query);
 
-        // Parse query parameters
-        let callback_query: WeComCallbackQuery = serde_json::from_value(query)
-            .map_err(|e| WebhookError::InvalidBody(format!("Invalid query parameters: {}", e)))?;
+    // Parse query parameters
+    let callback_query: WeComCallbackQuery = match serde_json::from_value(query) {
+        Ok(q) => q,
+        Err(e) => {
+            return handlers::bad_request(&format!("Invalid query parameters: {}", e));
+        }
+    };
 
-        let channel = self.channel.read().await;
+    let channel = state.channel.read().await;
 
-        match channel.verify_url(&callback_query) {
-            Ok(echostr) => {
-                info!("WeCom URL verification successful");
-                Ok(handlers::success(&echostr))
-            }
-            Err(e) => {
-                error!("WeCom URL verification failed: {}", e);
-                Ok(handlers::bad_request(&format!(
-                    "Verification failed: {}",
-                    e
-                )))
-            }
+    match channel.verify_url(&callback_query) {
+        Ok(echostr) => {
+            info!("WeCom URL verification successful");
+            handlers::success(&echostr)
+        }
+        Err(e) => {
+            error!("WeCom URL verification failed: {}", e);
+            handlers::bad_request(&format!("Verification failed: {}", e))
         }
     }
+}
 
-    async fn handle_post(
-        &self,
-        _headers: HeaderMap,
-        Query(query): Query<serde_json::Value>,
-        body: bytes::Bytes,
-    ) -> WebhookResult<Response<Body>> {
-        debug!("WeCom callback POST request");
+/// Handle POST request (message callback)
+async fn handle_post(
+    State(state): State<WeComState>,
+    _headers: HeaderMap,
+    Query(query): Query<serde_json::Value>,
+    body: bytes::Bytes,
+) -> impl IntoResponse {
+    debug!("WeCom callback POST request");
 
-        // Parse query parameters
-        let callback_query: WeComCallbackQuery = serde_json::from_value(query)
-            .map_err(|e| WebhookError::InvalidBody(format!("Invalid query parameters: {}", e)))?;
+    // Parse query parameters
+    let callback_query: WeComCallbackQuery = match serde_json::from_value(query) {
+        Ok(q) => q,
+        Err(e) => {
+            return handlers::bad_request(&format!("Invalid query parameters: {}", e));
+        }
+    };
 
-        // Parse body
-        let callback_body: WeComCallbackBody = serde_json::from_slice(&body)
-            .map_err(|e| WebhookError::InvalidBody(format!("Invalid request body: {}", e)))?;
+    // Parse body
+    let callback_body: WeComCallbackBody = match serde_json::from_slice(&body) {
+        Ok(b) => b,
+        Err(e) => {
+            return handlers::bad_request(&format!("Invalid request body: {}", e));
+        }
+    };
 
-        let channel = self.channel.read().await;
+    let channel = state.channel.read().await;
 
-        match channel
-            .handle_callback_message(&callback_query, &callback_body)
-            .await
-        {
-            Ok(()) => {
-                debug!("WeCom callback processed successfully");
-                // WeCom expects "success" as response
-                Ok(handlers::success("success"))
-            }
-            Err(e) => {
-                error!("WeCom callback processing failed: {}", e);
-                // Still return success to avoid retries for non-recoverable errors
-                Ok(handlers::success("success"))
-            }
+    match channel
+        .handle_callback_message(&callback_query, &callback_body)
+        .await
+    {
+        Ok(()) => {
+            debug!("WeCom callback processed successfully");
+            // WeCom expects "success" as response
+            handlers::success("success")
+        }
+        Err(e) => {
+            error!("WeCom callback processing failed: {}", e);
+            // Still return success to avoid retries for non-recoverable errors
+            handlers::success("success")
         }
     }
 }
@@ -133,17 +142,23 @@ mod tests {
     }
 
     #[test]
-    fn test_wecom_webhook_handler_creation() {
+    fn test_wecom_state_creation() {
         let config = create_test_config();
-        let handler =
-            WeComWebhookHandler::from_config(config, create_test_sender(), Some("/custom/wecom"));
-        assert_eq!(handler.path(), "/custom/wecom");
+        let state = WeComState::from_config(config, create_test_sender());
+        assert!(Arc::strong_count(&state.channel) >= 1);
     }
 
     #[test]
-    fn test_default_path() {
+    fn test_create_wecom_routes_default_path() {
         let config = create_test_config();
-        let handler = WeComWebhookHandler::from_config(config, create_test_sender(), None);
-        assert_eq!(handler.path(), "/wecom/callback");
+        let state = WeComState::from_config(config, create_test_sender());
+        let _router = create_wecom_routes(state, None);
+    }
+
+    #[test]
+    fn test_create_wecom_routes_custom_path() {
+        let config = create_test_config();
+        let state = WeComState::from_config(config, create_test_sender());
+        let _router = create_wecom_routes(state, Some("/custom/wecom"));
     }
 }

@@ -1,20 +1,19 @@
 //! SQLite-backed task store for SubagentManager.
 //!
 //! Provides O(1) single-task persistence via `INSERT OR REPLACE`.
-//! Gated behind the `sqlite` feature flag.
+//! This is the only task storage backend - JSON is only used for one-time migration.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::subagent::{SubagentTask, TaskPriority, TaskStatus};
-use super::task_store::TaskStore;
+use super::task_store::load_from_json;
 
 /// SQLite-backed task persistence.
 ///
@@ -64,6 +63,42 @@ impl SqliteTaskStore {
         Ok(())
     }
 
+    /// Load all tasks from SQLite.
+    pub async fn load_all(&self) -> anyhow::Result<HashMap<String, SubagentTask>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT id, prompt, channel, chat_id, session_key, status, priority,
+                    created_at, started_at, completed_at, result, error,
+                    timeout_secs, progress, metadata
+             FROM tasks",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut map = HashMap::new();
+        while let Some(row) = rows.next()? {
+            let task = Self::row_to_task(row)?;
+            map.insert(task.id.clone(), task);
+        }
+        info!("Loaded {} tasks from SQLite", map.len());
+        Ok(map)
+    }
+
+    /// Persist a single task (insert or update).
+    pub async fn save_task(&self, task: &SubagentTask) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        Self::upsert_task_sync(&conn, task)?;
+        Ok(())
+    }
+
+    /// Remove tasks by IDs.
+    pub async fn remove_tasks(&self, ids: &[String]) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        for id in ids {
+            conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
+        }
+        debug!("Removed {} tasks from SQLite", ids.len());
+        Ok(())
+    }
+
     /// Migrate tasks from a legacy `tasks.json` file into SQLite.
     ///
     /// After a successful import the JSON file is renamed to `*.migrated`
@@ -73,35 +108,30 @@ impl SqliteTaskStore {
             return Ok(());
         }
 
-        let content = std::fs::read_to_string(json_path)?;
-        let tasks: Vec<SubagentTask> = match serde_json::from_str(&content) {
-            Ok(t) => t,
-            Err(e) => {
-                warn!("Could not parse legacy tasks.json for migration: {}", e);
-                return Ok(());
-            }
-        };
-
-        // We can't async-lock here (called from sync context), so open a
-        // second connection for migration. SQLite WAL mode allows this.
-        // Alternatively, the caller can lock before invoking.
-        // For simplicity, use the blocking approach since this runs at init.
-        if !tasks.is_empty() {
-            // Use the path from the existing connection
-            let conn_path = json_path.parent().unwrap_or(json_path).join("tasks.db");
-            let conn = Connection::open(&conn_path)?;
-            Self::init_db(&conn)?;
-            let tx = conn.unchecked_transaction()?;
-            for task in &tasks {
-                Self::upsert_task_sync(&tx, task)?;
-            }
-            tx.commit()?;
-            info!(
-                "Migrated {} tasks from {:?} to SQLite",
-                tasks.len(),
-                json_path
-            );
+        let tasks = load_from_json(json_path)?;
+        if tasks.is_empty() {
+            // Still rename the file even if empty
+            let backup = json_path.with_extension("json.migrated");
+            std::fs::rename(json_path, &backup)?;
+            info!("Renamed empty {:?} → {:?}", json_path, backup);
+            return Ok(());
         }
+
+        // Use blocking approach since this runs at init
+        let task_list: Vec<&SubagentTask> = tasks.values().collect();
+        let conn = Connection::open(json_path.parent().unwrap().join("tasks.db"))?;
+        Self::init_db(&conn)?;
+        let tx = conn.unchecked_transaction()?;
+        for task in &task_list {
+            Self::upsert_task_sync(&tx, task)?;
+        }
+        tx.commit()?;
+
+        info!(
+            "Migrated {} tasks from {:?} to SQLite",
+            task_list.len(),
+            json_path
+        );
 
         let backup = json_path.with_extension("json.migrated");
         std::fs::rename(json_path, &backup)?;
@@ -186,47 +216,6 @@ impl SqliteTaskStore {
             progress: progress as u8,
             metadata,
         })
-    }
-}
-
-#[async_trait]
-impl TaskStore for SqliteTaskStore {
-    async fn load_all(&self) -> anyhow::Result<HashMap<String, SubagentTask>> {
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT id, prompt, channel, chat_id, session_key, status, priority,
-                    created_at, started_at, completed_at, result, error,
-                    timeout_secs, progress, metadata
-             FROM tasks",
-        )?;
-        let mut rows = stmt.query([])?;
-        let mut map = HashMap::new();
-        while let Some(row) = rows.next()? {
-            let task = Self::row_to_task(row)?;
-            map.insert(task.id.clone(), task);
-        }
-        info!("Loaded {} tasks from SQLite", map.len());
-        Ok(map)
-    }
-
-    async fn save_task(&self, task: &SubagentTask) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        Self::upsert_task_sync(&conn, task)?;
-        Ok(())
-    }
-
-    async fn save_all(&self, _tasks: &[SubagentTask]) -> anyhow::Result<()> {
-        // No-op: individual saves via save_task are sufficient for SQLite.
-        Ok(())
-    }
-
-    async fn remove_tasks(&self, ids: &[String]) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        for id in ids {
-            conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
-        }
-        debug!("Removed {} tasks from SQLite", ids.len());
-        Ok(())
     }
 }
 

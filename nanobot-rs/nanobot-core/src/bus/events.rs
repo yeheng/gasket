@@ -6,31 +6,87 @@ use std::fmt;
 
 /// Channel type identifier.
 ///
-/// Uses a newtype pattern instead of an enum to allow extensibility.
-/// New channels can be added without modifying core code.
-///
-/// Pre-defined constants are provided for well-known channels.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ChannelType(String);
+/// Uses an enum for known channels with a Custom variant for extensibility.
+/// This provides compile-time exhaustiveness checking while still allowing
+/// new channels to be added without modifying core code.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ChannelType {
+    /// Telegram channel
+    Telegram,
+    /// Discord channel
+    Discord,
+    /// Slack channel
+    Slack,
+    /// Email channel
+    Email,
+    /// DingTalk (钉钉) channel
+    Dingtalk,
+    /// Feishu (飞书) channel
+    Feishu,
+    /// WeCom (企业微信) channel
+    Wecom,
+    /// CLI (command-line interface) channel
+    Cli,
+    /// Custom channel for extensibility
+    Custom(String),
+}
+
+// Custom serialization to maintain backward compatibility with string format
+impl Serialize for ChannelType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ChannelType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::new(s))
+    }
+}
 
 impl ChannelType {
-    /// Create a new channel type from a string
-    pub fn new(name: impl Into<String>) -> Self {
-        let s = name.into();
-        // Normalize to lowercase for consistency
-        Self(s.to_lowercase())
-    }
-
     /// Get the channel name as a string slice
     pub fn as_str(&self) -> &str {
-        &self.0
+        match self {
+            ChannelType::Telegram => "telegram",
+            ChannelType::Discord => "discord",
+            ChannelType::Slack => "slack",
+            ChannelType::Email => "email",
+            ChannelType::Dingtalk => "dingtalk",
+            ChannelType::Feishu => "feishu",
+            ChannelType::Wecom => "wecom",
+            ChannelType::Cli => "cli",
+            ChannelType::Custom(name) => name,
+        }
+    }
+
+    /// Create a channel type from a string
+    pub fn new(name: impl Into<String>) -> Self {
+        let s = name.into().to_lowercase();
+        match s.as_str() {
+            "telegram" => ChannelType::Telegram,
+            "discord" => ChannelType::Discord,
+            "slack" => ChannelType::Slack,
+            "email" => ChannelType::Email,
+            "dingtalk" => ChannelType::Dingtalk,
+            "feishu" => ChannelType::Feishu,
+            "wecom" => ChannelType::Wecom,
+            "cli" => ChannelType::Cli,
+            _ => ChannelType::Custom(s),
+        }
     }
 }
 
 impl fmt::Display for ChannelType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -48,51 +104,50 @@ impl From<String> for ChannelType {
 
 impl Default for ChannelType {
     fn default() -> Self {
-        cli()
+        ChannelType::Cli
     }
 }
 
-// Pre-defined channel type constructors
-// These are the standard channels supported out of the box
+// Convenience constructor functions for backward compatibility
 
 /// Telegram channel
 pub fn telegram() -> ChannelType {
-    ChannelType::new("telegram")
+    ChannelType::Telegram
 }
 
 /// Discord channel
 pub fn discord() -> ChannelType {
-    ChannelType::new("discord")
+    ChannelType::Discord
 }
 
 /// Slack channel
 pub fn slack() -> ChannelType {
-    ChannelType::new("slack")
+    ChannelType::Slack
 }
 
 /// Email channel
 pub fn email() -> ChannelType {
-    ChannelType::new("email")
+    ChannelType::Email
 }
 
 /// DingTalk (钉钉) channel
 pub fn dingtalk() -> ChannelType {
-    ChannelType::new("dingtalk")
+    ChannelType::Dingtalk
 }
 
 /// Feishu (飞书) channel
 pub fn feishu() -> ChannelType {
-    ChannelType::new("feishu")
+    ChannelType::Feishu
 }
 
 /// WeCom (企业微信) channel
 pub fn wecom() -> ChannelType {
-    ChannelType::new("wecom")
+    ChannelType::Wecom
 }
 
 /// CLI (command-line interface) channel
 pub fn cli() -> ChannelType {
-    ChannelType::new("cli")
+    ChannelType::Cli
 }
 
 /// Inbound message from a channel
@@ -195,6 +250,7 @@ mod tests {
     fn test_channel_type_normalization() {
         let channel = ChannelType::new("TELEGRAM");
         assert_eq!(channel.as_str(), "telegram");
+        assert!(matches!(channel, ChannelType::Telegram));
     }
 
     #[test]
@@ -207,6 +263,7 @@ mod tests {
     fn test_channel_type_serialization() {
         let channel = telegram();
         let json = serde_json::to_string(&channel).unwrap();
+        // Enum variants serialize to lowercase strings for backward compatibility
         assert_eq!(json, "\"telegram\"");
 
         let deserialized: ChannelType = serde_json::from_str(&json).unwrap();
@@ -227,5 +284,25 @@ mod tests {
     fn test_display() {
         assert_eq!(format!("{}", telegram()), "telegram");
         assert_eq!(format!("{}", ChannelType::new("custom")), "custom");
+    }
+
+    #[test]
+    fn test_exhaustiveness() {
+        // The compiler will ensure all variants are handled
+        fn check_exhaustive(ct: ChannelType) -> &'static str {
+            match ct {
+                ChannelType::Telegram => "telegram",
+                ChannelType::Discord => "discord",
+                ChannelType::Slack => "slack",
+                ChannelType::Email => "email",
+                ChannelType::Dingtalk => "dingtalk",
+                ChannelType::Feishu => "feishu",
+                ChannelType::Wecom => "wecom",
+                ChannelType::Cli => "cli",
+                ChannelType::Custom(_) => "custom",
+            }
+        }
+        assert_eq!(check_exhaustive(telegram()), "telegram");
+        assert_eq!(check_exhaustive(ChannelType::new("foo")), "custom");
     }
 }

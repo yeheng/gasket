@@ -1,132 +1,138 @@
 //! Feishu (飞书) webhook handler
+//!
+//! Provides Axum routes for handling Feishu callbacks.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use axum::{
-    body::Body,
-    extract::Query,
-    http::{HeaderMap, Response},
+    extract::{Query, State},
+    http::HeaderMap,
+    response::IntoResponse,
+    Router,
 };
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, RwLock};
 use tracing::{debug, error, info};
 
 use super::handlers;
-use super::types::{WebhookError, WebhookHandler, WebhookResult};
 use crate::bus::events::InboundMessage;
 use crate::channels::feishu::{
     FeishuChallenge, FeishuChallengeResponse, FeishuChannel, FeishuConfig, FeishuEvent,
 };
 
-/// Feishu webhook handler that wraps a FeishuChannel
-pub struct FeishuWebhookHandler {
-    channel: Arc<tokio::sync::RwLock<FeishuChannel>>,
-    path: String,
+/// State for Feishu webhook routes
+#[derive(Clone)]
+pub struct FeishuState {
+    pub channel: Arc<RwLock<FeishuChannel>>,
 }
 
-impl FeishuWebhookHandler {
-    /// Create a new Feishu webhook handler
-    pub fn new(channel: FeishuChannel, path: Option<&str>) -> Self {
+impl FeishuState {
+    /// Create new Feishu state from a channel
+    pub fn new(channel: FeishuChannel) -> Self {
         Self {
-            channel: Arc::new(tokio::sync::RwLock::new(channel)),
-            path: path.unwrap_or("/feishu/events").to_string(),
+            channel: Arc::new(RwLock::new(channel)),
         }
     }
 
     /// Create from config and inbound sender
-    pub fn from_config(
-        config: FeishuConfig,
-        inbound_sender: Sender<InboundMessage>,
-        path: Option<&str>,
-    ) -> Self {
+    pub fn from_config(config: FeishuConfig, inbound_sender: Sender<InboundMessage>) -> Self {
         let channel = FeishuChannel::new(config, inbound_sender);
-        Self::new(channel, path)
+        Self::new(channel)
     }
 }
 
-#[async_trait]
-impl WebhookHandler for FeishuWebhookHandler {
-    fn path(&self) -> &str {
-        &self.path
-    }
+/// Create a router for Feishu webhook endpoints
+pub fn create_feishu_routes(state: FeishuState, path: Option<&str>) -> Router {
+    let path = path.unwrap_or("/feishu/events");
+    Router::new()
+        .route(path, axum::routing::get(handle_get).post(handle_post))
+        .with_state(state)
+}
 
-    async fn handle_get(&self, _query: Query<serde_json::Value>) -> WebhookResult<Response<Body>> {
-        // Feishu doesn't use GET for URL verification, it uses POST with challenge
-        debug!("Feishu GET request (unexpected)");
-        Ok(handlers::bad_request("Use POST for Feishu webhooks"))
-    }
+/// Handle GET request (unexpected for Feishu)
+async fn handle_get(
+    _state: State<FeishuState>,
+    _query: Query<serde_json::Value>,
+) -> impl IntoResponse {
+    // Feishu doesn't use GET for URL verification, it uses POST with challenge
+    debug!("Feishu GET request (unexpected)");
+    handlers::bad_request("Use POST for Feishu webhooks")
+}
 
-    async fn handle_post(
-        &self,
-        _headers: HeaderMap,
-        _query: Query<serde_json::Value>,
-        body: bytes::Bytes,
-    ) -> WebhookResult<Response<Body>> {
-        debug!("Feishu callback POST request");
+/// Handle POST request (message callback or challenge)
+async fn handle_post(
+    State(state): State<FeishuState>,
+    _headers: HeaderMap,
+    _query: Query<serde_json::Value>,
+    body: bytes::Bytes,
+) -> impl IntoResponse {
+    debug!("Feishu callback POST request");
 
-        // Parse body as JSON value first to detect the type
-        let json_value: serde_json::Value = serde_json::from_slice(&body)
-            .map_err(|e| WebhookError::InvalidBody(format!("Invalid JSON body: {}", e)))?;
-
-        // Check if this is a URL verification challenge
-        if let Some(challenge_type) = json_value.get("type").and_then(|t| t.as_str()) {
-            if challenge_type == "url_verification" {
-                return self.handle_challenge(&json_value).await;
-            }
+    // Parse body as JSON value first to detect the type
+    let json_value: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return handlers::bad_request(&format!("Invalid JSON body: {}", e));
         }
+    };
 
-        // Regular event handling
-        let event: FeishuEvent = serde_json::from_value(json_value)
-            .map_err(|e| WebhookError::InvalidBody(format!("Invalid event format: {}", e)))?;
+    // Check if this is a URL verification challenge
+    if let Some(challenge_type) = json_value.get("type").and_then(|t| t.as_str()) {
+        if challenge_type == "url_verification" {
+            return handle_challenge(&json_value).into_response();
+        }
+    }
 
-        let mut channel = self.channel.write().await;
+    // Regular event handling
+    let event: FeishuEvent = match serde_json::from_value(json_value) {
+        Ok(e) => e,
+        Err(e) => {
+            return handlers::bad_request(&format!("Invalid event format: {}", e));
+        }
+    };
 
-        match channel.handle_webhook_event(event).await {
-            Ok(()) => {
-                debug!("Feishu event processed successfully");
-                // Feishu expects a JSON response
-                Ok(handlers::json_response(
-                    axum::http::StatusCode::OK,
-                    &serde_json::json!({"code": 0}),
-                ))
-            }
-            Err(e) => {
-                error!("Feishu event processing failed: {}", e);
-                // Return error response
-                Ok(handlers::json_response(
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    &serde_json::json!({"code": -1, "msg": e.to_string()}),
-                ))
-            }
+    let mut channel = state.channel.write().await;
+
+    match channel.handle_webhook_event(event).await {
+        Ok(()) => {
+            debug!("Feishu event processed successfully");
+            // Feishu expects a JSON response
+            handlers::json_response(
+                axum::http::StatusCode::OK,
+                &serde_json::json!({"code": 0}),
+            )
+        }
+        Err(e) => {
+            error!("Feishu event processing failed: {}", e);
+            // Return error response
+            handlers::json_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &serde_json::json!({"code": -1, "msg": e.to_string()}),
+            )
         }
     }
 }
 
-impl FeishuWebhookHandler {
-    /// Handle URL verification challenge from Feishu
-    async fn handle_challenge(
-        &self,
-        json_value: &serde_json::Value,
-    ) -> WebhookResult<Response<Body>> {
-        debug!("Feishu URL verification challenge");
+/// Handle URL verification challenge from Feishu
+fn handle_challenge(json_value: &serde_json::Value) -> impl IntoResponse {
+    debug!("Feishu URL verification challenge");
 
-        let challenge: FeishuChallenge = serde_json::from_value(json_value.clone())
-            .map_err(|e| WebhookError::InvalidBody(format!("Invalid challenge format: {}", e)))?;
+    let challenge: FeishuChallenge = match serde_json::from_value(json_value.clone()) {
+        Ok(c) => c,
+        Err(e) => {
+            return handlers::bad_request(&format!("Invalid challenge format: {}", e));
+        }
+    };
 
-        // Verify token if configured
-        // Note: Token verification is done in handle_webhook_event
-        // For challenge, we just need to respond with the challenge string
+    // Verify token if configured
+    // Note: Token verification is done in handle_webhook_event
+    // For challenge, we just need to respond with the challenge string
 
-        let response = FeishuChallengeResponse {
-            challenge: challenge.challenge,
-        };
+    let response = FeishuChallengeResponse {
+        challenge: challenge.challenge,
+    };
 
-        info!("Feishu URL verification successful");
-        Ok(handlers::json_response(
-            axum::http::StatusCode::OK,
-            &response,
-        ))
-    }
+    info!("Feishu URL verification successful");
+    handlers::json_response(axum::http::StatusCode::OK, &response)
 }
 
 #[cfg(test)]
@@ -150,18 +156,24 @@ mod tests {
     }
 
     #[test]
-    fn test_feishu_webhook_handler_creation() {
+    fn test_feishu_state_creation() {
         let config = create_test_config();
-        let handler =
-            FeishuWebhookHandler::from_config(config, create_test_sender(), Some("/custom/feishu"));
-        assert_eq!(handler.path(), "/custom/feishu");
+        let state = FeishuState::from_config(config, create_test_sender());
+        assert!(Arc::strong_count(&state.channel) >= 1);
     }
 
     #[test]
-    fn test_default_path() {
+    fn test_create_feishu_routes_default_path() {
         let config = create_test_config();
-        let handler = FeishuWebhookHandler::from_config(config, create_test_sender(), None);
-        assert_eq!(handler.path(), "/feishu/events");
+        let state = FeishuState::from_config(config, create_test_sender());
+        let _router = create_feishu_routes(state, None);
+    }
+
+    #[test]
+    fn test_create_feishu_routes_custom_path() {
+        let config = create_test_config();
+        let state = FeishuState::from_config(config, create_test_sender());
+        let _router = create_feishu_routes(state, Some("/custom/feishu"));
     }
 
     #[test]
