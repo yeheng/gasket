@@ -5,12 +5,12 @@
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, instrument};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::feishu;
+use crate::channels::middleware::InboundSender;
 
 /// Feishu channel configuration
 #[derive(Debug, Clone)]
@@ -33,17 +33,18 @@ pub struct FeishuConfig {
 
 /// Feishu channel.
 ///
-/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
+/// Sends incoming messages through `InboundSender` which applies auth/rate-limit
+/// checks before forwarding to the message bus.
 pub struct FeishuChannel {
     config: FeishuConfig,
-    inbound_sender: Sender<InboundMessage>,
+    inbound_sender: InboundSender,
     client: Client,
     access_token: Option<String>,
 }
 
 impl FeishuChannel {
     /// Create a new Feishu channel with an inbound message sender.
-    pub fn new(config: FeishuConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn new(config: FeishuConfig, inbound_sender: InboundSender) -> Self {
         Self {
             config,
             inbound_sender,
@@ -377,9 +378,9 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    fn create_test_sender() -> Sender<InboundMessage> {
+    fn create_test_sender() -> InboundSender {
         let (tx, _rx) = mpsc::channel(100);
-        tx
+        InboundSender::new(tx)
     }
 
     #[test]

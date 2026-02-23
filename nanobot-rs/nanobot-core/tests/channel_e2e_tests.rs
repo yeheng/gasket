@@ -44,9 +44,18 @@ macro_rules! env_or_skip {
     };
 }
 
-/// Create a test sender for inbound messages.
+/// Create a test sender for inbound messages (middleware-aware).
 /// The receiver is leaked to keep the channel open for the test duration.
-fn create_test_sender() -> tokio::sync::mpsc::Sender<nanobot_core::bus::events::InboundMessage> {
+fn create_test_sender() -> nanobot_core::channels::InboundSender {
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    std::mem::forget(rx);
+    nanobot_core::channels::InboundSender::new(tx)
+}
+
+/// Create a raw mpsc sender for channels not yet migrated to InboundSender.
+#[allow(dead_code)]
+fn create_raw_test_sender() -> tokio::sync::mpsc::Sender<nanobot_core::bus::events::InboundMessage>
+{
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     std::mem::forget(rx);
     tx
@@ -325,7 +334,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, create_test_sender());
+        let channel = SlackChannel::new(config, create_raw_test_sender());
 
         let result = channel
             .send_message(
@@ -349,7 +358,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, create_test_sender());
+        let channel = SlackChannel::new(config, create_raw_test_sender());
 
         // Send a parent message first
         let result = channel
@@ -378,7 +387,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, create_test_sender());
+        let channel = SlackChannel::new(config, create_raw_test_sender());
 
         let msg = OutboundMessage {
             channel: slack(),
@@ -407,7 +416,7 @@ mod slack_e2e {
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
-        let channel = SlackChannel::new(config, create_test_sender());
+        let channel = SlackChannel::new(config, create_raw_test_sender());
 
         // Send with thread_ts metadata (thread_ts is null, but the code path is exercised)
         let msg = OutboundMessage {
@@ -435,7 +444,7 @@ mod slack_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = SlackChannel::new(config, create_test_sender());
+        let mut channel = SlackChannel::new(config, create_raw_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -521,7 +530,7 @@ mod email_e2e {
         let config = make_smtp_config!();
         let to_address = env_or_skip!("EMAIL_TO_ADDRESS");
 
-        let channel = EmailChannel::new(config, create_test_sender());
+        let channel = EmailChannel::new(config, create_raw_test_sender());
 
         let result = channel
             .send_email(
@@ -544,7 +553,7 @@ mod email_e2e {
         load_env();
         let config = make_imap_config!();
 
-        let channel = EmailChannel::new(config, create_test_sender());
+        let channel = EmailChannel::new(config, create_raw_test_sender());
 
         // poll() connects to IMAP and fetches unread emails
         let result = channel.poll().await;
@@ -566,7 +575,7 @@ mod email_e2e {
         let config = make_smtp_config!();
         let to_address = env_or_skip!("EMAIL_TO_ADDRESS");
 
-        let channel = EmailChannel::new(config, create_test_sender());
+        let channel = EmailChannel::new(config, create_raw_test_sender());
 
         // Channel::send parses chat_id as "email:recipient@example.com"
         let msg = OutboundMessage {
@@ -592,7 +601,7 @@ mod email_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_smtp_config!();
-        let mut channel = EmailChannel::new(config, create_test_sender());
+        let mut channel = EmailChannel::new(config, create_raw_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -616,7 +625,7 @@ mod email_e2e {
         let mut config = make_imap_config!();
         config.consent_granted = false;
 
-        let channel = EmailChannel::new(config, create_test_sender());
+        let channel = EmailChannel::new(config, create_raw_test_sender());
 
         let result = channel.poll().await;
         assert!(result.is_ok(), "poll() should succeed even without consent");
@@ -660,7 +669,7 @@ mod telegram_e2e {
         let config = make_config!();
         let chat_id = env_or_skip!("TELEGRAM_CHAT_ID");
 
-        let channel = TelegramChannel::new(config, create_test_sender());
+        let channel = TelegramChannel::new(config, create_raw_test_sender());
 
         let msg = OutboundMessage {
             channel: telegram(),
@@ -725,7 +734,7 @@ mod telegram_e2e {
         let config = make_config!();
         let chat_id = env_or_skip!("TELEGRAM_CHAT_ID");
 
-        let channel = TelegramChannel::new(config, create_test_sender());
+        let channel = TelegramChannel::new(config, create_raw_test_sender());
 
         let long_content = format!(
             "[E2E Test] Telegram long message test - nanobot\n\n{}\n\nEnd of message.",
@@ -755,7 +764,7 @@ mod telegram_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = TelegramChannel::new(config, create_test_sender());
+        let mut channel = TelegramChannel::new(config, create_raw_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(
@@ -931,7 +940,7 @@ mod discord_e2e {
         use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
-        let mut channel = DiscordChannel::new(config, create_test_sender());
+        let mut channel = DiscordChannel::new(config, create_raw_test_sender());
 
         let start_result = Channel::start(&mut channel).await;
         assert!(

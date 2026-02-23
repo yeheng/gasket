@@ -578,6 +578,11 @@ async fn cmd_gateway() -> Result<()> {
     let channel_manager = Arc::new(ChannelManager::new(bus.clone()));
     tasks.push(channel_manager.spawn_outbound_router(outbound_rx));
 
+    // Inbound sender with auth/rate-limit middleware applied.
+    // All channels (including webhook-driven ones) should use this instead of raw bus sender.
+    #[allow(unused_variables)]
+    let inbound_processor = channel_manager.inbound_sender();
+
     // --- Inbound message handler ---
     {
         let agent_for_handler = agent.clone();

@@ -13,12 +13,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, instrument, warn};
 
 use super::base::Channel;
 use crate::bus::events::{InboundMessage, OutboundMessage};
 use crate::bus::wecom;
+use crate::channels::middleware::InboundSender;
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
@@ -223,10 +223,11 @@ struct WeComApiResponse {
 
 /// WeCom bot channel.
 ///
-/// Sends incoming messages directly to the message bus via `Sender<InboundMessage>`.
+/// Sends incoming messages through `InboundSender` which applies auth/rate-limit
+/// checks before forwarding to the message bus.
 pub struct WeComChannel {
     config: WeComConfig,
-    inbound_sender: Sender<InboundMessage>,
+    inbound_sender: InboundSender,
     client: Client,
     access_token: Option<String>,
     /// Cached decoded AES key (32 bytes), derived from `encoding_aes_key`.
@@ -235,7 +236,7 @@ pub struct WeComChannel {
 
 impl WeComChannel {
     /// Create a new WeCom bot channel with an inbound message sender.
-    pub fn new(config: WeComConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn new(config: WeComConfig, inbound_sender: InboundSender) -> Self {
         Self {
             config,
             inbound_sender,
@@ -682,11 +683,11 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    fn create_test_sender() -> Sender<InboundMessage> {
+    fn create_test_sender() -> InboundSender {
         let (tx, rx) = mpsc::channel(100);
         // Leak the receiver to keep the channel open for tests
         std::mem::forget(rx);
-        tx
+        InboundSender::new(tx)
     }
 
     #[test]

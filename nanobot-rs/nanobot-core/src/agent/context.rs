@@ -175,18 +175,13 @@ Be concise and helpful. When using tools, explain what you're doing before and a
 
 /// Truncate text to `max_chars` for context trimming.
 ///
-/// If the content looks like structured data (JSON/XML), replace it entirely
-/// with a placeholder to avoid feeding broken syntax to the LLM.
+/// Simply cuts at a safe UTF-8 char boundary and appends "...".
+/// No attempt is made to guess whether the content is structured data —
+/// the LLM can infer that a truncated old message was too long.
 fn truncate_content(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         return text.to_string();
     }
-    // If it looks like structured data, don't truncate mid-stream
-    let trimmed = text.trim_start();
-    if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('<') {
-        return "[Content too long, omitted to save context]".to_string();
-    }
-    // Plain text: find a safe char boundary
     let mut end = max_chars;
     while !text.is_char_boundary(end) && end > 0 {
         end -= 1;

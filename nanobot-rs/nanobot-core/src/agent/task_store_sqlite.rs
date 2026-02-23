@@ -154,8 +154,8 @@ impl SqliteTaskStore {
                 task.channel,
                 task.chat_id,
                 task.session_key,
-                status_to_str(&task.status),
-                priority_to_str(&task.priority),
+                status_to_int(&task.status),
+                priority_to_int(&task.priority),
                 task.created_at.to_rfc3339(),
                 task.started_at.map(|t| t.to_rfc3339()),
                 task.completed_at.map(|t| t.to_rfc3339()),
@@ -175,8 +175,8 @@ impl SqliteTaskStore {
         let channel: String = row.get(2)?;
         let chat_id: String = row.get(3)?;
         let session_key: String = row.get(4)?;
-        let status_str: String = row.get(5)?;
-        let priority_str: String = row.get(6)?;
+        let status = parse_status(row, 5)?;
+        let priority = parse_priority(row, 6)?;
         let created_str: String = row.get(7)?;
         let started_str: Option<String> = row.get(8)?;
         let completed_str: Option<String> = row.get(9)?;
@@ -186,8 +186,6 @@ impl SqliteTaskStore {
         let progress: i32 = row.get(13)?;
         let metadata_json: String = row.get(14)?;
 
-        let status = str_to_status(&status_str)?;
-        let priority = str_to_priority(&priority_str)?;
         let created_at = DateTime::parse_from_rfc3339(&created_str)?.with_timezone(&Utc);
         let started_at = started_str
             .as_deref()
@@ -219,21 +217,67 @@ impl SqliteTaskStore {
     }
 }
 
-// ── Enum ↔ string helpers ──────────────────────────────────
+// ── Enum ↔ integer helpers ──────────────────────────────────
+//
+// Store enums as integers in SQLite for efficiency.
+// Read path is lenient: accepts both integers and legacy strings for backward compatibility.
 
-fn status_to_str(s: &TaskStatus) -> &'static str {
+fn status_to_int(s: &TaskStatus) -> i32 {
     match s {
-        TaskStatus::Pending => "Pending",
-        TaskStatus::Running => "Running",
-        TaskStatus::Completed => "Completed",
-        TaskStatus::Failed => "Failed",
-        TaskStatus::Cancelled => "Cancelled",
-        TaskStatus::Timeout => "Timeout",
+        TaskStatus::Pending => 0,
+        TaskStatus::Running => 1,
+        TaskStatus::Completed => 2,
+        TaskStatus::Failed => 3,
+        TaskStatus::Cancelled => 4,
+        TaskStatus::Timeout => 5,
     }
 }
 
-fn str_to_status(s: &str) -> anyhow::Result<TaskStatus> {
-    match s {
+fn int_to_status(v: i32) -> anyhow::Result<TaskStatus> {
+    match v {
+        0 => Ok(TaskStatus::Pending),
+        1 => Ok(TaskStatus::Running),
+        2 => Ok(TaskStatus::Completed),
+        3 => Ok(TaskStatus::Failed),
+        4 => Ok(TaskStatus::Cancelled),
+        5 => Ok(TaskStatus::Timeout),
+        _ => anyhow::bail!("Unknown TaskStatus int: {}", v),
+    }
+}
+
+fn priority_to_int(p: &TaskPriority) -> i32 {
+    match p {
+        TaskPriority::Low => 0,
+        TaskPriority::Normal => 1,
+        TaskPriority::High => 2,
+        TaskPriority::Urgent => 3,
+    }
+}
+
+fn int_to_priority(v: i32) -> anyhow::Result<TaskPriority> {
+    match v {
+        0 => Ok(TaskPriority::Low),
+        1 => Ok(TaskPriority::Normal),
+        2 => Ok(TaskPriority::High),
+        3 => Ok(TaskPriority::Urgent),
+        _ => anyhow::bail!("Unknown TaskPriority int: {}", v),
+    }
+}
+
+/// Parse a status column value that may be an integer, numeric string, or legacy name string.
+fn parse_status(row: &rusqlite::Row<'_>, idx: usize) -> anyhow::Result<TaskStatus> {
+    // Try integer first (if column has INTEGER affinity)
+    if let Ok(v) = row.get::<_, i32>(idx) {
+        return int_to_status(v);
+    }
+    // Fall back to string
+    let s: String = row.get(idx)?;
+    // Try numeric string (e.g. "0", "1")
+    if let Ok(v) = s.parse::<i32>() {
+        return int_to_status(v);
+    }
+    // Legacy named string
+    match s.as_str() {
         "Pending" => Ok(TaskStatus::Pending),
         "Running" => Ok(TaskStatus::Running),
         "Completed" => Ok(TaskStatus::Completed),
@@ -244,17 +288,20 @@ fn str_to_status(s: &str) -> anyhow::Result<TaskStatus> {
     }
 }
 
-fn priority_to_str(p: &TaskPriority) -> &'static str {
-    match p {
-        TaskPriority::Low => "Low",
-        TaskPriority::Normal => "Normal",
-        TaskPriority::High => "High",
-        TaskPriority::Urgent => "Urgent",
+/// Parse a priority column value that may be an integer, numeric string, or legacy name string.
+fn parse_priority(row: &rusqlite::Row<'_>, idx: usize) -> anyhow::Result<TaskPriority> {
+    // Try integer first (if column has INTEGER affinity)
+    if let Ok(v) = row.get::<_, i32>(idx) {
+        return int_to_priority(v);
     }
-}
-
-fn str_to_priority(s: &str) -> anyhow::Result<TaskPriority> {
-    match s {
+    // Fall back to string
+    let s: String = row.get(idx)?;
+    // Try numeric string (e.g. "0", "1")
+    if let Ok(v) = s.parse::<i32>() {
+        return int_to_priority(v);
+    }
+    // Legacy named string
+    match s.as_str() {
         "Low" => Ok(TaskPriority::Low),
         "Normal" => Ok(TaskPriority::Normal),
         "High" => Ok(TaskPriority::High),

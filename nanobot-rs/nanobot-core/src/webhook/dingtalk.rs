@@ -10,12 +10,12 @@ use axum::{
     response::IntoResponse,
     Router,
 };
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, error};
 
 use super::handlers;
-use crate::bus::events::InboundMessage;
 use crate::channels::dingtalk::{DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig};
+use crate::channels::middleware::InboundSender;
 
 /// State for DingTalk webhook routes
 #[derive(Clone)]
@@ -32,7 +32,7 @@ impl DingTalkState {
     }
 
     /// Create from config and inbound sender
-    pub fn from_config(config: DingTalkConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn from_config(config: DingTalkConfig, inbound_sender: InboundSender) -> Self {
         let channel = DingTalkChannel::new(config, inbound_sender);
         Self::new(channel)
     }
@@ -100,9 +100,9 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    fn create_test_sender() -> Sender<InboundMessage> {
+    fn create_test_sender() -> InboundSender {
         let (tx, _rx) = mpsc::channel(100);
-        tx
+        InboundSender::new(tx)
     }
 
     fn create_test_config() -> DingTalkConfig {

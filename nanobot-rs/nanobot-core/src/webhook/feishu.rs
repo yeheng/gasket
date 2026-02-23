@@ -10,14 +10,14 @@ use axum::{
     response::IntoResponse,
     Router,
 };
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
 use super::handlers;
-use crate::bus::events::InboundMessage;
 use crate::channels::feishu::{
     FeishuChallenge, FeishuChallengeResponse, FeishuChannel, FeishuConfig, FeishuEvent,
 };
+use crate::channels::middleware::InboundSender;
 
 /// State for Feishu webhook routes
 #[derive(Clone)]
@@ -34,7 +34,7 @@ impl FeishuState {
     }
 
     /// Create from config and inbound sender
-    pub fn from_config(config: FeishuConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn from_config(config: FeishuConfig, inbound_sender: InboundSender) -> Self {
         let channel = FeishuChannel::new(config, inbound_sender);
         Self::new(channel)
     }
@@ -137,9 +137,9 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    fn create_test_sender() -> Sender<InboundMessage> {
+    fn create_test_sender() -> InboundSender {
         let (tx, _rx) = mpsc::channel(100);
-        tx
+        InboundSender::new(tx)
     }
 
     fn create_test_config() -> FeishuConfig {

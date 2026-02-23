@@ -181,6 +181,76 @@ pub fn log_outbound(channel: &str, chat_id: &str, content_len: usize) {
     );
 }
 
+// ── InboundSender ───────────────────────────────────────
+
+use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
+
+/// A wrapper around `Sender<InboundMessage>` that applies auth and rate-limit
+/// checks before forwarding messages to the bus.
+///
+/// This ensures that **all** channels — including webhook-driven ones — go
+/// through the same middleware pipeline as `ChannelManager::process_inbound`.
+#[derive(Clone)]
+pub struct InboundSender {
+    inner: Sender<InboundMessage>,
+    rate_limiter: Option<Arc<SimpleRateLimiter>>,
+    auth_checker: Option<Arc<SimpleAuthChecker>>,
+}
+
+impl InboundSender {
+    /// Create a new `InboundSender` wrapping a raw mpsc sender.
+    pub fn new(inner: Sender<InboundMessage>) -> Self {
+        Self {
+            inner,
+            rate_limiter: None,
+            auth_checker: None,
+        }
+    }
+
+    /// Attach a rate limiter.
+    pub fn with_rate_limiter(mut self, rl: Arc<SimpleRateLimiter>) -> Self {
+        self.rate_limiter = Some(rl);
+        self
+    }
+
+    /// Attach an auth checker.
+    pub fn with_auth_checker(mut self, ac: Arc<SimpleAuthChecker>) -> Self {
+        self.auth_checker = Some(ac);
+        self
+    }
+
+    /// Send a message through the middleware pipeline.
+    ///
+    /// Returns `Ok(())` even when the message is silently dropped by auth/rate-limit
+    /// checks — the caller should not retry rejected messages.
+    pub async fn send(
+        &self,
+        msg: InboundMessage,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<InboundMessage>> {
+        log_inbound(&msg);
+
+        if let Some(ref auth) = self.auth_checker {
+            if !auth.check_and_log(&msg) {
+                return Ok(()); // silently drop
+            }
+        }
+
+        if let Some(ref rl) = self.rate_limiter {
+            if !rl.check_and_log(&msg) {
+                return Ok(()); // silently drop
+            }
+        }
+
+        self.inner.send(msg).await
+    }
+
+    /// Get a clone of the inner raw sender (for channels not yet migrated to InboundSender).
+    pub fn raw_sender(&self) -> Sender<InboundMessage> {
+        self.inner.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

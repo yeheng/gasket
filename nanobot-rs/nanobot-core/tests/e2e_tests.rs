@@ -6,10 +6,19 @@ use std::sync::Arc;
 use nanobot_core::LlmProvider;
 use nanobot_core::Tool;
 
-/// Create a test sender for inbound messages.
+/// Create a test sender for inbound messages (middleware-aware).
 /// The receiver is leaked to keep the channel open for the test duration.
 #[allow(dead_code)]
-fn create_test_sender() -> tokio::sync::mpsc::Sender<nanobot_core::bus::events::InboundMessage> {
+fn create_test_sender() -> nanobot_core::channels::InboundSender {
+    let (tx, rx) = tokio::sync::mpsc::channel(100);
+    std::mem::forget(rx);
+    nanobot_core::channels::InboundSender::new(tx)
+}
+
+/// Create a raw mpsc sender for channels not yet migrated to InboundSender.
+#[allow(dead_code)]
+fn create_raw_test_sender() -> tokio::sync::mpsc::Sender<nanobot_core::bus::events::InboundMessage>
+{
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     std::mem::forget(rx);
     tx
@@ -698,7 +707,7 @@ async fn test_telegram_channel_creation() {
         allow_from: vec![],
     };
 
-    let channel = TelegramChannel::new(config, create_test_sender());
+    let channel = TelegramChannel::new(config, create_raw_test_sender());
 
     assert_eq!(channel.name(), "telegram");
 }
@@ -714,7 +723,7 @@ async fn test_telegram_channel_lifecycle() {
         allow_from: vec![],
     };
 
-    let mut channel = TelegramChannel::new(config, create_test_sender());
+    let mut channel = TelegramChannel::new(config, create_raw_test_sender());
 
     // Test start (trait method)
     let start_result = Channel::start(&mut channel).await;
@@ -758,7 +767,7 @@ async fn test_discord_channel_creation() {
         allow_from: vec![],
     };
 
-    let channel = DiscordChannel::new(config, create_test_sender());
+    let channel = DiscordChannel::new(config, create_raw_test_sender());
 
     assert_eq!(channel.name(), "discord");
 }
@@ -774,7 +783,7 @@ async fn test_discord_channel_lifecycle() {
         allow_from: vec![],
     };
 
-    let mut channel = DiscordChannel::new(config, create_test_sender());
+    let mut channel = DiscordChannel::new(config, create_raw_test_sender());
 
     // Test start
     let start_result = channel.start().await;
@@ -819,7 +828,7 @@ async fn test_slack_channel_creation() {
         allow_from: vec![],
     };
 
-    let channel = SlackChannel::new(config, create_test_sender());
+    let channel = SlackChannel::new(config, create_raw_test_sender());
 
     assert_eq!(channel.name(), "slack");
 }
@@ -837,7 +846,7 @@ async fn test_slack_channel_lifecycle() {
         allow_from: vec![],
     };
 
-    let mut channel = SlackChannel::new(config, create_test_sender());
+    let mut channel = SlackChannel::new(config, create_raw_test_sender());
 
     // Test start
     let start_result = channel.start().await;
@@ -915,7 +924,7 @@ async fn test_email_channel_creation() {
         consent_granted: false,
     };
 
-    let channel = EmailChannel::new(config, create_test_sender());
+    let channel = EmailChannel::new(config, create_raw_test_sender());
 
     assert_eq!(channel.name(), "email");
 }
@@ -940,7 +949,7 @@ async fn test_email_channel_lifecycle() {
         consent_granted: false,
     };
 
-    let mut channel = EmailChannel::new(config, create_test_sender());
+    let mut channel = EmailChannel::new(config, create_raw_test_sender());
 
     // Test start
     let start_result = channel.start().await;
@@ -970,7 +979,7 @@ async fn test_email_channel_poll_without_consent() {
         consent_granted: false, // No consent
     };
 
-    let channel = EmailChannel::new(config, create_test_sender());
+    let channel = EmailChannel::new(config, create_raw_test_sender());
 
     // Without consent, poll should return empty vec
     let result = channel.poll().await.unwrap();

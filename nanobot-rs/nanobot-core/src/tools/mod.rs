@@ -7,7 +7,8 @@ mod message;
 mod registry;
 mod shell;
 mod spawn;
-mod web;
+mod web_fetch;
+mod web_search;
 
 pub use base::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};
 pub use cron::CronTool;
@@ -16,4 +17,5 @@ pub use message::MessageTool;
 pub use registry::ToolRegistry;
 pub use shell::ExecTool;
 pub use spawn::SpawnTool;
-pub use web::{WebFetchTool, WebSearchTool};
+pub use web_fetch::WebFetchTool;
+pub use web_search::WebSearchTool;

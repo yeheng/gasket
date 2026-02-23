@@ -11,11 +11,11 @@ use axum::{
     routing::get,
     Router,
 };
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
 use super::handlers;
-use crate::bus::events::InboundMessage;
+use crate::channels::middleware::InboundSender;
 use crate::channels::wecom::{WeComCallbackBody, WeComCallbackQuery, WeComChannel, WeComConfig};
 
 /// State for WeCom webhook routes
@@ -33,7 +33,7 @@ impl WeComState {
     }
 
     /// Create from config and inbound sender
-    pub fn from_config(config: WeComConfig, inbound_sender: Sender<InboundMessage>) -> Self {
+    pub fn from_config(config: WeComConfig, inbound_sender: InboundSender) -> Self {
         let channel = WeComChannel::new(config, inbound_sender);
         Self::new(channel)
     }
@@ -125,9 +125,9 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    fn create_test_sender() -> Sender<InboundMessage> {
+    fn create_test_sender() -> InboundSender {
         let (tx, _rx) = mpsc::channel(100);
-        tx
+        InboundSender::new(tx)
     }
 
     fn create_test_config() -> WeComConfig {

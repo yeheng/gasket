@@ -4,12 +4,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::base::Channel;
-use super::middleware::{log_inbound, log_outbound, SimpleAuthChecker, SimpleRateLimiter};
+use super::middleware::{
+    log_inbound, log_outbound, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
+};
 use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
 use crate::bus::MessageBus;
 
@@ -20,10 +21,10 @@ use crate::bus::MessageBus;
 pub struct ChannelManager {
     channels: Arc<RwLock<HashMap<ChannelType, Box<dyn Channel>>>>,
     bus: Arc<MessageBus>,
-    /// Optional rate limiter for inbound messages
-    rate_limiter: Option<SimpleRateLimiter>,
-    /// Optional auth checker for inbound messages
-    auth_checker: Option<SimpleAuthChecker>,
+    /// Optional rate limiter for inbound messages (shared with InboundSenders)
+    rate_limiter: Option<Arc<SimpleRateLimiter>>,
+    /// Optional auth checker for inbound messages (shared with InboundSenders)
+    auth_checker: Option<Arc<SimpleAuthChecker>>,
 }
 
 impl ChannelManager {
@@ -39,13 +40,13 @@ impl ChannelManager {
 
     /// Create a new channel manager with rate limiting
     pub fn with_rate_limit(mut self, max_messages: u32, window: std::time::Duration) -> Self {
-        self.rate_limiter = Some(SimpleRateLimiter::new(max_messages, window));
+        self.rate_limiter = Some(Arc::new(SimpleRateLimiter::new(max_messages, window)));
         self
     }
 
     /// Create a new channel manager with auth checking
     pub fn with_auth(mut self, allowed_senders: Vec<String>) -> Self {
-        self.auth_checker = Some(SimpleAuthChecker::new(allowed_senders));
+        self.auth_checker = Some(Arc::new(SimpleAuthChecker::new(allowed_senders)));
         self
     }
 
@@ -128,9 +129,19 @@ impl ChannelManager {
     }
 
     /// Get a cloneable sender for inbound messages.
-    /// Channels can use this to send messages directly to the bus.
-    pub fn inbound_sender(&self) -> Sender<InboundMessage> {
-        self.bus.inbound_sender()
+    ///
+    /// The returned `InboundSender` wraps the raw bus sender with the same
+    /// auth and rate-limit middleware that `process_inbound` applies. This
+    /// ensures that webhook-driven channels cannot bypass the middleware.
+    pub fn inbound_sender(&self) -> InboundSender {
+        let mut sender = InboundSender::new(self.bus.inbound_sender());
+        if let Some(ref rl) = self.rate_limiter {
+            sender = sender.with_rate_limiter(Arc::clone(rl));
+        }
+        if let Some(ref ac) = self.auth_checker {
+            sender = sender.with_auth_checker(Arc::clone(ac));
+        }
+        sender
     }
 
     /// Spawn the outbound routing loop.
