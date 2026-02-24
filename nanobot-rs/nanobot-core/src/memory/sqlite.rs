@@ -21,6 +21,22 @@ pub struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
 }
 
+/// Session metadata for per-message storage
+#[derive(Debug, Clone)]
+pub struct SessionMeta {
+    pub key: String,
+    pub last_consolidated: usize,
+}
+
+/// Message row for session messages
+#[derive(Debug, Clone)]
+pub struct MessageRow {
+    pub role: String,
+    pub content: String,
+    pub timestamp: DateTime<Utc>,
+    pub tools_used: Option<String>,
+}
+
 impl SqliteStore {
     /// Create a new `SqliteStore` with the default database path
     /// (`~/.nanobot/memory.db`).
@@ -103,14 +119,28 @@ impl SqliteStore {
                 updated_at  TEXT NOT NULL
             );
 
-            -- Sessions table
+            -- Sessions table (metadata only)
             CREATE TABLE IF NOT EXISTS sessions (
                 key         TEXT PRIMARY KEY,
-                data        TEXT NOT NULL,
+                last_consolidated INTEGER NOT NULL DEFAULT 0,
                 updated_at  TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at);
+
+            -- Session messages table (one row per message)
+            CREATE TABLE IF NOT EXISTS session_messages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key TEXT NOT NULL,
+                role        TEXT NOT NULL,
+                content     TEXT NOT NULL,
+                timestamp   TEXT NOT NULL,
+                tools_used  TEXT,
+                FOREIGN KEY (session_key) REFERENCES sessions(key) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_messages_session_key ON session_messages(session_key);
+            CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp);
 
             PRAGMA foreign_keys = ON;
             ",
@@ -213,23 +243,35 @@ impl SqliteStore {
         Ok(changed > 0)
     }
 
-    // ── Session API ──
+    // ── Session API (Legacy Blob - for migration only) ──
 
-    /// Load a session by key.
+    /// Load a session by key (legacy JSON blob format).
+    /// Used for backward compatibility during migration.
+    #[deprecated(note = "Use load_session_messages instead for per-message storage")]
     pub async fn load_session(&self, key: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare("SELECT data FROM sessions WHERE key = ?1")?;
-        let mut rows = stmt.query(rusqlite::params![key])?;
+        // Check if this is legacy format (has 'data' column) or new format
+        let has_data_column: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
+                [],
+                |row| row.get::<_, i32>(0),
+            )?
+            > 0;
 
-        if let Some(row) = rows.next()? {
-            let data: String = row.get(0)?;
-            Ok(Some(data))
-        } else {
-            Ok(None)
+        if has_data_column {
+            let mut stmt = conn.prepare("SELECT data FROM sessions WHERE key = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![key])?;
+            if let Some(row) = rows.next()? {
+                let data: String = row.get(0)?;
+                return Ok(Some(data));
+            }
         }
+        Ok(None)
     }
 
-    /// Save a session (upsert).
+    /// Save a session (legacy JSON blob format).
+    #[deprecated(note = "Use append_session_message instead for per-message storage")]
     pub async fn save_session(&self, key: &str, data: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().await;
         let updated_at = Utc::now().to_rfc3339();
@@ -237,18 +279,143 @@ impl SqliteStore {
             "INSERT OR REPLACE INTO sessions (key, data, updated_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![key, data, updated_at],
         )?;
-        debug!("Saved session: {}", key);
+        debug!("Saved session (legacy): {}", key);
         Ok(())
     }
 
     /// Delete a session by key.
     pub async fn delete_session(&self, key: &str) -> anyhow::Result<bool> {
         let conn = self.conn.lock().await;
+        // CASCADE will delete messages automatically
         let changed = conn.execute(
             "DELETE FROM sessions WHERE key = ?1",
             rusqlite::params![key],
         )?;
         Ok(changed > 0)
+    }
+
+    // ── Session API (New Per-Message Storage) ──
+
+    /// Create or update session metadata.
+    pub async fn save_session_meta(&self, key: &str, last_consolidated: usize) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        let updated_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![key, last_consolidated as i64, updated_at],
+        )?;
+        debug!("Saved session meta: {}", key);
+        Ok(())
+    }
+
+    /// Load session metadata.
+    pub async fn load_session_meta(&self, key: &str) -> anyhow::Result<Option<SessionMeta>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare("SELECT key, last_consolidated FROM sessions WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key])?;
+
+        if let Some(row) = rows.next()? {
+            let key: String = row.get(0)?;
+            let last_consolidated: i64 = row.get(1)?;
+            Ok(Some(SessionMeta {
+                key,
+                last_consolidated: last_consolidated as usize,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Append a single message to a session (O(1) operation).
+    pub async fn append_session_message(
+        &self,
+        session_key: &str,
+        role: &str,
+        content: &str,
+        timestamp: &DateTime<Utc>,
+        tools_used: Option<&[String]>,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        let timestamp_str = timestamp.to_rfc3339();
+        let tools_json = tools_used.map(|t| serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string()));
+
+        // Ensure session exists
+        let updated_at = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, 0, ?2)",
+            rusqlite::params![session_key, updated_at],
+        )?;
+
+        // Insert message
+        conn.execute(
+            "INSERT INTO session_messages (session_key, role, content, timestamp, tools_used) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![session_key, role, content, timestamp_str, tools_json],
+        )?;
+
+        // Update session updated_at
+        conn.execute(
+            "UPDATE sessions SET updated_at = ?1 WHERE key = ?2",
+            rusqlite::params![updated_at, session_key],
+        )?;
+
+        debug!("Appended message to session: {}", session_key);
+        Ok(())
+    }
+
+    /// Load all messages for a session.
+    pub async fn load_session_messages(&self, session_key: &str) -> anyhow::Result<Vec<MessageRow>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT role, content, timestamp, tools_used FROM session_messages WHERE session_key = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![session_key], |row| {
+            let role: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            let timestamp_str: String = row.get(2)?;
+            let tools_json: Option<String> = row.get(3)?;
+
+            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            Ok(MessageRow {
+                role,
+                content,
+                timestamp,
+                tools_used: tools_json,
+            })
+        })?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        Ok(messages)
+    }
+
+    /// Clear all messages for a session (keep metadata).
+    pub async fn clear_session_messages(&self, session_key: &str) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "DELETE FROM session_messages WHERE session_key = ?1",
+            rusqlite::params![session_key],
+        )?;
+        conn.execute(
+            "UPDATE sessions SET last_consolidated = 0, updated_at = ?1 WHERE key = ?2",
+            rusqlite::params![Utc::now().to_rfc3339(), session_key],
+        )?;
+        debug!("Cleared session messages: {}", session_key);
+        Ok(())
+    }
+
+    /// Update last_consolidated for a session.
+    pub async fn update_session_consolidated(&self, session_key: &str, last_consolidated: usize) -> anyhow::Result<()> {
+        let conn = self.conn.lock().await;
+        conn.execute(
+            "UPDATE sessions SET last_consolidated = ?1, updated_at = ?2 WHERE key = ?3",
+            rusqlite::params![last_consolidated as i64, Utc::now().to_rfc3339(), session_key],
+        )?;
+        Ok(())
     }
 }
 

@@ -4,13 +4,13 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 /// MCP tool definition
@@ -54,7 +54,7 @@ impl McpClient {
             stdin: None,
             tools: Vec::new(),
             request_id: 0,
-            pending: Arc::new(Mutex::new(HashMap::new())),
+            pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -105,7 +105,8 @@ impl McpClient {
                     Ok(msg) => {
                         if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
                             // This is a response — find the pending request
-                            let mut pending = pending.lock().await;
+                            // Use std::sync::Mutex for short-held locks on in-memory HashMap
+                            let mut pending = pending.lock().unwrap();
                             if let Some(tx) = pending.remove(&id) {
                                 let _ = tx.send(msg);
                             }
@@ -163,7 +164,7 @@ impl McpClient {
 
         // Register pending request
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        self.pending.lock().unwrap().insert(id, tx);
 
         // Write to stdin
         if let Some(ref mut stdin) = self.stdin {

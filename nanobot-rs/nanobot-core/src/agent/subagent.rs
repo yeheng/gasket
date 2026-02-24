@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
+use super::context::ContextBuilder;
 use super::loop_::{AgentConfig, AgentLoop};
 use super::task_store_sqlite::SqliteTaskStore;
 
@@ -209,7 +210,7 @@ impl Default for SubagentConfig {
 /// Subagent manager for handling background tasks.
 ///
 /// Each spawned task creates an independent `AgentLoop` that shares the same
-/// LLM provider but operates in its own session.
+/// LLM provider and cached context builder but operates in its own session.
 ///
 /// Task state is persisted via SQLite.
 pub struct SubagentManager {
@@ -233,6 +234,9 @@ pub struct SubagentManager {
 
     /// Persistence backend (SQLite)
     store: Arc<SqliteTaskStore>,
+
+    /// Cached context builder (shared across subagents to avoid repeated I/O)
+    context: ContextBuilder,
 }
 
 impl SubagentManager {
@@ -274,6 +278,18 @@ impl SubagentManager {
 
         let tasks = Arc::new(RwLock::new(tasks));
 
+        // Build context once at startup (synchronous I/O is acceptable here)
+        let context = match ContextBuilder::new(workspace.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to build context: {}, using default", e);
+                ContextBuilder::new(PathBuf::from(".")).unwrap_or_else(|_| {
+                    // Absolute fallback with empty prompt
+                    ContextBuilder::new(PathBuf::from("/nonexistent")).unwrap()
+                })
+            }
+        };
+
         Self {
             tasks,
             handles: Arc::new(RwLock::new(HashMap::new())),
@@ -282,6 +298,7 @@ impl SubagentManager {
             config,
             tool_factory,
             store,
+            context,
         }
     }
 
@@ -356,6 +373,8 @@ impl SubagentManager {
         let workspace = self.workspace.clone();
         let tid = task_id.clone();
         let tool_factory = self.tool_factory.clone();
+        // Clone the cached context (Arc<String> internally, so this is cheap)
+        let context = self.context.clone();
 
         let handle = tokio::spawn(async move {
             // Mark as running
@@ -377,14 +396,15 @@ impl SubagentManager {
                 &prompt[..prompt.len().min(80)]
             );
 
-            // Create a lightweight agent loop for this task
+            // Create a lightweight agent loop for this task using cached context
+            // This avoids synchronous file I/O in async context
             let agent_config = AgentConfig {
                 model: provider.default_model().to_string(),
                 max_iterations: 10,
                 ..Default::default()
             };
             let tools = tool_factory();
-            let agent = match AgentLoop::new(provider, workspace, agent_config, tools) {
+            let agent = match AgentLoop::with_cached_context(provider, workspace, agent_config, tools, context) {
                 Ok(a) => a,
                 Err(e) => {
                     let snap = {

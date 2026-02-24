@@ -1,20 +1,32 @@
 //! Context builder for constructing LLM prompts
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tracing::debug;
 
 use crate::providers::ChatMessage;
 use crate::session::SessionMessage;
 
+use super::history_processor::{HistoryConfig, HistoryStrategy, StrategyFactory};
+
 /// Bootstrap files loaded into the system prompt (same as Python version)
 const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
 
-/// Context builder for constructing prompts
+/// Context builder for constructing prompts.
+///
+/// This struct is designed to be created once at startup and shared across
+/// multiple agent loops via `Arc`. The system prompt is built once and cached
+/// to avoid repeated synchronous file I/O in async contexts.
+#[derive(Clone)]
 pub struct ContextBuilder {
     _workspace: PathBuf,
-    system_prompt: String,
-    skills_context: Option<String>,
+    system_prompt: Arc<String>,
+    skills_context: Option<Arc<String>>,
+    /// History processing configuration
+    history_config: HistoryConfig,
+    /// History processing strategy (boxed trait object)
+    history_strategy: Arc<dyn HistoryStrategy>,
 }
 
 impl ContextBuilder {
@@ -27,13 +39,47 @@ impl ContextBuilder {
     ///
     /// Returns an error if a bootstrap file **exists** but cannot be read
     /// (permission denied, I/O error, etc.). A missing file is not an error.
+    ///
+    /// # Note
+    ///
+    /// This constructor performs synchronous file I/O. It should be called
+    /// during startup, not in async contexts. For subagents, use the cached
+    /// instance from the parent agent.
     pub fn new(workspace: PathBuf) -> Result<Self, std::io::Error> {
         let system_prompt = Self::build_system_prompt(&workspace)?;
+        let history_config = HistoryConfig::default();
+        let factory = StrategyFactory::new(history_config.clone());
+
         Ok(Self {
             _workspace: workspace,
-            system_prompt,
+            system_prompt: Arc::new(system_prompt),
             skills_context: None,
+            history_config,
+            history_strategy: Arc::from(factory.create_default()),
         })
+    }
+
+    /// Create a context builder with custom history configuration
+    pub fn with_history_config(mut self, config: HistoryConfig) -> Self {
+        self.history_config = config.clone();
+        let factory = StrategyFactory::new(config);
+        self.history_strategy = Arc::from(factory.create_default());
+        self
+    }
+
+    /// Create a context builder with a custom history strategy
+    pub fn with_history_strategy(mut self, strategy: Arc<dyn HistoryStrategy>) -> Self {
+        self.history_strategy = strategy;
+        self
+    }
+
+    /// Create a context builder with "smart" history processing
+    /// (relevance filtering + token budget)
+    pub fn with_smart_history(mut self, token_budget: usize) -> Self {
+        self.history_config.token_budget = token_budget;
+        let factory = StrategyFactory::new(self.history_config.clone());
+        self.history_strategy = Arc::from(factory.create_smart());
+        self
     }
 
     /// Build system prompt from workspace bootstrap files.
@@ -75,21 +121,27 @@ impl ContextBuilder {
 
     /// Set a custom system prompt
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = prompt.into();
+        self.system_prompt = Arc::new(prompt.into());
         self
     }
 
     /// Set skills context summary
     pub fn with_skills_context(mut self, context: Option<String>) -> Self {
-        self.skills_context = context;
+        self.skills_context = context.map(Arc::new);
         self
+    }
+
+    /// Get a cloneable reference to the context builder.
+    /// Useful for sharing with subagents.
+    pub fn shared(self) -> Arc<Self> {
+        Arc::new(self)
     }
 
     /// Build the message list for an LLM request.
     ///
-    /// When the history exceeds `recent_window` messages, older messages are
-    /// condensed to save tokens: only the first 100 characters of each old
-    /// message are kept, prefixed with its role.
+    /// Uses the configured history strategy to process conversation history.
+    /// The strategy may truncate, filter, summarize, or inject history based
+    /// on configuration and current input relevance.
     pub fn build_messages(
         &self,
         history: Vec<SessionMessage>,
@@ -101,7 +153,7 @@ impl ContextBuilder {
         let mut messages = Vec::new();
 
         // System prompt
-        let mut system_content = self.system_prompt.clone();
+        let mut system_content = (*self.system_prompt).clone();
         if let Some(mem) = memory {
             if !mem.is_empty() {
                 system_content.push_str("\n\n## Long-term Memory\n");
@@ -116,29 +168,32 @@ impl ContextBuilder {
         }
         messages.push(ChatMessage::system(system_content));
 
-        // History — apply progressive trimming.
-        // Keep the most recent RECENT_KEEP messages verbatim; condense older ones.
-        const RECENT_KEEP: usize = 10;
-        let total = history.len();
-        let trim_boundary = total.saturating_sub(RECENT_KEEP);
+        // Process history using the configured strategy
+        let processed = self.history_strategy.process(history, current_message, &self.history_config);
 
-        for (i, msg) in history.iter().enumerate() {
-            let content = if i < trim_boundary {
-                // Condense: keep only first 100 chars
-                truncate_content(&msg.content, 100)
-            } else {
-                msg.content.clone()
-            };
+        // Store stats before moving messages
+        let history_count = processed.messages.len();
+        let filtered_count = processed.filtered_count;
+        let estimated_tokens = processed.estimated_tokens;
 
+        // Add processed history messages
+        for msg in processed.messages {
             match msg.role.as_str() {
-                "user" => messages.push(ChatMessage::user(&content)),
-                "assistant" => messages.push(ChatMessage::assistant(&content)),
+                "user" => messages.push(ChatMessage::user(&msg.content)),
+                "assistant" => messages.push(ChatMessage::assistant(&msg.content)),
                 _ => {}
             }
         }
 
         // Current message
         messages.push(ChatMessage::user(current_message));
+
+        debug!(
+            "Built messages: {} history ({} filtered, {} tokens est.)",
+            history_count,
+            filtered_count,
+            estimated_tokens
+        );
 
         messages
     }
@@ -172,19 +227,3 @@ impl ContextBuilder {
 const DEFAULT_INSTRUCTIONS: &str = r#"You have access to tools for reading files, writing files, editing files, listing directories, and executing shell commands.
 
 Be concise and helpful. When using tools, explain what you're doing before and after the tool call."#;
-
-/// Truncate text to `max_chars` for context trimming.
-///
-/// Simply cuts at a safe UTF-8 char boundary and appends "...".
-/// No attempt is made to guess whether the content is structured data —
-/// the LLM can infer that a truncated old message was too long.
-fn truncate_content(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        return text.to_string();
-    }
-    let mut end = max_chars;
-    while !text.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    format!("{}...", &text[..end])
-}

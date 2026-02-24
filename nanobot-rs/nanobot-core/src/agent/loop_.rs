@@ -125,6 +125,42 @@ impl AgentLoop {
         })
     }
 
+    /// Create a new agent loop with a pre-built, cached context builder.
+    ///
+    /// This is the preferred constructor for subagents to avoid repeated
+    /// synchronous file I/O. The context builder should be created once
+    /// at startup and shared via `Arc`.
+    ///
+    /// # Note
+    ///
+    /// This constructor performs **no synchronous file I/O** and is safe
+    /// to call in async contexts.
+    pub fn with_cached_context(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: ToolRegistry,
+        context: ContextBuilder,
+    ) -> Result<Self> {
+        let memory = MemoryStore::new();
+        let sessions = SessionManager::new(memory.sqlite_store().clone());
+
+        Ok(Self {
+            provider,
+            context,
+            memory,
+            sessions,
+            tools,
+            config,
+            workspace,
+        })
+    }
+
+    /// Get the cached context builder for sharing with subagents.
+    pub fn context_builder(&self) -> &ContextBuilder {
+        &self.context
+    }
+
     /// Load skills from builtin and user directories
     fn load_skills(workspace: &Path) -> Option<String> {
         let user_skills_dir = workspace.join("skills");

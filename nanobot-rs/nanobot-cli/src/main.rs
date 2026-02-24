@@ -182,10 +182,6 @@ fn create_workspace_templates(workspace: &std::path::Path) -> Result<()> {
             "HEARTBEAT.md",
             include_str!("../../nanobot-core/workspace/HEARTBEAT.md"),
         ),
-        (
-            "memory/MEMORY.md",
-            include_str!("../../nanobot-core/workspace/memory/MEMORY.md"),
-        ),
     ];
 
     for (filename, content) in templates {
@@ -341,6 +337,7 @@ async fn cmd_agent(
             StreamEvent::ToolEnd { name: _, output: _ } => {}
             StreamEvent::Done => {
                 println!();
+                std::io::stdout().flush().ok();
             }
         }
     });
