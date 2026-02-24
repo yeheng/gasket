@@ -90,7 +90,7 @@ async fn handle_post(
         }
     };
 
-    let mut channel = state.channel.write().await;
+    let channel = state.channel.read().await;
 
     match channel.handle_webhook_event(event).await {
         Ok(()) => {

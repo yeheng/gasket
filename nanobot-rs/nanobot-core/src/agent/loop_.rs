@@ -308,10 +308,13 @@ impl AgentLoop {
             self.run_agent_loop(messages).await?
         };
 
-        // Save to session
-        session.add_message("user", content, None);
-        session.add_message("assistant", &response, None);
-        self.sessions.save(&session).await;
+        // Save to session using O(1) append operations
+        self.sessions
+            .append_message(&mut session, "user", content, None)
+            .await;
+        self.sessions
+            .append_message(&mut session, "assistant", &response, Some(tools_used.clone()))
+            .await;
 
         Ok(AgentResponse {
             content: response,

@@ -115,7 +115,7 @@ impl FeishuChannel {
 
     /// Handle incoming webhook event
     #[instrument(name = "channel.feishu.handle_webhook", skip_all)]
-    pub async fn handle_webhook_event(&mut self, event: FeishuEvent) -> anyhow::Result<()> {
+    pub async fn handle_webhook_event(&self, event: FeishuEvent) -> anyhow::Result<()> {
         // Verify token if configured
         if let Some(ref token) = self.config.verification_token {
             if event.token != *token {

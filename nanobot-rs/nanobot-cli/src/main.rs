@@ -13,11 +13,13 @@ use tracing::{info, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
 use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
-use nanobot_core::config::{load_config, Config, ConfigLoader, ProviderConfig};
-use nanobot_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
+use nanobot_core::config::{load_config, Config, ConfigLoader};
+use nanobot_core::providers::{
+    LlmProvider, ModelSpec, OpenAICompatibleProvider, ProviderMetadata, ProviderRegistry,
+};
 use nanobot_core::tools::{
     CronTool, EditFileTool, ExecTool, ListDirTool, MessageTool, ReadFileTool, SpawnTool,
-    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+    ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 /// 🐈 nanobot - A lightweight AI assistant
@@ -301,18 +303,94 @@ async fn cmd_agent(
     };
 
     let mut tools = ToolRegistry::new();
-    tools.register(Box::new(ReadFileTool::new(allowed_dir.clone())));
-    tools.register(Box::new(WriteFileTool::new(allowed_dir.clone())));
-    tools.register(Box::new(EditFileTool::new(allowed_dir.clone())));
-    tools.register(Box::new(ListDirTool::new(allowed_dir)));
-    tools.register(Box::new(ExecTool::new(
-        workspace.clone(),
-        std::time::Duration::from_secs(120),
-        restrict,
-    )));
-    tools.register(Box::new(WebFetchTool::new()));
-    tools.register(Box::new(WebSearchTool::new(Some(config.tools.web.clone()))));
-    tools.register(Box::new(SpawnTool::new()));
+
+    // Safe read-only tools (no approval required)
+    tools.register_with_metadata(
+        Box::new(ReadFileTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "Read File".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["read".to_string(), "file".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(ListDirTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "List Directory".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["read".to_string(), "directory".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(WebFetchTool::new()),
+        ToolMetadata {
+            display_name: "Web Fetch".to_string(),
+            category: "web".to_string(),
+            tags: vec!["http".to_string(), "fetch".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(WebSearchTool::new(Some(config.tools.web.clone()))),
+        ToolMetadata {
+            display_name: "Web Search".to_string(),
+            category: "web".to_string(),
+            tags: vec!["search".to_string(), "web".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+
+    // Dangerous mutating tools (require approval)
+    tools.register_with_metadata(
+        Box::new(WriteFileTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "Write File".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["write".to_string(), "file".to_string()],
+            requires_approval: true,
+            is_mutating: true,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(EditFileTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "Edit File".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["edit".to_string(), "file".to_string()],
+            requires_approval: true,
+            is_mutating: true,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(ExecTool::new(
+            workspace.clone(),
+            std::time::Duration::from_secs(120),
+            restrict,
+        )),
+        ToolMetadata {
+            display_name: "Execute Command".to_string(),
+            category: "system".to_string(),
+            tags: vec!["shell".to_string(), "exec".to_string()],
+            requires_approval: true,
+            is_mutating: true,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(SpawnTool::new()),
+        ToolMetadata {
+            display_name: "Spawn Subagent".to_string(),
+            category: "system".to_string(),
+            tags: vec!["spawn".to_string(), "agent".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
 
     let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
         .context("Failed to initialize agent (check workspace bootstrap files)")?;
@@ -539,20 +617,118 @@ async fn cmd_gateway() -> Result<()> {
     };
 
     let mut tools = ToolRegistry::new();
-    tools.register(Box::new(ReadFileTool::new(allowed_dir.clone())));
-    tools.register(Box::new(WriteFileTool::new(allowed_dir.clone())));
-    tools.register(Box::new(EditFileTool::new(allowed_dir.clone())));
-    tools.register(Box::new(ListDirTool::new(allowed_dir)));
-    tools.register(Box::new(ExecTool::new(
-        workspace.clone(),
-        std::time::Duration::from_secs(120),
-        restrict,
-    )));
-    tools.register(Box::new(WebFetchTool::new()));
-    tools.register(Box::new(WebSearchTool::new(Some(config.tools.web.clone()))));
-    tools.register(Box::new(SpawnTool::new()));
-    tools.register(Box::new(MessageTool::new(bus.clone())));
-    tools.register(Box::new(CronTool::new(cron_service.clone())));
+
+    // Safe read-only tools (no approval required)
+    tools.register_with_metadata(
+        Box::new(ReadFileTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "Read File".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["read".to_string(), "file".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(ListDirTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "List Directory".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["read".to_string(), "directory".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(WebFetchTool::new()),
+        ToolMetadata {
+            display_name: "Web Fetch".to_string(),
+            category: "web".to_string(),
+            tags: vec!["http".to_string(), "fetch".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(WebSearchTool::new(Some(config.tools.web.clone()))),
+        ToolMetadata {
+            display_name: "Web Search".to_string(),
+            category: "web".to_string(),
+            tags: vec!["search".to_string(), "web".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+
+    // Dangerous mutating tools (require approval)
+    tools.register_with_metadata(
+        Box::new(WriteFileTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "Write File".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["write".to_string(), "file".to_string()],
+            requires_approval: true,
+            is_mutating: true,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(EditFileTool::new(allowed_dir.clone())),
+        ToolMetadata {
+            display_name: "Edit File".to_string(),
+            category: "filesystem".to_string(),
+            tags: vec!["edit".to_string(), "file".to_string()],
+            requires_approval: true,
+            is_mutating: true,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(ExecTool::new(
+            workspace.clone(),
+            std::time::Duration::from_secs(120),
+            restrict,
+        )),
+        ToolMetadata {
+            display_name: "Execute Command".to_string(),
+            category: "system".to_string(),
+            tags: vec!["shell".to_string(), "exec".to_string()],
+            requires_approval: true,
+            is_mutating: true,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(SpawnTool::new()),
+        ToolMetadata {
+            display_name: "Spawn Subagent".to_string(),
+            category: "system".to_string(),
+            tags: vec!["spawn".to_string(), "agent".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+
+    // Communication tools (gateway-specific)
+    tools.register_with_metadata(
+        Box::new(MessageTool::new(bus.clone())),
+        ToolMetadata {
+            display_name: "Send Message".to_string(),
+            category: "communication".to_string(),
+            tags: vec!["message".to_string(), "send".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+    tools.register_with_metadata(
+        Box::new(CronTool::new(cron_service.clone())),
+        ToolMetadata {
+            display_name: "Schedule Task".to_string(),
+            category: "system".to_string(),
+            tags: vec!["cron".to_string(), "schedule".to_string()],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
+
+    // MCP tools (metadata assigned by MCP manager)
     for mcp_tool in mcp_tools {
         tools.register(mcp_tool);
     }
@@ -830,14 +1006,86 @@ fn build_provider(
     }
 }
 
-/// Find a configured provider.
+/// Build a ProviderRegistry from configuration.
+///
+/// Iterates through all configured providers, instantiates them, and registers
+/// them in the registry with appropriate metadata.
+fn build_provider_registry(config: &Config) -> ProviderRegistry {
+    let mut registry = ProviderRegistry::new();
+
+    for (name, provider_config) in &config.providers {
+        // Check if provider has credentials
+        let (available, api_key) = if name == "ollama" {
+            // Ollama doesn't require an API key
+            (true, "")
+        } else if let Some(key) = &provider_config.api_key {
+            (true, key.as_str())
+        } else {
+            (false, "")
+        };
+
+        // Get default model for this provider (use provider name as fallback hint)
+        let default_model = get_default_model_for_provider(name);
+
+        // Build metadata
+        let metadata = ProviderMetadata {
+            name: name.clone(),
+            api_base: provider_config.api_base.clone(),
+            default_model: default_model.to_string(),
+            model_prefix: name.clone(),
+            available,
+            missing_config: if available {
+                vec![]
+            } else {
+                vec!["API key not configured".to_string()]
+            },
+        };
+
+        // Build and register provider if available
+        if available {
+            let provider = build_provider(name, api_key, provider_config, default_model);
+            registry.register(provider, metadata);
+        }
+    }
+
+    // Set default provider based on preference order
+    let default_order = ["openrouter", "deepseek", "openai", "anthropic", "ollama"];
+    for default_name in default_order {
+        if registry.contains(default_name) {
+            if registry.set_default(default_name).is_ok() {
+                break;
+            }
+        }
+    }
+
+    registry
+}
+
+/// Get the default model name for a provider.
+fn get_default_model_for_provider(name: &str) -> &'static str {
+    match name {
+        "deepseek" => "deepseek-chat",
+        "openrouter" => "anthropic/claude-3.5-sonnet",
+        "anthropic" => "claude-3-5-sonnet-20241022",
+        "zhipu" => "glm-4",
+        "dashscope" => "qwen-turbo",
+        "moonshot" => "moonshot-v1-8k",
+        "minimax" => "abab6.5s-chat",
+        "ollama" => "llama3",
+        "openai" | _ => "gpt-4o",
+    }
+}
+
+/// Find a configured provider using the ProviderRegistry.
 ///
 /// The model field supports `provider_id/model_id` format (parsed via
 /// `ModelSpec`) to select a specific provider. For example:
 ///   - `"deepseek/deepseek-chat"` → use the deepseek provider with model deepseek-chat
 ///   - `"zhipu/glm-4"`           → use the zhipu provider with model glm-4
-///   - `"deepseek-chat"`          → legacy behaviour, pick the first provider with an API key
+///   - `"deepseek-chat"`          → legacy behaviour, use default provider
 fn find_provider(config: &Config) -> Result<ProviderInfo> {
+    let registry = build_provider_registry(config);
+
     let raw_model = config
         .agents
         .defaults
@@ -850,74 +1098,37 @@ fn find_provider(config: &Config) -> Result<ProviderInfo> {
         .parse()
         .expect("ModelSpec::from_str is infallible");
 
-    // Helper to build ProviderInfo
-    let build_info =
-        |name: &str, provider_config: &ProviderConfig, api_key: &str| -> ProviderInfo {
-            let provider = build_provider(name, api_key, provider_config, spec.model());
-            ProviderInfo {
-                provider,
-                model: spec.model().to_string(),
-                provider_name: name.to_string(),
-                supports_thinking: provider_config.supports_thinking(name),
-            }
-        };
-
-    // If the user specified a provider prefix, use that provider directly.
-    if let Some(provider_name) = spec.provider() {
-        let provider_config = config.providers.get(provider_name).ok_or_else(|| {
+    // Try to get provider by prefix if specified in model
+    let provider = if let Some(provider_name) = spec.provider() {
+        registry.get(provider_name).ok_or_else(|| {
             anyhow::anyhow!(
-                "Provider '{}' specified in model '{}' is not configured in providers section",
+                "Provider '{}' specified in model '{}' is not configured or unavailable",
                 provider_name,
                 spec
             )
-        })?;
+        })?
+    } else {
+        // Use registry's default provider detection
+        registry.get_default().ok_or_else(|| {
+            anyhow::anyhow!(
+                "No available provider configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.yaml"
+            )
+        })?
+    };
 
-        let api_key = provider_config.api_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Provider '{}' has no API key configured", provider_name)
-        })?;
+    let provider_name = provider.name().to_string();
+    let supports_thinking = config
+        .providers
+        .get(&provider_name)
+        .map(|p| p.supports_thinking(&provider_name))
+        .unwrap_or(false);
 
-        return Ok(build_info(provider_name, provider_config, api_key));
-    }
-
-    // First, try providers in order of preference.
-    let provider_order = [
-        "deepseek",
-        "openrouter",
-        "openai",
-        "anthropic",
-        "ollama",
-        "zhipu",
-        "dashscope",
-        "moonshot",
-        "minimax",
-    ];
-
-    for name in &provider_order {
-        if let Some(provider_config) = config.providers.get(*name) {
-            // Ollama is a local service and doesn't require an API key
-            if *name == "ollama" {
-                return Ok(build_info(name, provider_config, ""));
-            }
-            if let Some(api_key) = &provider_config.api_key {
-                return Ok(build_info(name, provider_config, api_key));
-            }
-        }
-    }
-
-    // Fall back to any configured provider (check for ollama without api_key, or others with api_key)
-    for (name, provider_config) in &config.providers {
-        // Ollama is a local service and doesn't require an API key
-        if name == "ollama" {
-            return Ok(build_info(name, provider_config, ""));
-        }
-        if let Some(api_key) = &provider_config.api_key {
-            return Ok(build_info(name, provider_config, api_key));
-        }
-    }
-
-    anyhow::bail!(
-        "No API key configured. Run 'nanobot onboard' and add your API key to ~/.nanobot/config.yaml"
-    )
+    Ok(ProviderInfo {
+        provider,
+        model: spec.model().to_string(),
+        provider_name,
+        supports_thinking,
+    })
 }
 
 /// Show status of all configured channels
