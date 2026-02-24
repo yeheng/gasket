@@ -15,7 +15,7 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
-use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
+use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
 use nanobot_core::providers::{
     LlmProvider, ModelSpec, OpenAICompatibleProvider, ProviderMetadata, ProviderRegistry,
@@ -297,6 +297,17 @@ async fn cmd_agent(
         agent_config.streaming = false;
     }
 
+    // Start MCP servers (if configured)
+    let mcp_tools = if !config.tools.mcp_servers.is_empty() {
+        println!("Starting MCP servers...");
+        let (_mcp_manager, tools) =
+            nanobot_core::mcp::start_mcp_servers(&config.tools.mcp_servers).await;
+        println!("  {} MCP tools loaded", tools.len());
+        tools
+    } else {
+        Vec::new()
+    };
+
     // Build tool registry (CLI mode: no bus/cron, but support web tools)
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -395,34 +406,20 @@ async fn cmd_agent(
         },
     );
 
+    // MCP tools (metadata assigned by MCP manager)
+    for mcp_tool in mcp_tools {
+        tools.register(mcp_tool);
+    }
+
     let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
         .context("Failed to initialize agent (check workspace bootstrap files)")?;
     let render_md = !no_markdown;
     let use_streaming = !no_stream;
 
     // Create streaming callback for progressive CLI output
-    let stream_callback: StreamCallback = Box::new(|event| {
-        use std::io::Write;
-        match event {
-            StreamEvent::Content(text) => {
-                print!("{}", text);
-                std::io::stdout().flush().ok();
-            }
-            StreamEvent::Reasoning(text) => {
-                print!("{}", text.dimmed().italic());
-                std::io::stdout().flush().ok();
-            }
-            StreamEvent::ToolStart { name } => {
-                println!("\n{} {}", "→".dimmed(), name.dimmed());
-            }
-            StreamEvent::ToolEnd { name: _, output: _ } => {}
-            StreamEvent::Done => {
-                println!("\n");
-                std::io::stdout().flush().ok();
-            }
-        }
+    let stream_callback: StreamCallback = Box::new(|_event| {
+        // do nothing here
     });
-    println!("\n");
 
     match message {
         Some(msg) => {

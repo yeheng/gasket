@@ -82,7 +82,14 @@ impl<'a> ToolExecutor<'a> {
         };
 
         if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
-            result_str.truncate(self.max_result_chars);
+            // Find a valid UTF-8 character boundary to avoid panic
+            let truncate_at = result_str
+                .char_indices()
+                .take_while(|(idx, _)| *idx < self.max_result_chars)
+                .last()
+                .map(|(idx, c)| idx + c.len_utf8())
+                .unwrap_or(0);
+            result_str.truncate(truncate_at);
             result_str.push_str("\n\n[... truncated]");
         }
 
@@ -135,7 +142,14 @@ impl<'a> ToolExecutor<'a> {
         };
 
         if self.max_result_chars > 0 && result_str.len() > self.max_result_chars {
-            result_str.truncate(self.max_result_chars);
+            // Find a valid UTF-8 character boundary to avoid panic
+            let truncate_at = result_str
+                .char_indices()
+                .take_while(|(idx, _)| *idx < self.max_result_chars)
+                .last()
+                .map(|(idx, c)| idx + c.len_utf8())
+                .unwrap_or(0);
+            result_str.truncate(truncate_at);
             result_str.push_str("\n\n[... truncated]");
         }
 
@@ -257,5 +271,27 @@ mod tests {
         let result = executor.execute_one(&tc).await;
 
         assert!(result.output.starts_with("Error:"));
+    }
+
+    #[tokio::test]
+    async fn test_truncation_multibyte_utf8() {
+        // Test that truncation handles multi-byte UTF-8 characters correctly
+        // without panicking on character boundaries
+        let reg = make_registry();
+        // 10 bytes would split a Chinese character (3 bytes each)
+        let executor = ToolExecutor::new(&reg, 10);
+
+        let tc = ToolCall::new(
+            "c1",
+            "echo",
+            // Each Chinese character is 3 bytes in UTF-8
+            serde_json::json!({"text": "你好世界测试数据更多内容"}),
+        );
+        let result = executor.execute_one(&tc).await;
+
+        // Should not panic and should end with truncated marker
+        assert!(result.output.ends_with("[... truncated]"));
+        // The truncated content should be valid UTF-8
+        assert!(result.output.is_char_boundary(result.output.len()));
     }
 }
