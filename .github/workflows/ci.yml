@@ -108,6 +108,41 @@ jobs:
           name: nanobot-macos
           path: nanobot-rs/target/release/nanobot
 
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            nanobot-rs/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('nanobot-rs/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Build release
+        run: cd nanobot-rs && cargo build --release --all-features
+      
+      - name: Package binary
+        run: |
+          cd nanobot-rs/target/release
+          Compress-Archive -Path nanobot.exe -DestinationPath nanobot-windows.zip
+      
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanobot-windows
+          path: nanobot-rs/target/release/nanobot-windows.zip
+
   docs:
     name: Documentation
     runs-on: ubuntu-latest
