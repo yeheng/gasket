@@ -425,22 +425,12 @@ impl McpToolBridge {
             manager,
         }
     }
-
-    /// Prefixed name used for registration (avoids collisions with native tools).
-    /// Format: `mcp__{server}__{tool}`
-    pub fn prefixed_name(&self) -> String {
-        format!("mcp__{}_{}", self.server_name, self.tool_name)
-    }
 }
 
 #[async_trait]
 impl Tool for McpToolBridge {
     fn name(&self) -> &str {
-        // We return the prefixed name via a leaked &str trick.
-        // This is safe because Tool instances live for the lifetime of the agent.
-        // Alternatively, we store the prefixed_name and return a reference.
-        // We'll use the stored field approach instead.
-        &self.tool_name // We'll use the raw name; dedup is handled at registration
+        &self.tool_name
     }
 
     fn description(&self) -> &str {

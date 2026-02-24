@@ -55,7 +55,8 @@ impl ContextBuilder {
             system_prompt: Arc::new(system_prompt),
             skills_context: None,
             history_config,
-            history_strategy: Arc::from(factory.create_default()),
+            // Use smart strategy by default: relevance filtering + token budget
+            history_strategy: Arc::from(factory.create_smart()),
         })
     }
 
@@ -63,7 +64,8 @@ impl ContextBuilder {
     pub fn with_history_config(mut self, config: HistoryConfig) -> Self {
         self.history_config = config.clone();
         let factory = StrategyFactory::new(config);
-        self.history_strategy = Arc::from(factory.create_default());
+        // Use smart strategy by default for better context management
+        self.history_strategy = Arc::from(factory.create_smart());
         self
     }
 

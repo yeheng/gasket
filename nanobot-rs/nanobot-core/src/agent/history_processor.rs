@@ -661,7 +661,7 @@ mod tests {
             make_message("user", "Do you like apples?"), // Recent, always included
         ];
 
-        let result = strategy.process("apples", &config);
+        let result = strategy.process(history,"apples", &config);
         assert!(!result.messages.is_empty());
     }
 

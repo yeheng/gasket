@@ -3,7 +3,7 @@
 use crate::providers::LlmProvider;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Metadata for a provider
 #[derive(Debug, Clone)]
@@ -17,9 +17,6 @@ pub struct ProviderMetadata {
     /// Default model
     pub default_model: String,
 
-    /// Model name prefix (e.g., "deepseek/", "gemini/")
-    pub model_prefix: String,
-
     /// Whether this provider is available (has credentials)
     pub available: bool,
 
@@ -28,15 +25,15 @@ pub struct ProviderMetadata {
 }
 
 /// Registry for managing LLM providers
+///
+/// This is a simplified registry that stores providers by name.
+/// Use `ModelSpec` to parse "provider/model" strings and then call `get()`.
 pub struct ProviderRegistry {
     /// Registered providers
     providers: HashMap<String, Arc<dyn LlmProvider>>,
 
     /// Provider metadata
     metadata: HashMap<String, ProviderMetadata>,
-
-    /// Model prefix to provider mapping
-    prefix_map: HashMap<String, String>,
 
     /// Default provider name
     default_provider: Option<String>,
@@ -54,7 +51,6 @@ impl ProviderRegistry {
         Self {
             providers: HashMap::new(),
             metadata: HashMap::new(),
-            prefix_map: HashMap::new(),
             default_provider: None,
         }
     }
@@ -62,17 +58,11 @@ impl ProviderRegistry {
     /// Register a provider
     pub fn register(&mut self, provider: Arc<dyn LlmProvider>, metadata: ProviderMetadata) {
         let name = provider.name().to_string();
-        let prefix = metadata.model_prefix.clone();
 
         info!(
-            "Registering provider: {} (prefix: {}, available: {})",
-            name, prefix, metadata.available
+            "Registering provider: {} (available: {})",
+            name, metadata.available
         );
-
-        // Add to prefix map
-        if !prefix.is_empty() {
-            self.prefix_map.insert(prefix.clone(), name.clone());
-        }
 
         self.providers.insert(name.clone(), provider);
         self.metadata.insert(name, metadata);
@@ -86,39 +76,6 @@ impl ProviderRegistry {
     /// Get provider metadata by name
     pub fn get_metadata(&self, name: &str) -> Option<&ProviderMetadata> {
         self.metadata.get(name)
-    }
-
-    /// Detect provider from model name
-    ///
-    /// Examples:
-    /// - "deepseek/chat" -> DeepSeek provider
-    /// - "gemini/gemini-pro" -> Gemini provider
-    /// - "gpt-4" -> Default provider
-    pub fn detect_provider(&self, model: &str) -> Option<Arc<dyn LlmProvider>> {
-        // Check for prefix (e.g., "deepseek/chat")
-        if let Some(slash_pos) = model.find('/') {
-            let prefix = &model[..slash_pos];
-
-            if let Some(provider_name) = self.prefix_map.get(prefix) {
-                debug!(
-                    "Detected provider '{}' from model prefix '{}'",
-                    provider_name, prefix
-                );
-                return self.get(provider_name);
-            }
-        }
-
-        // No prefix found, try to find a default provider
-        // Prefer providers in this order: openrouter, openai, anthropic
-        for default_name in &["openrouter", "openai", "anthropic"] {
-            if let Some(provider) = self.get(default_name) {
-                debug!("Using default provider: {}", default_name);
-                return Some(provider);
-            }
-        }
-
-        warn!("No provider found for model: {}", model);
-        None
     }
 
     /// List all registered providers
@@ -146,20 +103,6 @@ impl ProviderRegistry {
         self.providers.is_empty()
     }
 
-    /// Strip model prefix from model name
-    ///
-    /// Examples:
-    /// - "deepseek/chat" -> "chat"
-    /// - "gemini/gemini-pro" -> "gemini-pro"
-    /// - "gpt-4" -> "gpt-4"
-    pub fn strip_prefix<'a>(&self, model: &'a str) -> &'a str {
-        if let Some(slash_pos) = model.find('/') {
-            &model[slash_pos + 1..]
-        } else {
-            model
-        }
-    }
-
     /// Set the default provider by name.
     ///
     /// The provider must already be registered.
@@ -185,7 +128,7 @@ impl ProviderRegistry {
         }
 
         // Fallback: prefer providers in standard order
-        for default_name in &["openrouter", "openai", "anthropic"] {
+        for default_name in &["openrouter", "deepseek", "openai", "anthropic", "ollama"] {
             if let Some(provider) = self.get(default_name) {
                 return Some(provider);
             }

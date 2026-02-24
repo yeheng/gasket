@@ -63,7 +63,9 @@ pub fn parse_sse_stream(
 ///
 /// SSE events are separated by `\n\n`. Individual fields within an event are
 /// separated by `\n`. We yield each non-empty line.
-fn sse_lines(
+///
+/// This is a shared utility for all SSE-based streaming providers.
+pub fn sse_lines(
     byte_stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
 ) -> impl Stream<Item = Result<String>> + Send + 'static {
     futures::stream::unfold(

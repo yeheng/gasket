@@ -958,50 +958,19 @@ fn build_provider(
     model: &str,
 ) -> Arc<dyn LlmProvider> {
     match name {
-        "deepseek" => Arc::new(OpenAICompatibleProvider::deepseek(
-            api_key,
-            provider_config.api_base.clone(),
-            model,
-        )),
-        "openrouter" => Arc::new(OpenAICompatibleProvider::openrouter(
-            api_key,
-            provider_config.api_base.clone(),
-            model,
-        )),
-        "anthropic" => Arc::new(OpenAICompatibleProvider::anthropic(
-            api_key,
-            provider_config.api_base.clone(),
-            model,
-        )),
-        "zhipu" => Arc::new(OpenAICompatibleProvider::zhipu(
-            api_key,
-            provider_config.api_base.clone(),
-            model,
-        )),
-        "dashscope" => Arc::new(OpenAICompatibleProvider::dashscope(
-            api_key,
-            provider_config.api_base.clone(),
-            model,
-        )),
-        "moonshot" => Arc::new(OpenAICompatibleProvider::moonshot(
-            api_key,
-            provider_config.api_base.clone(),
-            model,
-        )),
+        // MiniMax requires special handling for group_id header
         "minimax" => Arc::new(OpenAICompatibleProvider::minimax(
             api_key,
             provider_config.api_base.clone(),
             model,
             None,
         )),
-        "ollama" => Arc::new(OpenAICompatibleProvider::ollama(
-            provider_config.api_base.clone(),
-            model,
-        )),
-        _ => Arc::new(OpenAICompatibleProvider::openai(
+        // All other providers use the generic from_name constructor
+        _ => Arc::new(OpenAICompatibleProvider::from_name(
+            name,
             api_key,
             provider_config.api_base.clone(),
-            model,
+            Some(model.to_string()),
         )),
     }
 }
@@ -1029,10 +998,9 @@ fn build_provider_registry(config: &Config) -> ProviderRegistry {
 
         // Build metadata
         let metadata = ProviderMetadata {
-            name: name.clone(),
+            name: to_string(),
             api_base: provider_config.api_base.clone(),
             default_model: default_model.to_string(),
-            model_prefix: name.clone(),
             available,
             missing_config: if available {
                 vec![]

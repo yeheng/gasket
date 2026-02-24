@@ -168,61 +168,7 @@ impl OpenAICompatibleProvider {
         provider
     }
 
-    // -- Convenience constructors for well-known providers (delegate to from_name) --
-
-    /// Create an OpenAI provider
-    pub fn openai(
-        api_key: impl Into<String>,
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
-        Self::from_name("openai", api_key, api_base, Some(default_model.into()))
-    }
-
-    /// Create an OpenRouter provider
-    pub fn openrouter(
-        api_key: impl Into<String>,
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
-        Self::from_name("openrouter", api_key, api_base, Some(default_model.into()))
-    }
-
-    /// Create an Anthropic provider (via OpenAI-compatible endpoint)
-    pub fn anthropic(
-        api_key: impl Into<String>,
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
-        Self::from_name("anthropic", api_key, api_base, Some(default_model.into()))
-    }
-
-    /// Create a DashScope (阿里云通义千问) provider
-    pub fn dashscope(
-        api_key: impl Into<String>,
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
-        Self::from_name("dashscope", api_key, api_base, Some(default_model.into()))
-    }
-
-    /// Create a Moonshot AI (Kimi) provider
-    pub fn moonshot(
-        api_key: impl Into<String>,
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
-        Self::from_name("moonshot", api_key, api_base, Some(default_model.into()))
-    }
-
-    /// Create a Zhipu AI (智谱) provider
-    pub fn zhipu(
-        api_key: impl Into<String>,
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
-        Self::from_name("zhipu", api_key, api_base, Some(default_model.into()))
-    }
+    // -- Special constructors --
 
     /// Create a MiniMax provider
     pub fn minimax(
@@ -242,24 +188,6 @@ impl OpenAICompatibleProvider {
             Some(default_model.into()),
             extra_headers,
         )
-    }
-
-    /// Create a DeepSeek provider (OpenAI-compatible, supports `reasoning_content`)
-    pub fn deepseek(
-        api_key: impl Into<String>,
-        api_base: Option<String>,
-        default_model: impl Into<String>,
-    ) -> Self {
-        Self::from_name("deepseek", api_key, api_base, Some(default_model.into()))
-    }
-
-    /// Create an Ollama provider (local LLM server with OpenAI-compatible API)
-    ///
-    /// Ollama runs locally and provides an OpenAI-compatible API endpoint.
-    /// Default endpoint is `http://localhost:11434/v1`.
-    /// Since Ollama is a local service, no API key is required (uses placeholder).
-    pub fn ollama(api_base: Option<String>, default_model: impl Into<String>) -> Self {
-        Self::from_name("ollama", "ollama", api_base, Some(default_model.into()))
     }
 
     /// Get the provider name
@@ -490,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_openai_provider() {
-        let provider = OpenAICompatibleProvider::openai("test-key", None, "gpt-4o");
+        let provider = OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()));
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "https://api.openai.com/v1");
@@ -499,7 +427,7 @@ mod tests {
     #[test]
     fn test_openrouter_provider() {
         let provider =
-            OpenAICompatibleProvider::openrouter("sk-or-test", None, "anthropic/claude-sonnet-4");
+            OpenAICompatibleProvider::from_name("openrouter", "sk-or-test", None, Some("anthropic/claude-sonnet-4".to_string()));
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
     }
@@ -507,14 +435,14 @@ mod tests {
     #[test]
     fn test_anthropic_provider() {
         let provider =
-            OpenAICompatibleProvider::anthropic("sk-ant-test", None, "claude-sonnet-4-20250514");
+            OpenAICompatibleProvider::from_name("anthropic", "sk-ant-test", None, Some("claude-sonnet-4-20250514".to_string()));
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
     }
 
     #[test]
     fn test_dashscope_provider() {
-        let provider = OpenAICompatibleProvider::dashscope("test-key", None, "qwen-max");
+        let provider = OpenAICompatibleProvider::from_name("dashscope", "test-key", None, Some("qwen-max".to_string()));
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
         assert_eq!(
@@ -525,14 +453,14 @@ mod tests {
 
     #[test]
     fn test_moonshot_provider() {
-        let provider = OpenAICompatibleProvider::moonshot("test-key", None, "moonshot-v1-8k");
+        let provider = OpenAICompatibleProvider::from_name("moonshot", "test-key", None, Some("moonshot-v1-8k".to_string()));
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.api_base(), "https://api.moonshot.cn/v1");
     }
 
     #[test]
     fn test_zhipu_provider() {
-        let provider = OpenAICompatibleProvider::zhipu("test-jwt", None, "GLM-5");
+        let provider = OpenAICompatibleProvider::from_name("zhipu", "test-jwt", None, Some("GLM-5".to_string()));
         assert_eq!(provider.name(), "zhipu");
         assert_eq!(provider.default_model(), "GLM-5");
         assert_eq!(provider.api_base(), "https://open.bigmodel.cn/api/paas/v4");
@@ -552,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_ollama_provider() {
-        let provider = OpenAICompatibleProvider::ollama(None, "llama2");
+        let provider = OpenAICompatibleProvider::from_name("ollama", "ollama", None, Some("llama2".to_string()));
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "llama2");
         assert_eq!(provider.api_base(), "http://localhost:11434/v1");
@@ -560,9 +488,11 @@ mod tests {
 
     #[test]
     fn test_ollama_provider_custom_base() {
-        let provider = OpenAICompatibleProvider::ollama(
+        let provider = OpenAICompatibleProvider::from_name(
+            "ollama",
+            "ollama",
             Some("http://192.168.1.100:11434/v1".to_string()),
-            "mistral",
+            Some("mistral".to_string()),
         );
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "mistral");

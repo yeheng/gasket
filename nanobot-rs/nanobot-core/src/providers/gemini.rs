@@ -3,6 +3,7 @@
 use crate::providers::base::{
     ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta,
 };
+use crate::providers::streaming::sse_lines;
 use crate::providers::{ChatRequest, ChatResponse, LlmProvider};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -337,7 +338,7 @@ fn parse_gemini_sse_stream(
 ) -> impl futures::Stream<Item = Result<ChatStreamChunk>> + Send + 'static {
     // Re-use the generic SSE line splitter from the streaming module,
     // but parse the JSON payload as Gemini format instead of OpenAI.
-    let lines = sse_lines_raw(byte_stream);
+    let lines = sse_lines(byte_stream);
 
     lines.filter_map(|line_result| async move {
         match line_result {
@@ -424,52 +425,6 @@ fn convert_gemini_chunk(value: serde_json::Value) -> ChatStreamChunk {
         },
         finish_reason,
     }
-}
-
-/// Split a raw byte stream into SSE lines (shared helper for Gemini).
-fn sse_lines_raw(
-    byte_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
-) -> impl futures::Stream<Item = Result<String>> + Send + 'static {
-    futures::stream::unfold(
-        (
-            Box::pin(byte_stream)
-                as std::pin::Pin<
-                    Box<dyn futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>,
-                >,
-            String::new(),
-        ),
-        |(mut stream, mut buffer)| async move {
-            loop {
-                if let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer[..newline_pos].to_string();
-                    buffer = buffer[newline_pos + 1..].to_string();
-                    if !line.trim().is_empty() {
-                        return Some((Ok(line), (stream, buffer)));
-                    }
-                    continue;
-                }
-                match stream.next().await {
-                    Some(Ok(bytes)) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        buffer.push_str(&text);
-                    }
-                    Some(Err(e)) => {
-                        return Some((
-                            Err(anyhow::anyhow!("Stream error: {}", e)),
-                            (stream, buffer),
-                        ));
-                    }
-                    None => {
-                        if !buffer.trim().is_empty() {
-                            let remaining = std::mem::take(&mut buffer);
-                            return Some((Ok(remaining), (stream, buffer)));
-                        }
-                        return None;
-                    }
-                }
-            }
-        },
-    )
 }
 
 #[cfg(test)]
