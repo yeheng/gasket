@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 use tracing::debug;
 
 use super::store::{MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};
@@ -15,7 +15,8 @@ use super::store::{MemoryEntry, MemoryMetadata, MemoryQuery, MemoryStore};
 ///
 /// Persists memory entries, history, long-term memory, and sessions in a
 /// single SQLite database file. Uses a single `Connection` behind a
-/// `tokio::sync::Mutex` for async safety.
+/// `std::sync::Mutex`, with all blocking I/O dispatched to
+/// `tokio::task::spawn_blocking` to avoid stalling the async runtime.
 #[derive(Clone)]
 pub struct SqliteStore {
     conn: Arc<Mutex<Connection>>,
@@ -175,95 +176,129 @@ impl SqliteStore {
 
     /// Read all history entries, ordered by creation time (oldest first).
     pub async fn read_history(&self) -> anyhow::Result<String> {
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare("SELECT content FROM history ORDER BY id ASC")?;
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT content FROM history ORDER BY id ASC")?;
 
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
 
-        let mut result = String::new();
-        for row in rows {
-            result.push_str(&row?);
-        }
+            let mut result = String::new();
+            for row in rows {
+                result.push_str(&row?);
+            }
 
-        Ok(result)
+            Ok(result)
+        })
+        .await?
     }
 
     /// Append a new history entry.
     pub async fn append_history(&self, content: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        let created_at = Utc::now().to_rfc3339();
+        let conn = self.conn.clone();
+        let content = content.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let created_at = Utc::now().to_rfc3339();
 
-        conn.execute(
-            "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
-            rusqlite::params![content, created_at],
-        )?;
+            conn.execute(
+                "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
+                rusqlite::params![content, created_at],
+            )?;
 
-        debug!("Appended history entry");
-        Ok(())
+            debug!("Appended history entry");
+            Ok(())
+        })
+        .await?
     }
 
     /// Write (replace) the entire history with new content.
     pub async fn write_history(&self, content: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
+        let conn = self.conn.clone();
+        let content = content.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
 
-        // Clear existing history
-        conn.execute("DELETE FROM history", [])?;
+            // Clear existing history
+            conn.execute("DELETE FROM history", [])?;
 
-        // Insert new content as a single entry
-        let created_at = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
-            rusqlite::params![content, created_at],
-        )?;
+            // Insert new content as a single entry
+            let created_at = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO history (content, created_at) VALUES (?1, ?2)",
+                rusqlite::params![content, created_at],
+            )?;
 
-        debug!("Wrote history");
-        Ok(())
+            debug!("Wrote history");
+            Ok(())
+        })
+        .await?
     }
 
     /// Clear all history entries.
     pub async fn clear_history(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        conn.execute("DELETE FROM history", [])?;
-        debug!("Cleared history");
-        Ok(())
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute("DELETE FROM history", [])?;
+            debug!("Cleared history");
+            Ok(())
+        })
+        .await?
     }
 
     // ── Key-value store API (replaces file-based MEMORY.md etc.) ──
 
     /// Read a raw value by key.
     pub async fn read_raw(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE key = ?1")?;
-        let mut rows = stmt.query(rusqlite::params![key])?;
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT value FROM kv_store WHERE key = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![key])?;
 
-        if let Some(row) = rows.next()? {
-            let value: String = row.get(0)?;
-            Ok(Some(value))
-        } else {
-            Ok(None)
-        }
+            if let Some(row) = rows.next()? {
+                let value: String = row.get(0)?;
+                Ok(Some(value))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?
     }
 
     /// Write a raw value by key (upsert).
     pub async fn write_raw(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        let updated_at = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![key, value, updated_at],
-        )?;
-        debug!("Wrote kv_store key: {}", key);
-        Ok(())
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        let value = value.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let updated_at = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![key, value, updated_at],
+            )?;
+            debug!("Wrote kv_store key: {}", key);
+            Ok(())
+        })
+        .await?
     }
 
     /// Delete a raw key. Returns `true` if the key existed.
     pub async fn delete_raw(&self, key: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().await;
-        let changed = conn.execute(
-            "DELETE FROM kv_store WHERE key = ?1",
-            rusqlite::params![key],
-        )?;
-        Ok(changed > 0)
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let changed = conn.execute(
+                "DELETE FROM kv_store WHERE key = ?1",
+                rusqlite::params![key],
+            )?;
+            Ok(changed > 0)
+        })
+        .await?
     }
 
     // ── Session API (Legacy Blob - for migration only) ──
@@ -272,47 +307,63 @@ impl SqliteStore {
     /// Used for backward compatibility during migration.
     #[deprecated(note = "Use load_session_messages instead for per-message storage")]
     pub async fn load_session(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().await;
-        // Check if this is legacy format (has 'data' column) or new format
-        let has_data_column: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
-            [],
-            |row| row.get::<_, i32>(0),
-        )? > 0;
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            // Check if this is legacy format (has 'data' column) or new format
+            let has_data_column: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name='data'",
+                [],
+                |row| row.get::<_, i32>(0),
+            )? > 0;
 
-        if has_data_column {
-            let mut stmt = conn.prepare("SELECT data FROM sessions WHERE key = ?1")?;
-            let mut rows = stmt.query(rusqlite::params![key])?;
-            if let Some(row) = rows.next()? {
-                let data: String = row.get(0)?;
-                return Ok(Some(data));
+            if has_data_column {
+                let mut stmt = conn.prepare("SELECT data FROM sessions WHERE key = ?1")?;
+                let mut rows = stmt.query(rusqlite::params![key])?;
+                if let Some(row) = rows.next()? {
+                    let data: String = row.get(0)?;
+                    return Ok(Some(data));
+                }
             }
-        }
-        Ok(None)
+            Ok(None)
+        })
+        .await?
     }
 
     /// Save a session (legacy JSON blob format).
     #[deprecated(note = "Use append_session_message instead for per-message storage")]
     pub async fn save_session(&self, key: &str, data: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        let updated_at = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR REPLACE INTO sessions (key, data, updated_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![key, data, updated_at],
-        )?;
-        debug!("Saved session (legacy): {}", key);
-        Ok(())
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        let data = data.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let updated_at = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT OR REPLACE INTO sessions (key, data, updated_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![key, data, updated_at],
+            )?;
+            debug!("Saved session (legacy): {}", key);
+            Ok(())
+        })
+        .await?
     }
 
     /// Delete a session by key.
     pub async fn delete_session(&self, key: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().await;
-        // CASCADE will delete messages automatically
-        let changed = conn.execute(
-            "DELETE FROM sessions WHERE key = ?1",
-            rusqlite::params![key],
-        )?;
-        Ok(changed > 0)
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            // CASCADE will delete messages automatically
+            let changed = conn.execute(
+                "DELETE FROM sessions WHERE key = ?1",
+                rusqlite::params![key],
+            )?;
+            Ok(changed > 0)
+        })
+        .await?
     }
 
     // ── Session API (New Per-Message Storage) ──
@@ -323,33 +374,43 @@ impl SqliteStore {
         key: &str,
         last_consolidated: usize,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        let updated_at = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR REPLACE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![key, last_consolidated as i64, updated_at],
-        )?;
-        debug!("Saved session meta: {}", key);
-        Ok(())
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let updated_at = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT OR REPLACE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![key, last_consolidated as i64, updated_at],
+            )?;
+            debug!("Saved session meta: {}", key);
+            Ok(())
+        })
+        .await?
     }
 
     /// Load session metadata.
     pub async fn load_session_meta(&self, key: &str) -> anyhow::Result<Option<SessionMeta>> {
-        let conn = self.conn.lock().await;
-        let mut stmt =
-            conn.prepare("SELECT key, last_consolidated FROM sessions WHERE key = ?1")?;
-        let mut rows = stmt.query(rusqlite::params![key])?;
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt =
+                conn.prepare("SELECT key, last_consolidated FROM sessions WHERE key = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![key])?;
 
-        if let Some(row) = rows.next()? {
-            let key: String = row.get(0)?;
-            let last_consolidated: i64 = row.get(1)?;
-            Ok(Some(SessionMeta {
-                key,
-                last_consolidated: last_consolidated as usize,
-            }))
-        } else {
-            Ok(None)
-        }
+            if let Some(row) = rows.next()? {
+                let key: String = row.get(0)?;
+                let last_consolidated: i64 = row.get(1)?;
+                Ok(Some(SessionMeta {
+                    key,
+                    last_consolidated: last_consolidated as usize,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?
     }
 
     /// Append a single message to a session (O(1) operation).
@@ -361,32 +422,40 @@ impl SqliteStore {
         timestamp: &DateTime<Utc>,
         tools_used: Option<&[String]>,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        let timestamp_str = timestamp.to_rfc3339();
+        let conn = self.conn.clone();
+        let session_key = session_key.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        let timestamp = *timestamp;
         let tools_json =
             tools_used.map(|t| serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string()));
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let timestamp_str = timestamp.to_rfc3339();
 
-        // Ensure session exists
-        let updated_at = Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT OR IGNORE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, 0, ?2)",
-            rusqlite::params![session_key, updated_at],
-        )?;
+            // Ensure session exists
+            let updated_at = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (key, last_consolidated, updated_at) VALUES (?1, 0, ?2)",
+                rusqlite::params![session_key, updated_at],
+            )?;
 
-        // Insert message
-        conn.execute(
-            "INSERT INTO session_messages (session_key, role, content, timestamp, tools_used) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![session_key, role, content, timestamp_str, tools_json],
-        )?;
+            // Insert message
+            conn.execute(
+                "INSERT INTO session_messages (session_key, role, content, timestamp, tools_used) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![session_key, role, content, timestamp_str, tools_json],
+            )?;
 
-        // Update session updated_at
-        conn.execute(
-            "UPDATE sessions SET updated_at = ?1 WHERE key = ?2",
-            rusqlite::params![updated_at, session_key],
-        )?;
+            // Update session updated_at
+            conn.execute(
+                "UPDATE sessions SET updated_at = ?1 WHERE key = ?2",
+                rusqlite::params![updated_at, session_key],
+            )?;
 
-        debug!("Appended message to session: {}", session_key);
-        Ok(())
+            debug!("Appended message to session: {}", session_key);
+            Ok(())
+        })
+        .await?
     }
 
     /// Load all messages for a session.
@@ -394,48 +463,58 @@ impl SqliteStore {
         &self,
         session_key: &str,
     ) -> anyhow::Result<Vec<MessageRow>> {
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT role, content, timestamp, tools_used FROM session_messages WHERE session_key = ?1 ORDER BY id ASC",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![session_key], |row| {
-            let role: String = row.get(0)?;
-            let content: String = row.get(1)?;
-            let timestamp_str: String = row.get(2)?;
-            let tools_json: Option<String> = row.get(3)?;
+        let conn = self.conn.clone();
+        let session_key = session_key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT role, content, timestamp, tools_used FROM session_messages WHERE session_key = ?1 ORDER BY id ASC",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![session_key], |row| {
+                let role: String = row.get(0)?;
+                let content: String = row.get(1)?;
+                let timestamp_str: String = row.get(2)?;
+                let tools_json: Option<String> = row.get(3)?;
 
-            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
+                let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
 
-            Ok(MessageRow {
-                role,
-                content,
-                timestamp,
-                tools_used: tools_json,
-            })
-        })?;
+                Ok(MessageRow {
+                    role,
+                    content,
+                    timestamp,
+                    tools_used: tools_json,
+                })
+            })?;
 
-        let mut messages = Vec::new();
-        for row in rows {
-            messages.push(row?);
-        }
-        Ok(messages)
+            let mut messages = Vec::new();
+            for row in rows {
+                messages.push(row?);
+            }
+            Ok(messages)
+        })
+        .await?
     }
 
     /// Clear all messages for a session (keep metadata).
     pub async fn clear_session_messages(&self, session_key: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "DELETE FROM session_messages WHERE session_key = ?1",
-            rusqlite::params![session_key],
-        )?;
-        conn.execute(
-            "UPDATE sessions SET last_consolidated = 0, updated_at = ?1 WHERE key = ?2",
-            rusqlite::params![Utc::now().to_rfc3339(), session_key],
-        )?;
-        debug!("Cleared session messages: {}", session_key);
-        Ok(())
+        let conn = self.conn.clone();
+        let session_key = session_key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM session_messages WHERE session_key = ?1",
+                rusqlite::params![session_key],
+            )?;
+            conn.execute(
+                "UPDATE sessions SET last_consolidated = 0, updated_at = ?1 WHERE key = ?2",
+                rusqlite::params![Utc::now().to_rfc3339(), session_key],
+            )?;
+            debug!("Cleared session messages: {}", session_key);
+            Ok(())
+        })
+        .await?
     }
 
     /// Update last_consolidated for a session.
@@ -444,73 +523,99 @@ impl SqliteStore {
         session_key: &str,
         last_consolidated: usize,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        conn.execute(
-            "UPDATE sessions SET last_consolidated = ?1, updated_at = ?2 WHERE key = ?3",
-            rusqlite::params![
-                last_consolidated as i64,
-                Utc::now().to_rfc3339(),
-                session_key
-            ],
-        )?;
-        Ok(())
+        let conn = self.conn.clone();
+        let session_key = session_key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "UPDATE sessions SET last_consolidated = ?1, updated_at = ?2 WHERE key = ?3",
+                rusqlite::params![
+                    last_consolidated as i64,
+                    Utc::now().to_rfc3339(),
+                    session_key
+                ],
+            )?;
+            Ok(())
+        })
+        .await?
     }
 }
 
 #[async_trait]
 impl MemoryStore for SqliteStore {
     async fn save(&self, entry: &MemoryEntry) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        let metadata_json = serde_json::to_string(&entry.metadata)?;
-        let created = entry.created_at.to_rfc3339();
-        let updated = entry.updated_at.to_rfc3339();
+        let conn = self.conn.clone();
+        let entry = entry.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let metadata_json = serde_json::to_string(&entry.metadata)?;
+            let created = entry.created_at.to_rfc3339();
+            let updated = entry.updated_at.to_rfc3339();
 
-        conn.execute(
-            "INSERT OR REPLACE INTO memories (id, content, metadata, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![entry.id, entry.content, metadata_json, created, updated],
-        )?;
-
-        // Sync tags: delete old, insert new
-        conn.execute(
-            "DELETE FROM memory_tags WHERE memory_id = ?1",
-            rusqlite::params![entry.id],
-        )?;
-        for tag in &entry.metadata.tags {
             conn.execute(
-                "INSERT INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
-                rusqlite::params![entry.id, tag],
+                "INSERT OR REPLACE INTO memories (id, content, metadata, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![entry.id, entry.content, metadata_json, created, updated],
             )?;
-        }
 
-        debug!("Saved memory entry: {}", entry.id);
-        Ok(())
+            // Sync tags: delete old, insert new
+            conn.execute(
+                "DELETE FROM memory_tags WHERE memory_id = ?1",
+                rusqlite::params![entry.id],
+            )?;
+            for tag in &entry.metadata.tags {
+                conn.execute(
+                    "INSERT INTO memory_tags (memory_id, tag) VALUES (?1, ?2)",
+                    rusqlite::params![entry.id, tag],
+                )?;
+            }
+
+            debug!("Saved memory entry: {}", entry.id);
+            Ok(())
+        })
+        .await?
     }
 
     async fn get(&self, id: &str) -> anyhow::Result<Option<MemoryEntry>> {
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT id, content, metadata, created_at, updated_at FROM memories WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![id])?;
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id, content, metadata, created_at, updated_at FROM memories WHERE id = ?1",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![id])?;
 
-        if let Some(row) = rows.next()? {
-            let entry = row_to_entry(row)?;
-            Ok(Some(entry))
-        } else {
-            Ok(None)
-        }
+            if let Some(row) = rows.next()? {
+                let entry = row_to_entry(row)?;
+                Ok(Some(entry))
+            } else {
+                Ok(None)
+            }
+        })
+        .await?
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().await;
-        let changed = conn.execute("DELETE FROM memories WHERE id = ?1", rusqlite::params![id])?;
-        Ok(changed > 0)
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let changed =
+                conn.execute("DELETE FROM memories WHERE id = ?1", rusqlite::params![id])?;
+            Ok(changed > 0)
+        })
+        .await?
     }
 
     async fn search(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryEntry>> {
-        let conn = self.conn.lock().await;
-        search_impl(&conn, query)
+        let conn = self.conn.clone();
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            search_impl(&conn, &query)
+        })
+        .await?
     }
 }
 

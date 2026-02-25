@@ -148,7 +148,7 @@ impl Tool for WebFetchTool {
 /// Uses the well-tested `html2text` crate for robust HTML parsing,
 /// handling edge cases like malformed tags, entities, and nested structures.
 fn strip_html(html: &str) -> String {
-    match html2text::from_read(html.as_bytes(), 80) {
+    match html2text::from_read(html.as_bytes(), 10000) {
         Ok(text) => text
             .lines()
             .map(|line| line.trim())

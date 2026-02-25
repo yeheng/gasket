@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 use tracing::{debug, info};
 
 use super::subagent::{SubagentTask, TaskPriority, TaskStatus};
@@ -65,38 +65,52 @@ impl SqliteTaskStore {
 
     /// Load all tasks from SQLite.
     pub async fn load_all(&self) -> anyhow::Result<HashMap<String, SubagentTask>> {
-        let conn = self.conn.lock().await;
-        let mut stmt = conn.prepare(
-            "SELECT id, prompt, channel, chat_id, session_key, status, priority,
-                    created_at, started_at, completed_at, result, error,
-                    timeout_secs, progress, metadata
-             FROM tasks",
-        )?;
-        let mut rows = stmt.query([])?;
-        let mut map = HashMap::new();
-        while let Some(row) = rows.next()? {
-            let task = Self::row_to_task(row)?;
-            map.insert(task.id.clone(), task);
-        }
-        info!("Loaded {} tasks from SQLite", map.len());
-        Ok(map)
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id, prompt, channel, chat_id, session_key, status, priority,
+                        created_at, started_at, completed_at, result, error,
+                        timeout_secs, progress, metadata
+                 FROM tasks",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut map = HashMap::new();
+            while let Some(row) = rows.next()? {
+                let task = Self::row_to_task(row)?;
+                map.insert(task.id.clone(), task);
+            }
+            info!("Loaded {} tasks from SQLite", map.len());
+            Ok(map)
+        })
+        .await?
     }
 
     /// Persist a single task (insert or update).
     pub async fn save_task(&self, task: &SubagentTask) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        Self::upsert_task_sync(&conn, task)?;
-        Ok(())
+        let conn = self.conn.clone();
+        let task = task.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            Self::upsert_task_sync(&conn, &task)?;
+            Ok(())
+        })
+        .await?
     }
 
     /// Remove tasks by IDs.
     pub async fn remove_tasks(&self, ids: &[String]) -> anyhow::Result<()> {
-        let conn = self.conn.lock().await;
-        for id in ids {
-            conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
-        }
-        debug!("Removed {} tasks from SQLite", ids.len());
-        Ok(())
+        let conn = self.conn.clone();
+        let ids = ids.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            for id in &ids {
+                conn.execute("DELETE FROM tasks WHERE id = ?1", rusqlite::params![id])?;
+            }
+            debug!("Removed {} tasks from SQLite", ids.len());
+            Ok(())
+        })
+        .await?
     }
 
     /// Migrate tasks from a legacy `tasks.json` file into SQLite.

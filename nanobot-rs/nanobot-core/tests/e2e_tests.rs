@@ -594,7 +594,7 @@ async fn test_mcp_manager_creation() {
 
     let manager = McpManager::new();
 
-    assert!(manager.get_all_tools().is_empty());
+    assert!(manager.get_all_tools().await.is_empty());
 }
 
 #[tokio::test]

@@ -311,7 +311,7 @@ impl McpClient {
 
 /// MCP manager for multiple servers
 pub struct McpManager {
-    clients: HashMap<String, McpClient>,
+    clients: HashMap<String, Arc<tokio::sync::Mutex<McpClient>>>,
 }
 
 impl McpManager {
@@ -325,12 +325,14 @@ impl McpManager {
     /// Add a server
     pub fn add_server(&mut self, name: String, config: McpServerConfig) {
         let client = McpClient::new(name.clone(), config);
-        self.clients.insert(name, client);
+        self.clients
+            .insert(name, Arc::new(tokio::sync::Mutex::new(client)));
     }
 
     /// Start all servers
     pub async fn start_all(&mut self) -> anyhow::Result<()> {
-        for (name, client) in &mut self.clients {
+        for (name, client) in &self.clients {
+            let mut client = client.lock().await;
             if let Err(e) = client.start().await {
                 warn!("Failed to start MCP server {}: {}", name, e);
             }
@@ -340,24 +342,29 @@ impl McpManager {
 
     /// Get all available tools across all servers.
     /// Returns `(server_name, tool)` pairs.
-    pub fn get_all_tools(&self) -> Vec<(&str, &McpTool)> {
+    pub async fn get_all_tools(&self) -> Vec<(String, McpTool)> {
         let mut tools = Vec::new();
         for (server_name, client) in &self.clients {
+            let client = client.lock().await;
             for tool in client.tools() {
-                tools.push((server_name.as_str(), tool));
+                tools.push((server_name.clone(), tool.clone()));
             }
         }
         tools
     }
 
-    /// Call a tool on a specific server
+    /// Call a tool on a specific server.
+    ///
+    /// Only locks the target server's client, allowing other servers to
+    /// handle requests concurrently.
     pub async fn call_tool(
-        &mut self,
+        &self,
         server: &str,
         name: &str,
         arguments: Value,
     ) -> anyhow::Result<String> {
-        if let Some(client) = self.clients.get_mut(server) {
+        if let Some(client) = self.clients.get(server) {
+            let mut client = client.lock().await;
             client.call_tool(name, arguments).await
         } else {
             anyhow::bail!("MCP server '{}' not found", server);
@@ -366,7 +373,8 @@ impl McpManager {
 
     /// Stop all servers
     pub async fn stop_all(&mut self) -> anyhow::Result<()> {
-        for client in self.clients.values_mut() {
+        for client in self.clients.values() {
+            let mut client = client.lock().await;
             let _ = client.stop().await;
         }
         Ok(())
@@ -389,8 +397,8 @@ use async_trait::async_trait;
 /// A bridge that wraps an MCP tool as an `impl Tool` so it can be registered
 /// in the `ToolRegistry` alongside native tools.
 ///
-/// Because MCP tool calls require `&mut McpManager`, the manager is shared
-/// through `Arc<Mutex<_>>`.
+/// Each MCP server has its own lock, so tool calls to different servers
+/// execute concurrently.
 pub struct McpToolBridge {
     /// MCP server name
     server_name: String,
@@ -401,16 +409,12 @@ pub struct McpToolBridge {
     /// JSON Schema for input parameters
     input_schema: Value,
     /// Shared reference to the MCP manager
-    manager: Arc<tokio::sync::Mutex<McpManager>>,
+    manager: Arc<McpManager>,
 }
 
 impl McpToolBridge {
     /// Create a new MCP tool bridge
-    pub fn new(
-        server_name: String,
-        tool: &McpTool,
-        manager: Arc<tokio::sync::Mutex<McpManager>>,
-    ) -> Self {
+    pub fn new(server_name: String, tool: &McpTool, manager: Arc<McpManager>) -> Self {
         Self {
             server_name,
             tool_name: tool.name.clone(),
@@ -442,8 +446,7 @@ impl Tool for McpToolBridge {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let mut manager = self.manager.lock().await;
-        manager
+        self.manager
             .call_tool(&self.server_name, &self.tool_name, args)
             .await
             .map_err(|e| ToolError::ExecutionError(e.to_string()))
@@ -458,7 +461,7 @@ impl Tool for McpToolBridge {
 /// 3. Returns a list of `Box<dyn Tool>` adapters ready for `ToolRegistry::register()`
 pub async fn start_mcp_servers(
     configs: &std::collections::HashMap<String, crate::config::McpServerConfig>,
-) -> (Arc<tokio::sync::Mutex<McpManager>>, Vec<Box<dyn Tool>>) {
+) -> (Arc<McpManager>, Vec<Box<dyn Tool>>) {
     let mut manager = McpManager::new();
 
     for (name, cfg) in configs {
@@ -479,13 +482,9 @@ pub async fn start_mcp_servers(
     }
 
     // Collect tool metadata before wrapping manager
-    let tool_info: Vec<(String, McpTool)> = manager
-        .get_all_tools()
-        .iter()
-        .map(|(server, tool)| (server.to_string(), (*tool).clone()))
-        .collect();
+    let tool_info: Vec<(String, McpTool)> = manager.get_all_tools().await;
 
-    let manager = Arc::new(tokio::sync::Mutex::new(manager));
+    let manager = Arc::new(manager);
 
     let tools: Vec<Box<dyn Tool>> = tool_info
         .iter()

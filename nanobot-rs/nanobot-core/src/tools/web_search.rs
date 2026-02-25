@@ -361,10 +361,3 @@ struct FirecrawlResult {
     description: Option<String>,
     url: String,
 }
-
-// URL encoding helper
-mod urlencoding {
-    pub fn encode(s: &str) -> String {
-        url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-    }
-}
