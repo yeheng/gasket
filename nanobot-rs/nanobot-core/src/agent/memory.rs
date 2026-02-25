@@ -22,7 +22,7 @@ pub struct MemoryStore {
 impl MemoryStore {
     /// Create a new memory store.
     ///
-    /// Opens the default `SqliteStore` at `~/.nanobot/memory.db`.
+    /// Opens the default `SqliteStore` at `~/.nanobot/nanobot.db`.
     pub async fn new() -> Self {
         let store = SqliteStore::new()
             .await

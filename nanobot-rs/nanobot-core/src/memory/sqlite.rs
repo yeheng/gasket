@@ -38,9 +38,9 @@ pub struct MessageRow {
 
 impl SqliteStore {
     /// Create a new `SqliteStore` with the default database path
-    /// (`~/.nanobot/memory.db`).
+    /// (`~/.nanobot/nanobot.db`).
     pub async fn new() -> anyhow::Result<Self> {
-        let path = crate::config::config_dir().join("memory.db");
+        let path = crate::config::config_dir().join("nanobot.db");
         Self::with_path(path).await
     }
 

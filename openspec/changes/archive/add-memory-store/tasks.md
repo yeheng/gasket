@@ -15,7 +15,7 @@
 ## 3. SQLite Backend
 
 - [x] 3.1 Add `rusqlite` dependency with `bundled` feature under `sqlite` feature flag in Cargo.toml
-- [x] 3.2 Implement `SqliteStore::new()` — default path `config_dir()/memory.db`, create/open SQLite file, run migrations (create tables + FTS5 index)
+- [x] 3.2 Implement `SqliteStore::new()` — default path `config_dir()/nanobot.db`, create/open SQLite file, run migrations (create tables + FTS5 index)
 - [x] 3.3 Implement `SqliteStore::with_path(path)` — custom path for testing
 - [x] 3.4 Implement `save()` — upsert entry into `memories` table, sync FTS5 index, sync tags
 - [x] 3.5 Implement `get()` — query by id, deserialize metadata from JSON column

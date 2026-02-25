@@ -12,7 +12,7 @@ The current `MemoryStore` trait (`memory/store.rs`) is a simple key-value interf
   - Filtering by metadata (tags, time range)
 - **Add `SqliteStore`** as the first durable backend implementation
   - Uses `rusqlite` for embedded SQLite with FTS5 full-text search
-  - SQLite file stored in config directory (`~/.nanobot/memory.db` by default)
+  - SQLite file stored in config directory (`~/.nanobot/nanobot.db` by default)
   - Gated behind a new `sqlite` feature flag
 - **Remove `InMemoryStore`** — no longer needed as a separate implementation
 - **Keep existing `FileMemoryStore`** working with the new trait

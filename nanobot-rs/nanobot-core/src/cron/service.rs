@@ -119,7 +119,7 @@ pub struct CronService {
 impl CronService {
     /// Create a new cron service with SQLite persistence.
     ///
-    /// Uses the default SqliteStore path (~/.nanobot/memory.db).
+    /// Uses the default SqliteStore path (~/.nanobot/nanobot.db).
     /// Automatically migrates legacy JSON files if they exist.
     pub async fn new(workspace: PathBuf) -> Self {
         let store = SqliteStore::new()

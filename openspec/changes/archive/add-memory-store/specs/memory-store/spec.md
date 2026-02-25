@@ -58,11 +58,11 @@ The system SHALL support searching memories via a `MemoryQuery` struct that allo
 - **THEN** all entries are returned (subject to limit)
 
 ### Requirement: SQLite Store Backend
-The system SHALL provide a `SqliteStore` implementation of the `MemoryStore` trait, gated behind the `sqlite` feature flag, that persists memories in a SQLite database file under the config directory (`~/.nanobot/memory.db` by default) with FTS5 full-text search support.
+The system SHALL provide a `SqliteStore` implementation of the `MemoryStore` trait, gated behind the `sqlite` feature flag, that persists memories in a SQLite database file under the config directory (`~/.nanobot/nanobot.db` by default) with FTS5 full-text search support.
 
 #### Scenario: Default file location
 - **WHEN** a `SqliteStore` is created with default settings
-- **THEN** the SQLite database file is located at `~/.nanobot/memory.db`
+- **THEN** the SQLite database file is located at `~/.nanobot/nanobot.db`
 
 #### Scenario: Persistent storage in file
 - **WHEN** entries are saved and the store is closed and reopened

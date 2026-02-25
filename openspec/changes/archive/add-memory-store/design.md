@@ -80,7 +80,7 @@ pub struct MemoryQuery {
 ### SQLite Backend: `rusqlite` with FTS5
 
 - Use `rusqlite` (synchronous, embedded SQLite) wrapped in `tokio::task::spawn_blocking` for async compatibility
-- SQLite database file stored under config directory: `config::config_dir().join("memory.db")` (defaults to `~/.nanobot/memory.db`)
+- SQLite database file stored under config directory: `config::config_dir().join("nanobot.db")` (defaults to `~/.nanobot/nanobot.db`)
 - `SqliteStore::new()` uses the default path; `SqliteStore::with_path(path)` allows custom path (for testing)
 - FTS5 virtual table for full-text search on `content`
 - Metadata stored as JSON column
