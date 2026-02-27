@@ -72,11 +72,34 @@ enum Commands {
         #[command(subcommand)]
         command: ChannelsCommands,
     },
+
+    /// Authentication commands
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
+    },
 }
 
 #[derive(Subcommand)]
 enum ChannelsCommands {
     /// Show status of all configured channels
+    Status,
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// Login to GitHub Copilot using OAuth Device Flow
+    Copilot {
+        /// GitHub Personal Access Token (skip OAuth flow)
+        #[arg(short, long)]
+        pat: Option<String>,
+
+        /// GitHub App Client ID (uses default if not specified)
+        #[arg(short, long)]
+        client_id: Option<String>,
+    },
+
+    /// Show authentication status for all providers
     Status,
 }
 
@@ -110,6 +133,12 @@ async fn main() -> Result<()> {
         Some(Commands::Channels { command }) => match command {
             ChannelsCommands::Status => cmd_channels_status().await,
         },
+        Some(Commands::Auth { command }) => match command {
+            AuthCommands::Copilot { pat, client_id } => {
+                cmd_auth_copilot(pat, client_id).await
+            }
+            AuthCommands::Status => cmd_auth_status().await,
+        },
         None => {
             // No command - show help
             println!("🐈 nanobot v2.0.0 - A lightweight AI assistant\n");
@@ -119,7 +148,8 @@ async fn main() -> Result<()> {
             println!("  status    Show status");
             println!("  agent     Chat with the agent");
             println!("  channels  Manage chat channels");
-            println!("  gateway   Start the gateway\n");
+            println!("  gateway   Start the gateway");
+            println!("  auth      Authentication commands\n");
             println!("Run 'nanobot --help' for more information.");
             Ok(())
         }
@@ -1155,6 +1185,12 @@ fn build_provider(
             model,
             None,
         )),
+        // GitHub Copilot requires special handling for OAuth token management
+        "copilot" => Arc::new(nanobot_core::providers::CopilotProvider::new(
+            api_key,
+            provider_config.api_base.clone(),
+            Some(model.to_string()),
+        )),
         // All other providers use the generic from_name constructor
         _ => Arc::new(OpenAICompatibleProvider::from_name(
             name,
@@ -1228,6 +1264,7 @@ fn get_default_model_for_provider(name: &str) -> &'static str {
         "moonshot" => "kimi-k2.5",
         "minimax" => "MiniMax-M2.5",
         "ollama" => "llama3",
+        "copilot" => "gpt-4o",
         _ => "gpt-4o",
     }
 }
@@ -1543,4 +1580,115 @@ fn init_telemetry(env_filter: EnvFilter) -> bool {
 
     info!("OpenTelemetry tracing enabled: {}", endpoint);
     true
+}
+
+// ---------------------------------------------------------------------------
+// Authentication Commands
+// ---------------------------------------------------------------------------
+
+/// Login to GitHub Copilot
+async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Result<()> {
+    println!("{}\n", "GitHub Copilot Authentication".bold());
+
+    let loader = nanobot_core::config::ConfigLoader::new();
+    let mut config = loader.load().unwrap_or_default();
+
+    let access_token = if let Some(token) = pat {
+        // PAT mode: validate and use directly
+        println!("Validating Personal Access Token...");
+
+        let oauth = nanobot_core::providers::CopilotOAuth::with_default_client_id();
+        match oauth.validate_pat(&token).await {
+            Ok(true) => {
+                println!("{} Token validated successfully", "✓".green());
+                token
+            }
+            Ok(false) => {
+                anyhow::bail!(
+                    "Invalid Personal Access Token. Ensure it has 'copilot' scope.\n\
+                     Create a PAT at: https://github.com/settings/tokens"
+                );
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to validate token: {}", e);
+            }
+        }
+    } else {
+        // OAuth Device Flow
+        let oauth = if let Some(ref cid) = client_id {
+            nanobot_core::providers::CopilotOAuth::new(cid)
+        } else {
+            nanobot_core::providers::CopilotOAuth::with_default_client_id()
+        };
+
+        match oauth.start_device_flow().await {
+            Ok(token) => {
+                println!();
+                println!("{} Successfully authenticated!", "✓".green());
+                token
+            }
+            Err(e) => {
+                anyhow::bail!("OAuth authentication failed: {}", e);
+            }
+        }
+    };
+
+    // Save to config
+    config.providers.insert(
+        "copilot".to_string(),
+        nanobot_core::config::ProviderConfig {
+            api_key: Some(access_token),
+            api_base: None,
+            supports_thinking: None,
+            client_id: client_id,
+        },
+    );
+
+    loader.save(&config)?;
+    println!("\n{} Token saved to {:?}", "✓".green(), loader.config_path());
+    println!("\nYou can now use Copilot by setting your model to 'copilot/gpt-4o'");
+
+    Ok(())
+}
+
+/// Show authentication status for all providers
+async fn cmd_auth_status() -> Result<()> {
+    println!("{}\n", "Authentication Status".bold());
+
+    let config = load_config().context("Failed to load config")?;
+
+    if config.providers.is_empty() {
+        println!("No providers configured.");
+        println!("\nRun 'nanobot auth copilot' to authenticate with GitHub Copilot.");
+        return Ok(());
+    }
+
+    for (name, provider_config) in &config.providers {
+        let status = if name == "copilot" {
+            if let Some(ref token) = provider_config.api_key {
+                // Try to validate the token
+                let oauth = nanobot_core::providers::CopilotOAuth::with_default_client_id();
+                match oauth.validate_pat(token).await {
+                    Ok(true) => format!("{} Authenticated", "✓".green()),
+                    Ok(false) => format!("{} Invalid token", "✗".red()),
+                    Err(_) => format!("{} Unable to verify", "?".yellow()),
+                }
+            } else {
+                format!("{} No token configured", "✗".red())
+            }
+        } else if provider_config.api_key.is_some() {
+            format!("{} Configured", "✓".green())
+        } else {
+            format!("{} No API key", "✗".red())
+        };
+
+        println!("  {}: {}", name.cyan(), status);
+    }
+
+    println!();
+    println!("Usage:");
+    println!("  nanobot auth copilot          # OAuth Device Flow");
+    println!("  nanobot auth copilot --pat    # Use Personal Access Token");
+
+    Ok(())
 }

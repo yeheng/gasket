@@ -3,10 +3,13 @@
 //! All OpenAI-compatible providers (OpenAI, DashScope, Moonshot, Zhipu, MiniMax)
 //! are handled by `OpenAICompatibleProvider` with vendor-specific constructors.
 //! Only providers with genuinely different API formats (DeepSeek for reasoning_content,
-//! Gemini for native Google format) retain their own modules.
+//! Gemini for native Google format, Copilot for OAuth token management) retain
+//! their own modules.
 
 mod base;
 mod common;
+mod copilot;
+mod copilot_oauth;
 mod gemini;
 mod model_spec;
 mod registry;
@@ -17,6 +20,8 @@ pub use base::{
     FinishReason, LlmProvider, ThinkingConfig, ToolCall, ToolCallDelta, ToolDefinition,
 };
 pub use common::{parse_json_args, OpenAICompatibleProvider, ProviderConfig};
+pub use copilot::CopilotProvider;
+pub use copilot_oauth::{CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse};
 pub use gemini::GeminiProvider;
 pub use model_spec::ModelSpec;
 pub use registry::{ProviderMetadata, ProviderRegistry};

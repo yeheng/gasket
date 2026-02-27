@@ -41,6 +41,10 @@ pub struct ProviderConfig {
     /// If not set, defaults to known providers list
     #[serde(default, alias = "supportsThinking")]
     pub supports_thinking: Option<bool>,
+
+    /// OAuth client ID for providers that support OAuth (e.g., GitHub Copilot)
+    #[serde(default, alias = "clientId")]
+    pub client_id: Option<String>,
 }
 
 /// Known providers that support thinking/reasoning mode
