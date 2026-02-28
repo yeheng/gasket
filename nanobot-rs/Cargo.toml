@@ -85,3 +85,10 @@ termimad = "0.34.1"
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Terminal
+colored = "3"
+
+# REPL
+reedline = "0.45"
+nu-ansi-term = "0.50"

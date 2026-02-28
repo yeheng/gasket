@@ -5,6 +5,7 @@
 mod agent;
 mod auth;
 mod channels;
+mod cron;
 mod gateway;
 mod onboard;
 mod status;
@@ -12,6 +13,9 @@ mod status;
 pub use agent::cmd_agent;
 pub use auth::cmd_auth_copilot;
 pub use channels::cmd_channels_status;
+pub use cron::{
+    cmd_cron_add, cmd_cron_disable, cmd_cron_enable, cmd_cron_list, cmd_cron_remove, cmd_cron_show,
+};
 pub use gateway::cmd_gateway;
 pub use onboard::cmd_onboard;
 pub use status::{cmd_auth_status, cmd_status};

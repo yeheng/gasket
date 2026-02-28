@@ -1,4 +1,4 @@
-//! Web search tool
+//! Web search tool with pluggable search provider backends.
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -8,6 +8,343 @@ use tracing::{info, instrument};
 
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
+
+// ── Search result abstraction ───────────────────────────────
+
+/// A single search result from any provider.
+struct SearchHit {
+    title: String,
+    snippet: String,
+    url: String,
+}
+
+/// Trait for pluggable search backends.
+#[async_trait]
+trait SearchProvider: Send + Sync {
+    /// Execute a search and return normalized results.
+    async fn search(
+        &self,
+        client: &Client,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<SearchHit>, ToolError>;
+}
+
+/// Format a list of search hits into a human-readable string.
+fn format_hits(hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return "No results found.".to_string();
+    }
+    let mut out = String::new();
+    for (i, h) in hits.iter().enumerate() {
+        out.push_str(&format!(
+            "{}. **{}**\n   {}\n   URL: {}\n\n",
+            i + 1,
+            h.title,
+            h.snippet,
+            h.url
+        ));
+    }
+    out
+}
+
+// ── Provider implementations ────────────────────────────────
+
+// -- Brave --
+
+struct BraveProvider<'a> {
+    api_key: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct BraveSearchResponse {
+    web: BraveWebResults,
+}
+
+#[derive(Debug, Deserialize)]
+struct BraveWebResults {
+    results: Vec<BraveResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BraveResult {
+    title: String,
+    description: String,
+    url: String,
+}
+
+#[async_trait]
+impl SearchProvider for BraveProvider<'_> {
+    async fn search(
+        &self,
+        client: &Client,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<SearchHit>, ToolError> {
+        let url = format!(
+            "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+            urlencoding::encode(query),
+            count
+        );
+
+        let resp: BraveSearchResponse =
+            send_get(client, &url, "X-Subscription-Token", self.api_key, "Brave").await?;
+
+        Ok(resp
+            .web
+            .results
+            .into_iter()
+            .map(|r| SearchHit {
+                title: r.title,
+                snippet: r.description,
+                url: r.url,
+            })
+            .collect())
+    }
+}
+
+// -- Tavily --
+
+struct TavilyProvider<'a> {
+    api_key: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct TavilySearchResponse {
+    results: Vec<TavilyResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TavilyResult {
+    title: String,
+    content: String,
+    url: String,
+}
+
+#[async_trait]
+impl SearchProvider for TavilyProvider<'_> {
+    async fn search(
+        &self,
+        client: &Client,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<SearchHit>, ToolError> {
+        let body = serde_json::json!({
+            "api_key": self.api_key,
+            "query": query,
+            "max_results": count,
+            "search_depth": "basic"
+        });
+
+        let resp: TavilySearchResponse = send_post_json(
+            client,
+            "https://api.tavily.com/search",
+            &body,
+            None,
+            "Tavily",
+        )
+        .await?;
+
+        Ok(resp
+            .results
+            .into_iter()
+            .map(|r| SearchHit {
+                title: r.title,
+                snippet: r.content,
+                url: r.url,
+            })
+            .collect())
+    }
+}
+
+// -- Exa --
+
+struct ExaProvider<'a> {
+    api_key: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExaSearchResponse {
+    results: Vec<ExaResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExaResult {
+    title: Option<String>,
+    text: Option<String>,
+    url: String,
+}
+
+#[async_trait]
+impl SearchProvider for ExaProvider<'_> {
+    async fn search(
+        &self,
+        client: &Client,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<SearchHit>, ToolError> {
+        let body = serde_json::json!({
+            "query": query,
+            "numResults": count,
+            "contents": { "text": true }
+        });
+
+        let resp: ExaSearchResponse = send_post_json(
+            client,
+            "https://api.exa.ai/search",
+            &body,
+            Some(("x-api-key", self.api_key)),
+            "Exa",
+        )
+        .await?;
+
+        Ok(resp
+            .results
+            .into_iter()
+            .map(|r| SearchHit {
+                title: r.title.unwrap_or_else(|| "No title".to_string()),
+                snippet: r
+                    .text
+                    .map(|t| t.chars().take(300).collect())
+                    .unwrap_or_else(|| "No description".to_string()),
+                url: r.url,
+            })
+            .collect())
+    }
+}
+
+// -- Firecrawl --
+
+struct FirecrawlProvider<'a> {
+    api_key: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct FirecrawlSearchResponse {
+    data: Vec<FirecrawlResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FirecrawlResult {
+    title: Option<String>,
+    description: Option<String>,
+    url: String,
+}
+
+#[async_trait]
+impl SearchProvider for FirecrawlProvider<'_> {
+    async fn search(
+        &self,
+        client: &Client,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<SearchHit>, ToolError> {
+        let body = serde_json::json!({
+            "query": query,
+            "limit": count
+        });
+
+        let resp: FirecrawlSearchResponse = send_post_json(
+            client,
+            "https://api.firecrawl.dev/v1/search",
+            &body,
+            Some(("Authorization", &format!("Bearer {}", self.api_key))),
+            "Firecrawl",
+        )
+        .await?;
+
+        Ok(resp
+            .data
+            .into_iter()
+            .map(|r| SearchHit {
+                title: r.title.unwrap_or_else(|| "No title".to_string()),
+                snippet: r
+                    .description
+                    .unwrap_or_else(|| "No description".to_string()),
+                url: r.url,
+            })
+            .collect())
+    }
+}
+
+// ── Shared HTTP helpers ─────────────────────────────────────
+
+/// Send a GET request with a header-based API key, deserialize the JSON body.
+async fn send_get<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    url: &str,
+    key_header: &str,
+    api_key: &str,
+    provider_name: &str,
+) -> Result<T, ToolError> {
+    let response = client
+        .get(url)
+        .header(key_header, api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| {
+            ToolError::ExecutionError(format!("{} API request failed: {}", provider_name, e))
+        })?;
+
+    check_status(&response, provider_name).await?;
+
+    response.json::<T>().await.map_err(|e| {
+        ToolError::ExecutionError(format!(
+            "Failed to parse {} API response: {}",
+            provider_name, e
+        ))
+    })
+}
+
+/// Send a POST request with a JSON body, deserialize the JSON response.
+///
+/// `auth_header` is an optional `(header_name, header_value)` tuple.
+async fn send_post_json<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    url: &str,
+    body: &Value,
+    auth_header: Option<(&str, &str)>,
+    provider_name: &str,
+) -> Result<T, ToolError> {
+    let mut req = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .json(body);
+
+    if let Some((key, value)) = auth_header {
+        req = req.header(key, value);
+    }
+
+    let response = req.send().await.map_err(|e| {
+        ToolError::ExecutionError(format!("{} API request failed: {}", provider_name, e))
+    })?;
+
+    check_status(&response, provider_name).await?;
+
+    response.json::<T>().await.map_err(|e| {
+        ToolError::ExecutionError(format!(
+            "Failed to parse {} API response: {}",
+            provider_name, e
+        ))
+    })
+}
+
+/// Check HTTP status, returning a `ToolError` on non-2xx responses.
+async fn check_status(response: &reqwest::Response, provider_name: &str) -> Result<(), ToolError> {
+    if !response.status().is_success() {
+        let status = response.status();
+        // We can't consume the body here because response is borrowed,
+        // so we just report the status code.
+        return Err(ToolError::ExecutionError(format!(
+            "{} API error (status {})",
+            provider_name, status
+        )));
+    }
+    Ok(())
+}
+
+// ── WebSearchTool (public API) ──────────────────────────────
 
 /// Web search tool
 pub struct WebSearchTool {
@@ -24,228 +361,60 @@ impl WebSearchTool {
         }
     }
 
-    async fn search_brave(&self, query: &str, count: usize) -> ToolResult {
-        let api_key = self
+    /// Resolve the configured provider and execute the search.
+    async fn do_search(&self, query: &str, count: usize) -> ToolResult {
+        let provider_name = self
             .config
             .as_ref()
-            .and_then(|c| c.brave_api_key.as_ref())
-            .ok_or_else(|| ToolError::ExecutionError("Brave API key not configured".to_string()))?;
+            .and_then(|c| c.search_provider.as_deref())
+            .unwrap_or("brave")
+            .to_lowercase();
 
-        let url = format!(
-            "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-            urlencoding::encode(query),
-            count
+        info!(
+            "[WebSearch] Using '{}' API to search for: {}",
+            provider_name, query
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .header("X-Subscription-Token", api_key)
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Brave API request failed: {}", e)))?;
+        let hits = match provider_name.as_str() {
+            "tavily" => {
+                let key = self.require_key(|c| c.tavily_api_key.as_ref(), "Tavily")?;
+                TavilyProvider { api_key: &key }
+                    .search(&self.client, query, count)
+                    .await?
+            }
+            "exa" => {
+                let key = self.require_key(|c| c.exa_api_key.as_ref(), "Exa")?;
+                ExaProvider { api_key: &key }
+                    .search(&self.client, query, count)
+                    .await?
+            }
+            "firecrawl" => {
+                let key = self.require_key(|c| c.firecrawl_api_key.as_ref(), "Firecrawl")?;
+                FirecrawlProvider { api_key: &key }
+                    .search(&self.client, query, count)
+                    .await?
+            }
+            _ => {
+                let key = self.require_key(|c| c.brave_api_key.as_ref(), "Brave")?;
+                BraveProvider { api_key: &key }
+                    .search(&self.client, query, count)
+                    .await?
+            }
+        };
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ToolError::ExecutionError(format!(
-                "Brave Search API error (status {}): {}",
-                status, body
-            )));
-        }
-
-        let search_response: BraveSearchResponse = response.json().await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to parse Brave API response: {}", e))
-        })?;
-
-        let mut result = String::new();
-        for (i, r) in search_response.web.results.iter().enumerate() {
-            result.push_str(&format!(
-                "{}. **{}**\n   {}\n   URL: {}\n\n",
-                i + 1,
-                r.title,
-                r.description,
-                r.url
-            ));
-        }
-
-        if result.is_empty() {
-            result = "No results found.".to_string();
-        }
-
-        Ok(result)
+        Ok(format_hits(&hits))
     }
 
-    async fn search_tavily(&self, query: &str, count: usize) -> ToolResult {
-        let api_key = self
-            .config
+    /// Extract an API key from config, or return a descriptive error.
+    fn require_key<F>(&self, extractor: F, name: &str) -> Result<String, ToolError>
+    where
+        F: FnOnce(&crate::config::WebToolsConfig) -> Option<&String>,
+    {
+        self.config
             .as_ref()
-            .and_then(|c| c.tavily_api_key.as_ref())
-            .ok_or_else(|| {
-                ToolError::ExecutionError("Tavily API key not configured".to_string())
-            })?;
-
-        let body = serde_json::json!({
-            "api_key": api_key,
-            "query": query,
-            "max_results": count,
-            "search_depth": "basic"
-        });
-
-        let response = self
-            .client
-            .post("https://api.tavily.com/search")
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Tavily API request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ToolError::ExecutionError(format!(
-                "Tavily API error (status {}): {}",
-                status, body
-            )));
-        }
-
-        let search_response: TavilySearchResponse = response.json().await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to parse Tavily API response: {}", e))
-        })?;
-
-        let mut result = String::new();
-        for (i, r) in search_response.results.iter().enumerate() {
-            result.push_str(&format!(
-                "{}. **{}**\n   {}\n   URL: {}\n\n",
-                i + 1,
-                r.title,
-                r.content,
-                r.url
-            ));
-        }
-
-        if result.is_empty() {
-            result = "No results found.".to_string();
-        }
-
-        Ok(result)
-    }
-
-    async fn search_exa(&self, query: &str, count: usize) -> ToolResult {
-        let api_key = self
-            .config
-            .as_ref()
-            .and_then(|c| c.exa_api_key.as_ref())
-            .ok_or_else(|| ToolError::ExecutionError("Exa API key not configured".to_string()))?;
-
-        let body = serde_json::json!({
-            "query": query,
-            "numResults": count,
-            "contents": { "text": true }
-        });
-
-        let response = self
-            .client
-            .post("https://api.exa.ai/search")
-            .header("x-api-key", api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ToolError::ExecutionError(format!("Exa API request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ToolError::ExecutionError(format!(
-                "Exa API error (status {}): {}",
-                status, body
-            )));
-        }
-
-        let search_response: ExaSearchResponse = response.json().await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to parse Exa API response: {}", e))
-        })?;
-
-        let mut result = String::new();
-        for (i, r) in search_response.results.iter().enumerate() {
-            let title = r.title.as_deref().unwrap_or("No title");
-            let text = r.text.as_deref().unwrap_or("No description");
-            result.push_str(&format!(
-                "{}. **{}**\n   {}\n   URL: {}\n\n",
-                i + 1,
-                title,
-                text.chars().take(300).collect::<String>(),
-                r.url
-            ));
-        }
-
-        if result.is_empty() {
-            result = "No results found.".to_string();
-        }
-
-        Ok(result)
-    }
-
-    async fn search_firecrawl(&self, query: &str, count: usize) -> ToolResult {
-        let api_key = self
-            .config
-            .as_ref()
-            .and_then(|c| c.firecrawl_api_key.as_ref())
-            .ok_or_else(|| {
-                ToolError::ExecutionError("Firecrawl API key not configured".to_string())
-            })?;
-
-        let body = serde_json::json!({
-            "query": query,
-            "limit": count
-        });
-
-        let response = self
-            .client
-            .post("https://api.firecrawl.dev/v1/search")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                ToolError::ExecutionError(format!("Firecrawl API request failed: {}", e))
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ToolError::ExecutionError(format!(
-                "Firecrawl API error (status {}): {}",
-                status, body
-            )));
-        }
-
-        let search_response: FirecrawlSearchResponse = response.json().await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to parse Firecrawl API response: {}", e))
-        })?;
-
-        let mut result = String::new();
-        for (i, r) in search_response.data.iter().enumerate() {
-            let title = r.title.as_deref().unwrap_or("No title");
-            let desc = r.description.as_deref().unwrap_or("No description");
-            result.push_str(&format!(
-                "{}. **{}**\n   {}\n   URL: {}\n\n",
-                i + 1,
-                title,
-                desc,
-                r.url
-            ));
-        }
-
-        if result.is_empty() {
-            result = "No results found.".to_string();
-        }
-
-        Ok(result)
+            .and_then(extractor)
+            .cloned()
+            .ok_or_else(|| ToolError::ExecutionError(format!("{} API key not configured", name)))
     }
 }
 
@@ -287,77 +456,6 @@ impl Tool for WebSearchTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let provider = self
-            .config
-            .as_ref()
-            .and_then(|c| c.search_provider.as_deref())
-            .unwrap_or("brave")
-            .to_lowercase();
-
-        info!(
-            "[WebSearch] Using '{}' API to search for: {}",
-            provider, args.query
-        );
-
-        match provider.as_str() {
-            "tavily" => self.search_tavily(&args.query, args.count).await,
-            "exa" => self.search_exa(&args.query, args.count).await,
-            "firecrawl" => self.search_firecrawl(&args.query, args.count).await,
-            _ => self.search_brave(&args.query, args.count).await,
-        }
+        self.do_search(&args.query, args.count).await
     }
-}
-
-/// Brave Search API response
-#[derive(Debug, Deserialize)]
-struct BraveSearchResponse {
-    web: BraveWebResults,
-}
-
-#[derive(Debug, Deserialize)]
-struct BraveWebResults {
-    results: Vec<BraveResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BraveResult {
-    title: String,
-    description: String,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct TavilySearchResponse {
-    results: Vec<TavilyResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TavilyResult {
-    title: String,
-    content: String,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExaSearchResponse {
-    results: Vec<ExaResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExaResult {
-    title: Option<String>,
-    text: Option<String>,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct FirecrawlSearchResponse {
-    data: Vec<FirecrawlResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FirecrawlResult {
-    title: Option<String>,
-    description: Option<String>,
-    url: String,
 }

@@ -140,22 +140,16 @@ pub async fn cmd_agent(
     // Note: Use stdout for content (piping), stderr for status/logs
     let stream_callback: StreamCallback = Box::new(|event| {
         match event {
-            StreamEvent::Content(text) => {
-                print!("{}", text);
-                std::io::stdout().flush().ok();
-            }
+            StreamEvent::Content(_text) => {}
             StreamEvent::Reasoning(text) => {
-                // Reasoning to stderr with styling
                 eprint!("{}", text.dimmed().italic());
                 std::io::stderr().flush().ok();
             }
-            StreamEvent::ToolStart { name } => {
-                eprintln!("\n{} {}", "→".dimmed(), name.dimmed());
-            }
+            StreamEvent::ToolStart { name: _ } => {}
             StreamEvent::ToolEnd { name: _, output: _ } => {}
             StreamEvent::Done => {
                 // Ensure stdout ends with newline for clean separation
-                println!();
+                eprintln!("\n");
             }
         }
     });

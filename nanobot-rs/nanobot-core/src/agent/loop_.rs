@@ -435,7 +435,7 @@ impl AgentLoop {
                 // Log reasoning content if present
                 if let Some(ref reasoning) = response.reasoning_content {
                     if !reasoning.is_empty() {
-                        info!("[Agent] Reasoning: {}", reasoning);
+                        debug!("[Agent] Reasoning: {}", reasoning);
                     }
                 }
 
@@ -498,7 +498,7 @@ impl AgentLoop {
                     } else {
                         result.output.clone()
                     };
-                    info!("[Tool] {} -> {}", result.tool_name, output_preview);
+                    debug!("[Tool] {} -> {}", result.tool_name, output_preview);
 
                     cb(&StreamEvent::ToolEnd {
                         name: result.tool_name.clone(),
@@ -516,7 +516,7 @@ impl AgentLoop {
                 // Final response
                 if let Some(ref reasoning) = response.reasoning_content {
                     if !reasoning.is_empty() {
-                        info!("[Agent] Reasoning: {}", reasoning);
+                        debug!("[Agent] Reasoning: {}", reasoning);
                     }
                 }
                 if let Some(ref content) = response.content {
@@ -589,7 +589,7 @@ impl AgentLoop {
             }
         }
 
-        info!("[Streaming] {}", content);
+        eprintln!();
 
         // Convert accumulated tool calls into ToolCall objects
         let mut tool_calls: Vec<ToolCall> = tool_calls_map

@@ -51,15 +51,20 @@ chrono.workspace = true
 dirs.workspace = true
 
 # Terminal
-colored = "3"
+colored.workspace = true
 
 # REPL
-reedline = "0.45"
-nu-ansi-term = "0.50"
+reedline.workspace = true
+nu-ansi-term.workspace = true
+
+# Cron (for validating cron expressions)
+cron.workspace = true
+
+# UUID
+uuid.workspace = true
 
 # Markdown rendering (optional)
 termimad = { workspace = true, optional = true }
 
 # Telegram (optional)
 teloxide = { workspace = true, optional = true }
-

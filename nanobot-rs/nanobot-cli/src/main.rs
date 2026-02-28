@@ -11,7 +11,7 @@ mod cli;
 mod commands;
 mod provider;
 
-use cli::{AuthCommands, ChannelsCommands, Cli, Commands};
+use cli::{AuthCommands, ChannelsCommands, Cli, Commands, CronCommands};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,6 +49,18 @@ async fn main() -> Result<()> {
             }
             AuthCommands::Status => commands::cmd_auth_status().await,
         },
+        Some(Commands::Cron { command }) => match command {
+            CronCommands::List => commands::cmd_cron_list().await,
+            CronCommands::Add {
+                name,
+                cron,
+                message,
+            } => commands::cmd_cron_add(name, cron, message).await,
+            CronCommands::Remove { id } => commands::cmd_cron_remove(id).await,
+            CronCommands::Show { id } => commands::cmd_cron_show(id).await,
+            CronCommands::Enable { id } => commands::cmd_cron_enable(id).await,
+            CronCommands::Disable { id } => commands::cmd_cron_disable(id).await,
+        },
         None => {
             // No command - show help
             println!("🐈 nanobot v2.0.0 - A lightweight AI assistant\n");
@@ -59,7 +71,8 @@ async fn main() -> Result<()> {
             println!("  agent     Chat with the agent");
             println!("  channels  Manage chat channels");
             println!("  gateway   Start the gateway");
-            println!("  auth      Authentication commands\n");
+            println!("  auth      Authentication commands");
+            println!("  cron      Manage scheduled tasks\n");
             println!("Run 'nanobot --help' for more information.");
             Ok(())
         }

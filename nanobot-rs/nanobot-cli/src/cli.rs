@@ -57,6 +57,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: AuthCommands,
     },
+
+    /// Manage scheduled tasks
+    Cron {
+        #[command(subcommand)]
+        command: CronCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -80,4 +86,49 @@ pub enum AuthCommands {
 
     /// Show authentication status for all providers
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum CronCommands {
+    /// List all scheduled jobs
+    List,
+
+    /// Add a new scheduled job
+    Add {
+        /// Job name
+        #[arg(short, long)]
+        name: String,
+
+        /// Cron expression (e.g., '0 9 * * *' for 9 AM daily)
+        #[arg(short, long)]
+        cron: String,
+
+        /// Message to send at scheduled time
+        #[arg(short, long)]
+        message: String,
+    },
+
+    /// Remove a scheduled job
+    Remove {
+        /// Job ID to remove
+        id: String,
+    },
+
+    /// Show details of a scheduled job
+    Show {
+        /// Job ID to show
+        id: String,
+    },
+
+    /// Enable a scheduled job
+    Enable {
+        /// Job ID to enable
+        id: String,
+    },
+
+    /// Disable a scheduled job
+    Disable {
+        /// Job ID to disable
+        id: String,
+    },
 }

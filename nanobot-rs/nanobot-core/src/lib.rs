@@ -17,6 +17,7 @@ pub mod bus;
 pub mod channels;
 pub mod config;
 pub mod cron;
+pub mod crypto;
 pub mod heartbeat;
 pub mod mcp;
 pub mod memory;

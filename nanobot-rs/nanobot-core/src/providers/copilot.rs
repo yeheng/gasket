@@ -43,10 +43,9 @@ struct CachedToken {
 
 impl CachedToken {
     fn is_expired(&self) -> bool {
-        Instant::now().duration_since(Instant::now())
-            > self.expires_at.duration_since(Instant::now())
-            || self.expires_at.duration_since(Instant::now())
-                < Duration::from_secs(TOKEN_REFRESH_BUFFER_SECS)
+        let now = Instant::now();
+        now >= self.expires_at
+            || self.expires_at.duration_since(now) < Duration::from_secs(TOKEN_REFRESH_BUFFER_SECS)
     }
 }
 
