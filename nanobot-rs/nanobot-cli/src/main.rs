@@ -13,7 +13,7 @@ use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
-use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback};
+use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 use nanobot_core::config::{load_config, Config, ConfigLoader};
 use nanobot_core::providers::{
     LlmProvider, ModelSpec, OpenAICompatibleProvider, ProviderMetadata, ProviderRegistry,
@@ -166,7 +166,7 @@ async fn cmd_onboard() -> Result<()> {
         println!("Edit it manually to add your API keys.");
     } else {
         // Create default config
-        let _config = loader.init_default()?;
+        let _config = loader.init_default().await?;
         println!("Created configuration at: {:?}", config_path);
         println!("\nEdit the config to add your API key:");
         println!("  providers:");
@@ -229,7 +229,7 @@ fn create_workspace_templates(workspace: &std::path::Path) -> Result<()> {
 }
 
 async fn cmd_status() -> Result<()> {
-    let config = load_config().context("Failed to load config")?;
+    let config = load_config().await.context("Failed to load config")?;
 
     println!("🐈 nanobot status\n");
     println!("Configuration: {:?}", ConfigLoader::new().config_path());
@@ -321,7 +321,7 @@ async fn cmd_agent(
             .ok();
     }
 
-    let config = load_config().context("Failed to load config")?;
+    let config = load_config().await.context("Failed to load config")?;
     let workspace = dirs::home_dir()
         .context("Could not find home directory")?
         .join(".nanobot");
@@ -477,8 +477,27 @@ async fn cmd_agent(
     let use_streaming = !no_stream;
 
     // Create streaming callback for progressive CLI output
+
     let stream_callback: StreamCallback = Box::new(|_event| {
-        // do nothing here
+        // use std::io::Write;
+        // match event {
+        //     StreamEvent::Content(text) => {
+        //         print!("{}", text);
+        //         std::io::stdout().flush().ok();
+        //     }
+        //     StreamEvent::Reasoning(text) => {
+        //         print!("{}", text.dimmed().italic());
+        //         std::io::stdout().flush().ok();
+        //     }
+        //     StreamEvent::ToolStart { name } => {
+        //         println!("\n{} {}", "→".dimmed(), name.dimmed());
+        //     }
+        //     StreamEvent::ToolEnd { name: _, output: _ } => {}
+        //     StreamEvent::Done => {
+        //         println!("\n");
+        //         std::io::stdout().flush().ok();
+        //     }
+        // }
     });
 
     match message {
@@ -613,7 +632,7 @@ fn print_response_with_reasoning(response: &AgentResponse, render_md: bool) {
 }
 
 async fn cmd_gateway() -> Result<()> {
-    let config = load_config().context("Failed to load config")?;
+    let config = load_config().await.context("Failed to load config")?;
     let workspace = dirs::home_dir()
         .context("Could not find home directory")?
         .join(".nanobot");
@@ -1118,14 +1137,19 @@ fn build_provider(
 ///
 /// Iterates through all configured providers, instantiates them, and registers
 /// them in the registry with appropriate metadata.
+/// Local providers that don't require an API key
+const LOCAL_PROVIDERS: &[&str] = &["ollama", "litellm"];
+
 fn build_provider_registry(config: &Config) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
 
     for (name, provider_config) in &config.providers {
         // Check if provider has credentials
-        let (available, api_key) = if name == "ollama" {
-            // Ollama doesn't require an API key
-            (true, "")
+        // Local providers (ollama, litellm) don't require API keys
+        let (available, api_key) = if LOCAL_PROVIDERS.contains(&name.as_str()) {
+            // Local provider - always available, optional API key for litellm
+            let key = provider_config.api_key.as_deref().unwrap_or("");
+            (true, key)
         } else if let Some(key) = &provider_config.api_key {
             (true, key.as_str())
         } else {
@@ -1156,7 +1180,14 @@ fn build_provider_registry(config: &Config) -> ProviderRegistry {
     }
 
     // Set default provider based on preference order
-    let default_order = ["openrouter", "deepseek", "openai", "anthropic", "ollama"];
+    let default_order = [
+        "openrouter",
+        "deepseek",
+        "openai",
+        "anthropic",
+        "litellm",
+        "ollama",
+    ];
     for default_name in default_order {
         if registry.contains(default_name) && registry.set_default(default_name).is_ok() {
             break;
@@ -1177,6 +1208,7 @@ fn get_default_model_for_provider(name: &str) -> &'static str {
         "moonshot" => "kimi-k2.5",
         "minimax" => "MiniMax-M2.5",
         "ollama" => "llama3",
+        "litellm" => "gpt-4o", // LiteLLM proxies to configured models
         "copilot" => "gpt-4o",
         _ => "gpt-4o",
     }
@@ -1242,7 +1274,9 @@ fn find_provider(config: &Config) -> Result<ProviderInfo> {
 async fn cmd_channels_status() -> Result<()> {
     println!("{}\n", "Channel Status".bold());
 
-    let config = load_config().context("Failed to load configuration")?;
+    let config = load_config()
+        .await
+        .context("Failed to load configuration")?;
 
     // Helper function to check if env var is set
     let has_env_credential = |env_var: &str| {
@@ -1504,7 +1538,7 @@ async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Res
     println!("{}\n", "GitHub Copilot Authentication".bold());
 
     let loader = nanobot_core::config::ConfigLoader::new();
-    let mut config = loader.load().unwrap_or_default();
+    let mut config = loader.load().await.unwrap_or_default();
 
     let access_token = if let Some(token) = pat {
         // PAT mode: validate and use directly
@@ -1541,7 +1575,14 @@ async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Res
                 token
             }
             Err(e) => {
-                anyhow::bail!("OAuth authentication failed: {}", e);
+                anyhow::bail!(
+                    "OAuth authentication failed: {}\n\n\
+                     Note: GitHub may restrict OAuth Device Flow for Copilot.\n\
+                     Recommended: Use Personal Access Token instead:\n\n\
+                     1. Create PAT at: https://github.com/settings/tokens\n\
+                     2. Run: nanobot auth copilot --pat <your-token>",
+                    e
+                );
             }
         }
     };
@@ -1557,7 +1598,7 @@ async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Res
         },
     );
 
-    loader.save(&config)?;
+    loader.save(&config).await?;
     println!(
         "\n{} Token saved to {:?}",
         "✓".green(),
@@ -1572,7 +1613,7 @@ async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Res
 async fn cmd_auth_status() -> Result<()> {
     println!("{}\n", "Authentication Status".bold());
 
-    let config = load_config().context("Failed to load config")?;
+    let config = load_config().await.context("Failed to load config")?;
 
     if config.providers.is_empty() {
         println!("No providers configured.");

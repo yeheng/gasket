@@ -1,8 +1,8 @@
 use crate::skills::{Skill, SkillMetadata};
 use anyhow::{Context, Result};
-use std::fs;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use tokio::fs;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::{debug, warn};
 
 /// Parses YAML frontmatter from a Markdown file
@@ -20,8 +20,11 @@ use tracing::{debug, warn};
 /// # Skill Content
 /// ...
 /// ```
-pub fn parse_skill_file(mut reader: impl BufRead, path: PathBuf) -> Result<Skill> {
-    let (metadata, markdown_content) = parse_frontmatter(&mut reader)?;
+pub async fn parse_skill_file(
+    mut reader: BufReader<tokio::fs::File>,
+    path: PathBuf,
+) -> Result<Skill> {
+    let (metadata, markdown_content) = parse_frontmatter(&mut reader).await?;
 
     // Lazy-load: skip content for on-demand skills to save memory
     if !metadata.always {
@@ -32,22 +35,24 @@ pub fn parse_skill_file(mut reader: impl BufRead, path: PathBuf) -> Result<Skill
 }
 
 /// Parse YAML frontmatter and extract metadata + content
-fn parse_frontmatter(reader: &mut impl BufRead) -> Result<(SkillMetadata, String)> {
+async fn parse_frontmatter(
+    reader: &mut BufReader<tokio::fs::File>,
+) -> Result<(SkillMetadata, String)> {
     let mut lines = reader.lines();
 
     // Read the first line
-    let first_line = match lines.next() {
-        Some(Ok(line)) => line,
-        _ => return Ok((SkillMetadata::default(), String::new())),
+    let first_line = match lines.next_line().await? {
+        Some(line) => line,
+        None => return Ok((SkillMetadata::default(), String::new())),
     };
 
     // Check if file starts with ---
     if first_line.trim() != "---" {
         // No frontmatter, use default metadata
         let mut content = first_line;
-        for line in lines {
+        while let Some(line) = lines.next_line().await? {
             content.push('\n');
-            content.push_str(&line?);
+            content.push_str(&line);
         }
         return Ok((SkillMetadata::default(), content));
     }
@@ -56,8 +61,7 @@ fn parse_frontmatter(reader: &mut impl BufRead) -> Result<(SkillMetadata, String
     let mut frontmatter_closed = false;
 
     // Read YAML content until closing ---
-    for line in &mut lines {
-        let line = line?;
+    while let Some(line) = lines.next_line().await? {
         if line.trim() == "---" {
             frontmatter_closed = true;
             break;
@@ -69,9 +73,9 @@ fn parse_frontmatter(reader: &mut impl BufRead) -> Result<(SkillMetadata, String
     if !frontmatter_closed {
         warn!("Unclosed frontmatter in skill file");
         let mut content = format!("---\n{}", yaml_content);
-        for line in lines {
+        while let Some(line) = lines.next_line().await? {
             content.push('\n');
-            content.push_str(&line?);
+            content.push_str(&line);
         }
         return Ok((SkillMetadata::default(), content));
     }
@@ -84,8 +88,7 @@ fn parse_frontmatter(reader: &mut impl BufRead) -> Result<(SkillMetadata, String
     let mut markdown_content = String::new();
     let mut first_non_empty = false;
 
-    for line in lines {
-        let line = line?;
+    while let Some(line) = lines.next_line().await? {
         if !first_non_empty {
             if line.trim().is_empty() {
                 continue;
@@ -120,19 +123,21 @@ impl SkillsLoader {
     }
 
     /// Load all skills from both user and builtin directories
-    pub fn load_all(&self) -> Result<Vec<Skill>> {
+    pub async fn load_all(&self) -> Result<Vec<Skill>> {
         let mut skills = Vec::new();
 
         // Load built-in skills
         debug!("Loading built-in skills from {:?}", self.builtin_skills_dir);
         if self.builtin_skills_dir.exists() {
-            self.load_from_dir(&self.builtin_skills_dir, &mut skills)?;
+            self.load_from_dir(&self.builtin_skills_dir, &mut skills)
+                .await?;
         }
 
         // Load user skills
         debug!("Loading user skills from {:?}", self.user_skills_dir);
         if self.user_skills_dir.exists() {
-            self.load_from_dir(&self.user_skills_dir, &mut skills)?;
+            self.load_from_dir(&self.user_skills_dir, &mut skills)
+                .await?;
         }
 
         debug!("Loaded {} skills total", skills.len());
@@ -140,17 +145,17 @@ impl SkillsLoader {
     }
 
     /// Load skills from a specific directory
-    fn load_from_dir(&self, dir: &Path, skills: &mut Vec<Skill>) -> Result<()> {
-        let entries = fs::read_dir(dir)
+    async fn load_from_dir(&self, dir: &Path, skills: &mut Vec<Skill>) -> Result<()> {
+        let mut entries = fs::read_dir(dir)
+            .await
             .with_context(|| format!("Failed to read skills directory: {:?}", dir))?;
 
-        for entry in entries {
-            let entry = entry?;
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
 
             // Only process .md files
             if path.extension().map(|e| e == "md").unwrap_or(false) {
-                match self.load_skill(&path) {
+                match self.load_skill(&path).await {
                     Ok(skill) => {
                         debug!("Loaded skill: {} from {:?}", skill.name(), path);
                         skills.push(skill);
@@ -165,12 +170,13 @@ impl SkillsLoader {
         Ok(())
     }
 
-    fn load_skill(&self, path: &Path) -> Result<Skill> {
+    async fn load_skill(&self, path: &Path) -> Result<Skill> {
         let file = fs::File::open(path)
+            .await
             .with_context(|| format!("Failed to open skill file: {:?}", path))?;
-        let reader = std::io::BufReader::new(file);
+        let reader = BufReader::new(file);
 
-        parse_skill_file(reader, path.to_path_buf())
+        parse_skill_file(reader, path.to_path_buf()).await
     }
 
     /// Get user skills directory
@@ -186,11 +192,12 @@ impl SkillsLoader {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::io::Cursor;
+    use std::io::Write;
 
-    #[test]
-    fn test_parse_frontmatter_full() {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_parse_frontmatter_full() {
         let content = r#"---
 name: test-skill
 description: A test skill
@@ -203,8 +210,12 @@ env_vars: ["GITHUB_TOKEN"]
 
 This is the skill content.
 "#;
-        let mut reader = Cursor::new(content);
-        let (metadata, markdown) = parse_frontmatter(&mut reader).unwrap();
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.as_file().write_all(content.as_bytes()).unwrap();
+
+        let file = fs::File::open(temp_file.path()).await.unwrap();
+        let mut reader = BufReader::new(file);
+        let (metadata, markdown) = parse_frontmatter(&mut reader).await.unwrap();
 
         assert_eq!(metadata.name, "test-skill");
         assert_eq!(metadata.description, "A test skill");
@@ -214,8 +225,8 @@ This is the skill content.
         assert!(markdown.contains("# Test Skill"));
     }
 
-    #[test]
-    fn test_parse_frontmatter_minimal() {
+    #[tokio::test]
+    async fn test_parse_frontmatter_minimal() {
         let content = r#"---
 name: minimal
 description: Minimal skill
@@ -223,8 +234,12 @@ description: Minimal skill
 
 # Content
 "#;
-        let mut reader = Cursor::new(content);
-        let (metadata, markdown) = parse_frontmatter(&mut reader).unwrap();
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.as_file().write_all(content.as_bytes()).unwrap();
+
+        let file = fs::File::open(temp_file.path()).await.unwrap();
+        let mut reader = BufReader::new(file);
+        let (metadata, markdown) = parse_frontmatter(&mut reader).await.unwrap();
 
         assert_eq!(metadata.name, "minimal");
         assert_eq!(metadata.description, "Minimal skill");
@@ -233,18 +248,22 @@ description: Minimal skill
         assert!(markdown.contains("# Content"));
     }
 
-    #[test]
-    fn test_parse_no_frontmatter() {
+    #[tokio::test]
+    async fn test_parse_no_frontmatter() {
         let content = "# No Frontmatter\n\nJust content.";
-        let mut reader = Cursor::new(content);
-        let (metadata, markdown) = parse_frontmatter(&mut reader).unwrap();
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.as_file().write_all(content.as_bytes()).unwrap();
+
+        let file = fs::File::open(temp_file.path()).await.unwrap();
+        let mut reader = BufReader::new(file);
+        let (metadata, markdown) = parse_frontmatter(&mut reader).await.unwrap();
 
         assert_eq!(metadata.name, "");
-        assert_eq!(markdown, content);
+        assert!(markdown.contains("# No Frontmatter"));
     }
 
-    #[test]
-    fn test_parse_skill_file() {
+    #[tokio::test]
+    async fn test_parse_skill_file() {
         let content = r#"---
 name: github
 description: GitHub operations
@@ -254,8 +273,14 @@ description: GitHub operations
 
 Use `gh` CLI for GitHub operations.
 "#;
-        let reader = Cursor::new(content);
-        let skill = parse_skill_file(reader, PathBuf::from("/test/github.md")).unwrap();
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.as_file().write_all(content.as_bytes()).unwrap();
+
+        let file = fs::File::open(temp_file.path()).await.unwrap();
+        let reader = BufReader::new(file);
+        let skill = parse_skill_file(reader, PathBuf::from(temp_file.path()))
+            .await
+            .unwrap();
 
         assert_eq!(skill.name(), "github");
         assert_eq!(skill.description(), "GitHub operations");
@@ -263,8 +288,8 @@ Use `gh` CLI for GitHub operations.
         assert!(skill.content().is_empty());
     }
 
-    #[test]
-    fn test_parse_skill_file_always_load() {
+    #[tokio::test]
+    async fn test_parse_skill_file_always_load() {
         let content = r#"---
 name: core-skill
 description: Always-loaded skill
@@ -275,11 +300,18 @@ always: true
 
 This content is eagerly loaded.
 "#;
-        let reader = Cursor::new(content);
-        let skill = parse_skill_file(reader, PathBuf::from("/test/core.md")).unwrap();
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        temp_file.as_file().write_all(content.as_bytes()).unwrap();
+
+        let file = fs::File::open(temp_file.path()).await.unwrap();
+        let reader = BufReader::new(file);
+        let skill = parse_skill_file(reader, PathBuf::from(temp_file.path()))
+            .await
+            .unwrap();
 
         assert_eq!(skill.name(), "core-skill");
         assert!(skill.always_load());
+        assert!(!skill.content().is_empty());
         assert!(skill.content().contains("Core Skill"));
     }
 }

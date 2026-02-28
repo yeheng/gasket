@@ -60,7 +60,9 @@ static PROVIDER_DEFAULTS: &[(&str, &str, Option<&str>)] = &[
         "https://api.deepseek.com/v1",
         Some("deepseek-chat"),
     ),
+    // Local providers (no API key required by default)
     ("ollama", "http://localhost:11434/v1", Some("llama3")),
+    ("litellm", "http://localhost:4000/v1", Some("gpt-4o")),
 ];
 
 /// Get default API base URL for a provider name
@@ -530,6 +532,32 @@ mod tests {
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "mistral");
         assert_eq!(provider.api_base(), "http://192.168.1.100:11434/v1");
+    }
+
+    #[test]
+    fn test_litellm_provider() {
+        let provider = OpenAICompatibleProvider::from_name(
+            "litellm",
+            "", // LiteLLM may not require API key
+            None,
+            Some("gpt-4o".to_string()),
+        );
+        assert_eq!(provider.name(), "litellm");
+        assert_eq!(provider.default_model(), "gpt-4o");
+        assert_eq!(provider.api_base(), "http://localhost:4000/v1");
+    }
+
+    #[test]
+    fn test_litellm_provider_custom_base() {
+        let provider = OpenAICompatibleProvider::from_name(
+            "litellm",
+            "sk-test-key",
+            Some("http://192.168.1.100:4000/v1".to_string()),
+            Some("claude-3-opus".to_string()),
+        );
+        assert_eq!(provider.name(), "litellm");
+        assert_eq!(provider.default_model(), "claude-3-opus");
+        assert_eq!(provider.api_base(), "http://192.168.1.100:4000/v1");
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, SqlitePool};
+use tokio::fs;
 use tracing::{debug, info};
 
 use super::subagent::{SubagentTask, TaskPriority, TaskStatus};
@@ -25,7 +26,7 @@ impl SqliteTaskStore {
     /// Open (or create) the SQLite database at `db_path` and initialise the schema.
     pub async fn new(db_path: PathBuf) -> anyhow::Result<Self> {
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).await?;
         }
 
         let options = SqliteConnectOptions::new()
@@ -145,11 +146,11 @@ impl SqliteTaskStore {
             return Ok(());
         }
 
-        let tasks = load_from_json(json_path)?;
+        let tasks = load_from_json(json_path).await?;
         if tasks.is_empty() {
             // Still rename the file even if empty
             let backup = json_path.with_extension("json.migrated");
-            std::fs::rename(json_path, &backup)?;
+            fs::rename(json_path, &backup).await?;
             info!("Renamed empty {:?} → {:?}", json_path, backup);
             return Ok(());
         }
@@ -165,7 +166,7 @@ impl SqliteTaskStore {
         );
 
         let backup = json_path.with_extension("json.migrated");
-        std::fs::rename(json_path, &backup)?;
+        fs::rename(json_path, &backup).await?;
         info!("Renamed {:?} → {:?}", json_path, backup);
 
         Ok(())

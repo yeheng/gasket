@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use tokio::fs;
 use tokio::time::interval;
 use tracing::{debug, info};
 
@@ -40,13 +41,13 @@ impl HeartbeatService {
     }
 
     /// Read heartbeat tasks
-    pub fn read_tasks(&self) -> Vec<String> {
+    pub async fn read_tasks(&self) -> Vec<String> {
         let path = self.heartbeat_path();
         if !path.exists() {
             return Vec::new();
         }
 
-        let content = match std::fs::read_to_string(&path) {
+        let content = match fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("Failed to read heartbeat file '{}': {}", path.display(), e);
@@ -81,7 +82,7 @@ impl HeartbeatService {
         loop {
             ticker.tick().await;
 
-            let tasks = self.read_tasks();
+            let tasks = self.read_tasks().await;
             debug!("Heartbeat check: {} tasks", tasks.len());
 
             for task in tasks {

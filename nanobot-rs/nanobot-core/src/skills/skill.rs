@@ -1,5 +1,6 @@
 use crate::skills::SkillMetadata;
 use std::path::PathBuf;
+use tokio::fs;
 use tracing::warn;
 
 /// Represents a loaded skill.
@@ -77,11 +78,11 @@ impl Skill {
     }
 
     /// Load and return content from disk. Falls back to cached content.
-    pub fn load_content(&self) -> String {
+    pub async fn load_content(&self) -> String {
         if !self.content.is_empty() {
             return self.content.clone();
         }
-        match std::fs::read_to_string(&self.path) {
+        match fs::read_to_string(&self.path).await {
             Ok(raw) => {
                 // Strip frontmatter if present
                 if let Some(after_start) = raw.strip_prefix("---") {

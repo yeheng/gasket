@@ -9,8 +9,8 @@ use std::time::Duration;
 use tracing::{debug, info};
 
 /// Default GitHub App Client ID for Copilot
-/// This is the official VS Code Copilot extension's client ID
-pub const DEFAULT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+/// This is the official GitHub Copilot extension's client ID
+pub const DEFAULT_CLIENT_ID: &str = "986c7645378f69de7552";
 
 /// OAuth endpoints
 const DEVICE_CODE_URL: &str = "https://github.com/login/oauth/device/code";
@@ -124,18 +124,48 @@ impl CopilotOAuth {
     ///
     /// Returns a device code and user code for the user to enter on GitHub
     pub async fn request_device_code(&self) -> Result<DeviceCodeResponse, OAuthError> {
-        debug!("Requesting device code from GitHub");
+        debug!(
+            "Requesting device code from GitHub with client_id: {}",
+            self.client_id
+        );
 
         let response = self
             .client
             .post(DEVICE_CODE_URL)
             .header("Accept", "application/json")
+            .header("editor-version", "Neovim/0.6.1")
+            .header("editor-plugin-version", "copilot.vim/1.16.0")
+            .header("content-type", "application/json")
+            .header("user-agent", "GithubCopilot/1.155.0")
+            .header("accept-encoding", "gzip,deflate,br")
             .form(&[("client_id", self.client_id.as_str()), ("scope", "user")])
             .send()
             .await?;
 
+        let status = response.status();
         let text = response.text().await?;
-        debug!("Device code response: {}", text);
+
+        debug!("Device code response status: {}, body: {}", status, text);
+
+        if !status.is_success() {
+            return Err(OAuthError::TokenError(format!(
+                "GitHub returned error {}: {}",
+                status, text
+            )));
+        }
+
+        // Check if response looks like JSON
+        let trimmed = text.trim();
+        if !trimmed.starts_with('{') {
+            return Err(OAuthError::JsonError(format!(
+                "Expected JSON response, got: {}",
+                if trimmed.len() > 200 {
+                    &trimmed[..200]
+                } else {
+                    trimmed
+                }
+            )));
+        }
 
         let device_code: DeviceCodeResponse =
             serde_json::from_str(&text).map_err(|e| OAuthError::JsonError(e.to_string()))?;
@@ -320,7 +350,6 @@ mod tests {
     #[test]
     fn test_default_client_id() {
         assert!(!DEFAULT_CLIENT_ID.is_empty());
-        assert!(DEFAULT_CLIENT_ID.starts_with("Iv1."));
     }
 
     #[test]

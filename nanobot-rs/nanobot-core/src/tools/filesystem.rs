@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::fs;
 use tracing::{debug, instrument};
 
 use super::base::simple_schema;
@@ -82,7 +83,7 @@ impl Tool for ReadFileTool {
         let path = validate_path(&args.absolute_path, &self.allowed_dir)?;
         debug!("Reading file: {:?}", path);
 
-        let content = std::fs::read_to_string(&path).map_err(|e| {
+        let content = fs::read_to_string(&path).await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to read file '{}': {}", path.display(), e))
         })?;
 
@@ -170,7 +171,7 @@ impl Tool for WriteFileTool {
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
+            fs::create_dir_all(parent).await.map_err(|e| {
                 ToolError::ExecutionError(format!(
                     "Failed to create directories for '{}': {}",
                     parent.display(),
@@ -179,7 +180,7 @@ impl Tool for WriteFileTool {
             })?;
         }
 
-        std::fs::write(&path, &args.content).map_err(|e| {
+        fs::write(&path, &args.content).await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to write file '{}': {}", path.display(), e))
         })?;
 
@@ -254,7 +255,7 @@ impl Tool for EditFileTool {
         let path = validate_path(&args.file_path, &self.allowed_dir)?;
         debug!("Editing file: {:?} - {}", path, args.instruction);
 
-        let content = std::fs::read_to_string(&path).map_err(|e| {
+        let content = fs::read_to_string(&path).await.map_err(|e| {
             ToolError::ExecutionError(format!(
                 "Failed to read file '{}' for editing: {}",
                 path.display(),
@@ -278,7 +279,7 @@ impl Tool for EditFileTool {
 
         let new_content = content.replace(&args.old_string, &args.new_string);
 
-        std::fs::write(&path, new_content).map_err(|e| {
+        fs::write(&path, new_content).await.map_err(|e| {
             ToolError::ExecutionError(format!(
                 "Failed to write edited file '{}': {}",
                 path.display(),
@@ -334,7 +335,7 @@ impl Tool for ListDirTool {
         let path = PathBuf::from(&args.path);
         debug!("Listing directory: {:?}", path);
 
-        let entries = std::fs::read_dir(&path).map_err(|e| {
+        let mut entries = fs::read_dir(&path).await.map_err(|e| {
             ToolError::ExecutionError(format!(
                 "Failed to read directory '{}': {}",
                 path.display(),
@@ -343,11 +344,11 @@ impl Tool for ListDirTool {
         })?;
 
         let mut result = String::new();
-        for entry in entries {
-            let entry = entry.map_err(|e| ToolError::ExecutionError(e.to_string()))?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().to_string();
             let file_type = entry
                 .file_type()
+                .await
                 .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
             if file_type.is_dir() {
@@ -389,8 +390,6 @@ impl Default for ListDirTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::io::Write;
 
     #[tokio::test]
     async fn test_read_file_tool_name() {
@@ -413,11 +412,11 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify file was written
-        let content = fs::read_to_string(&test_file).unwrap();
+        let content = fs::read_to_string(&test_file).await.unwrap();
         assert_eq!(content, "Hello, World!");
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
+        let _ = fs::remove_file(&test_file).await;
     }
 
     #[tokio::test]
@@ -427,7 +426,7 @@ mod tests {
         let test_file = temp_dir.join("nanobot_test_edit.txt");
 
         // Create initial file
-        fs::write(&test_file, "Hello, World!").unwrap();
+        fs::write(&test_file, "Hello, World!").await.unwrap();
 
         let args = serde_json::json!({
             "file_path": test_file.to_str().unwrap(),
@@ -440,11 +439,11 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify edit
-        let content = fs::read_to_string(&test_file).unwrap();
+        let content = fs::read_to_string(&test_file).await.unwrap();
         assert_eq!(content, "Hello, Rust!");
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
+        let _ = fs::remove_file(&test_file).await;
     }
 
     #[tokio::test]
@@ -453,7 +452,7 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         let test_file = temp_dir.join("nanobot_test_not_exist.txt");
 
-        let _ = fs::remove_file(&test_file);
+        let _ = fs::remove_file(&test_file).await;
 
         let args = serde_json::json!({
             "file_path": test_file.to_str().unwrap(),
@@ -486,9 +485,13 @@ mod tests {
         let test_file = temp_dir.join("nanobot_test_read_offset.txt");
 
         // Create test file
-        let mut file = fs::File::create(&test_file).unwrap();
+        let mut file = fs::File::create(&test_file).await.unwrap();
         for i in 0..10 {
-            writeln!(file, "Line {}", i).unwrap();
+            use tokio::io::AsyncWriteExt;
+            file.write_all(format!("Line {}\n", i).as_bytes())
+                .await
+                .unwrap();
+            file.flush().await.unwrap();
         }
 
         let args = serde_json::json!({
@@ -504,6 +507,6 @@ mod tests {
         assert!(!result.contains("Line 5"));
 
         // Cleanup
-        let _ = fs::remove_file(&test_file);
+        let _ = fs::remove_file(&test_file).await;
     }
 }

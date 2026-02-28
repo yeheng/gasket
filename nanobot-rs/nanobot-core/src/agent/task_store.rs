@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use tokio::fs;
 use tracing::{info, warn};
 
 use super::subagent::SubagentTask;
@@ -13,12 +14,12 @@ use super::subagent::SubagentTask;
 /// Read tasks from a legacy JSON file.
 ///
 /// Used during migration from JSON to SQLite.
-pub fn load_from_json(path: &PathBuf) -> anyhow::Result<HashMap<String, SubagentTask>> {
+pub async fn load_from_json(path: &PathBuf) -> anyhow::Result<HashMap<String, SubagentTask>> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
 
-    let content = std::fs::read_to_string(path)?;
+    let content = fs::read_to_string(path).await?;
     match serde_json::from_str::<Vec<SubagentTask>>(&content) {
         Ok(tasks) => {
             let map: HashMap<String, SubagentTask> =
@@ -41,7 +42,8 @@ mod tests {
     fn test_load_from_json_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tasks.json");
-        let tasks = load_from_json(&path).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let tasks = rt.block_on(load_from_json(&path)).unwrap();
         assert!(tasks.is_empty());
     }
 
@@ -70,7 +72,8 @@ mod tests {
         }]"#;
         std::fs::write(&path, json).unwrap();
 
-        let tasks = load_from_json(&path).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let tasks = rt.block_on(load_from_json(&path)).unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks["test-1"].prompt, "test prompt");
     }
@@ -83,7 +86,8 @@ mod tests {
         // Write invalid JSON
         std::fs::write(&path, "not valid json").unwrap();
 
-        let tasks = load_from_json(&path).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let tasks = rt.block_on(load_from_json(&path)).unwrap();
         assert!(tasks.is_empty());
     }
 }

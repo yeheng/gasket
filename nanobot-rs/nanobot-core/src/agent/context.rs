@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tokio::fs;
 use tracing::{debug, info, warn};
 
 use crate::memory::SqliteStore;
@@ -78,6 +79,26 @@ impl ContextBuilder {
         })
     }
 
+    /// Create a new context builder (async version).
+    ///
+    /// This is the async counterpart of `new()` that uses `tokio::fs` for
+    /// non-blocking file I/O. Preferred for use in async contexts.
+    pub async fn new_async(workspace: PathBuf) -> Result<Self, std::io::Error> {
+        let system_prompt =
+            Self::build_system_prompt_async(&workspace, BOOTSTRAP_FILES_FULL).await?;
+        let history_config = HistoryConfig::default();
+
+        Ok(Self {
+            _workspace: workspace,
+            system_prompt: Arc::new(system_prompt),
+            skills_context: None,
+            history_config,
+            provider: None,
+            store: None,
+            model: None,
+        })
+    }
+
     /// Create a minimal context builder for subagents.
     ///
     /// Only loads SOUL.md (core identity) and skips skills context to save tokens.
@@ -101,12 +122,53 @@ impl ContextBuilder {
         })
     }
 
+    /// Create a minimal context builder for subagents (async version).
+    pub async fn new_minimal_async(workspace: PathBuf) -> Result<Self, std::io::Error> {
+        let system_prompt =
+            Self::build_system_prompt_async(&workspace, BOOTSTRAP_FILES_MINIMAL).await?;
+        let history_config = HistoryConfig {
+            max_messages: 20,
+            token_budget: 4000,
+            recent_keep: 5,
+        };
+
+        Ok(Self {
+            _workspace: workspace,
+            system_prompt: Arc::new(system_prompt),
+            skills_context: None,
+            history_config,
+            provider: None,
+            store: None,
+            model: None,
+        })
+    }
+
     /// Derive a minimal context builder from an existing (full) instance.
     ///
     /// Rebuilds the system prompt with only SOUL.md and drops skills context.
     /// This is the recommended way to create subagent contexts after startup.
     pub fn to_minimal(&self) -> Result<Self, std::io::Error> {
         let system_prompt = Self::build_system_prompt(&self._workspace, BOOTSTRAP_FILES_MINIMAL)?;
+
+        Ok(Self {
+            _workspace: self._workspace.clone(),
+            system_prompt: Arc::new(system_prompt),
+            skills_context: None,
+            history_config: HistoryConfig {
+                max_messages: 20,
+                token_budget: 4000,
+                recent_keep: 5,
+            },
+            provider: self.provider.clone(),
+            store: self.store.clone(),
+            model: self.model.clone(),
+        })
+    }
+
+    /// Derive a minimal context builder from an existing (full) instance (async version).
+    pub async fn to_minimal_async(&self) -> Result<Self, std::io::Error> {
+        let system_prompt =
+            Self::build_system_prompt_async(&self._workspace, BOOTSTRAP_FILES_MINIMAL).await?;
 
         Ok(Self {
             _workspace: self._workspace.clone(),
@@ -177,6 +239,57 @@ impl ContextBuilder {
             if file_path.exists() {
                 // File exists — a read failure here is a hard error.
                 let content = std::fs::read_to_string(&file_path)?;
+                if !content.trim().is_empty() {
+                    let tokens = count_tokens(content.trim());
+                    if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {
+                        warn!(
+                            "Bootstrap file {} has {} tokens (threshold {}). Consider trimming it.",
+                            filename, tokens, BOOTSTRAP_TOKEN_WARN_THRESHOLD
+                        );
+                    }
+                    total_tokens += tokens;
+                    debug!("Loaded bootstrap file: {} ({} tokens)", filename, tokens);
+                    parts.push(format!("## {}\n\n{}", filename, content.trim()));
+                    loaded_any = true;
+                }
+            }
+        }
+
+        if !loaded_any {
+            // Fallback: use minimal default instructions
+            parts.push(DEFAULT_INSTRUCTIONS.to_string());
+        }
+
+        info!(
+            "System prompt: {} bootstrap files, ~{} tokens total",
+            files.len(),
+            total_tokens
+        );
+
+        Ok(parts.join("\n\n"))
+    }
+
+    /// Build system prompt from workspace bootstrap files (async version).
+    async fn build_system_prompt_async(
+        workspace: &Path,
+        files: &[&str],
+    ) -> Result<String, std::io::Error> {
+        let mut parts = Vec::new();
+
+        // Identity header
+        parts.push(format!(
+            "你叫阿乐 🐈, 夜痕的专业私人助理.\n\nWorking directory: {}",
+            workspace.display()
+        ));
+
+        // Load bootstrap files
+        let mut loaded_any = false;
+        let mut total_tokens: usize = 0;
+        for filename in files {
+            let file_path = workspace.join(filename);
+            if file_path.exists() {
+                // File exists — a read failure here is a hard error.
+                let content = fs::read_to_string(&file_path).await?;
                 if !content.trim().is_empty() {
                     let tokens = count_tokens(content.trim());
                     if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {

@@ -29,21 +29,21 @@ impl SkillsRegistry {
     }
 
     /// Create a registry and load skills from directories
-    pub fn from_loader(loader: SkillsLoader) -> Result<Self> {
+    pub async fn from_loader(loader: SkillsLoader) -> Result<Self> {
         let mut registry = Self::new();
         registry.loader = Some(loader);
-        registry.load_skills()?;
+        registry.load_skills().await?;
         Ok(registry)
     }
 
     /// Load skills using the configured loader
-    pub fn load_skills(&mut self) -> Result<()> {
+    pub async fn load_skills(&mut self) -> Result<()> {
         let loader = self
             .loader
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Skills loader not configured"))?;
 
-        let skills = loader.load_all()?;
+        let skills = loader.load_all().await?;
         info!("Loaded {} skills", skills.len());
 
         for skill in skills {
@@ -105,7 +105,7 @@ impl SkillsRegistry {
     }
 
     /// Generate skill summary for agent context
-    pub fn generate_context_summary(&self) -> String {
+    pub async fn generate_context_summary(&self) -> String {
         let mut summary = String::new();
 
         // Add always-load skills with full content
@@ -115,7 +115,7 @@ impl SkillsRegistry {
             for skill in always_skills {
                 summary.push_str(&format!("### {}\n\n", skill.name()));
                 // Use load_content() which returns eagerly cached content for always-load skills
-                summary.push_str(&skill.load_content());
+                summary.push_str(&skill.load_content().await);
                 summary.push_str("\n\n");
             }
         }
@@ -275,7 +275,8 @@ mod tests {
         registry.register(always);
         registry.register(on_demand);
 
-        let summary = registry.generate_context_summary();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let summary = rt.block_on(registry.generate_context_summary());
 
         assert!(summary.contains("Always-Loaded Skills"));
         assert!(summary.contains("On-Demand Skills"));

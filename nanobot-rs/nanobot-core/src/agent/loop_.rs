@@ -109,7 +109,7 @@ impl AgentLoop {
         let sessions = SessionManager::new(memory.sqlite_store().clone());
 
         // Load skills
-        let skills_context = Self::load_skills(&workspace);
+        let skills_context = Self::load_skills(&workspace).await;
 
         // Build context with skills and summarization support
         let store_arc = Arc::new(memory.sqlite_store().clone());
@@ -165,7 +165,7 @@ impl AgentLoop {
     }
 
     /// Load skills from builtin and user directories
-    fn load_skills(workspace: &Path) -> Option<String> {
+    async fn load_skills(workspace: &Path) -> Option<String> {
         let user_skills_dir = workspace.join("skills");
 
         // Locate builtin skills: try relative to the executable, then a few common fallbacks
@@ -185,9 +185,9 @@ impl AgentLoop {
         };
 
         let loader = SkillsLoader::new(user_skills_dir, builtin_dir);
-        match SkillsRegistry::from_loader(loader) {
+        match SkillsRegistry::from_loader(loader).await {
             Ok(registry) => {
-                let summary = registry.generate_context_summary();
+                let summary = registry.generate_context_summary().await;
                 if summary.is_empty() {
                     info!("No skills loaded");
                     None

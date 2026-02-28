@@ -13,7 +13,6 @@
 //!   cargo test --test channel_e2e_tests --features email     -- --ignored test_email
 //!   cargo test --test channel_e2e_tests --features telegram  -- --ignored test_telegram
 //!   cargo test --test channel_e2e_tests --features discord   -- --ignored test_discord
-use std::sync::Arc;
 
 /// Load .env file and install the rustls CryptoProvider.
 ///

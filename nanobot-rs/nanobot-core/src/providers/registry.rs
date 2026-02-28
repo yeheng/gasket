@@ -118,7 +118,7 @@ impl ProviderRegistry {
     /// Get the default provider.
     ///
     /// Returns the explicitly set default, or falls back to the first
-    /// available provider in preference order (openrouter, openai, anthropic).
+    /// available provider in preference order (openrouter, deepseek, openai, anthropic, litellm, ollama).
     pub fn get_default(&self) -> Option<Arc<dyn LlmProvider>> {
         // Explicitly set default
         if let Some(ref name) = self.default_provider {
@@ -128,7 +128,14 @@ impl ProviderRegistry {
         }
 
         // Fallback: prefer providers in standard order
-        for default_name in &["openrouter", "deepseek", "openai", "anthropic", "ollama"] {
+        for default_name in &[
+            "openrouter",
+            "deepseek",
+            "openai",
+            "anthropic",
+            "litellm",
+            "ollama",
+        ] {
             if let Some(provider) = self.get(default_name) {
                 return Some(provider);
             }

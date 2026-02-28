@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use tokio::fs;
 use tracing::{debug, info};
 
 use super::schema::Config;
@@ -48,7 +49,7 @@ impl ConfigLoader {
     }
 
     /// Load configuration from file
-    pub fn load(&self) -> Result<Config> {
+    pub async fn load(&self) -> Result<Config> {
         let path = self.config_path();
 
         if !path.exists() {
@@ -56,7 +57,8 @@ impl ConfigLoader {
             return Ok(Config::default());
         }
 
-        let content = std::fs::read_to_string(&path)
+        let content = fs::read_to_string(&path)
+            .await
             .with_context(|| format!("Failed to read config file: {:?}", path))?;
 
         let mut config: Config = serde_yaml::from_str(&content)
@@ -96,7 +98,7 @@ impl ConfigLoader {
                 .api_key = Some(key);
         }
 
-        // Ollama is a local service, so we only need to check for custom API base
+        // Ollama is a local service - only check for custom API base
         if let Ok(api_base) = std::env::var("OLLAMA_API_BASE") {
             config
                 .providers
@@ -104,21 +106,39 @@ impl ConfigLoader {
                 .or_default()
                 .api_base = Some(api_base);
         }
+
+        // LiteLLM - local proxy service with optional API key
+        if let Ok(api_base) = std::env::var("LITELLM_API_BASE") {
+            config
+                .providers
+                .entry("litellm".to_string())
+                .or_default()
+                .api_base = Some(api_base);
+        }
+        if let Ok(key) = std::env::var("LITELLM_API_KEY") {
+            config
+                .providers
+                .entry("litellm".to_string())
+                .or_default()
+                .api_key = Some(key);
+        }
     }
 
     /// Save configuration to file
-    pub fn save(&self, config: &Config) -> Result<()> {
+    pub async fn save(&self, config: &Config) -> Result<()> {
         let path = self.config_path();
 
         // Create directory if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
+            fs::create_dir_all(parent)
+                .await
                 .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
         }
 
         let content = serde_yaml::to_string(config).context("Failed to serialize config")?;
 
-        std::fs::write(&path, content)
+        fs::write(&path, content)
+            .await
             .with_context(|| format!("Failed to write config file: {:?}", path))?;
 
         info!("Saved config to {:?}", path);
@@ -126,9 +146,9 @@ impl ConfigLoader {
     }
 
     /// Initialize a default configuration
-    pub fn init_default(&self) -> Result<Config> {
+    pub async fn init_default(&self) -> Result<Config> {
         let config = Config::default();
-        self.save(&config)?;
+        self.save(&config).await?;
         Ok(config)
     }
 }
@@ -140,8 +160,8 @@ impl Default for ConfigLoader {
 }
 
 /// Load configuration (convenience function)
-pub fn load_config() -> Result<Config> {
-    ConfigLoader::new().load()
+pub async fn load_config() -> Result<Config> {
+    ConfigLoader::new().load().await
 }
 
 #[cfg(test)]
