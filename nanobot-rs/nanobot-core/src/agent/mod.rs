@@ -18,3 +18,4 @@ pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
 pub use stream::{StreamCallback, StreamEvent};
 pub use subagent::SubagentManager;
+pub use summarization::ContextCompressionHook;

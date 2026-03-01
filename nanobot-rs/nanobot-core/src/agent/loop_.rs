@@ -8,10 +8,12 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::agent::context::ContextBuilder;
 use crate::agent::executor::ToolExecutor;
+use crate::agent::history_processor::process_history;
 use crate::agent::memory::MemoryStore;
 use crate::agent::request::RequestHandler;
 use crate::agent::skill_loader;
 use crate::agent::stream::{self, StreamCallback, StreamEvent};
+use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
 use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
 use crate::session::SessionManager;
 use crate::tools::ToolRegistry;
@@ -68,6 +70,10 @@ pub struct AgentLoop {
     tools: ToolRegistry,
     config: AgentConfig,
     workspace: PathBuf,
+    /// Optional compression hook for context summarization.
+    /// When present, evicted history messages are compressed into a summary
+    /// that gets injected into the prompt.
+    compression_hook: Option<Arc<dyn ContextCompressionHook>>,
 }
 
 impl AgentLoop {
@@ -92,12 +98,17 @@ impl AgentLoop {
         // Load skills
         let skills_context = skill_loader::load_skills(&workspace).await;
 
-        // Build context with skills and summarization support
-        let store_arc = Arc::new(memory.sqlite_store().clone());
+        // Build context (now a pure data assembler — no LLM/DB deps)
         let context = ContextBuilder::new(workspace.clone())
             .await?
-            .with_skills_context(skills_context)
-            .with_summarization(provider.clone(), store_arc, config.model.clone());
+            .with_skills_context(skills_context);
+
+        // Create compression hook (SummarizationService)
+        let store_arc = Arc::new(memory.sqlite_store().clone());
+        let summarization_service =
+            SummarizationService::new(provider.clone(), store_arc, config.model.clone());
+        let compression_hook: Option<Arc<dyn ContextCompressionHook>> =
+            Some(Arc::new(summarization_service));
 
         Ok(Self {
             provider,
@@ -107,6 +118,7 @@ impl AgentLoop {
             tools,
             config,
             workspace,
+            compression_hook,
         })
     }
 
@@ -138,6 +150,7 @@ impl AgentLoop {
             tools,
             config,
             workspace,
+            compression_hook: None,
         })
     }
 
@@ -206,19 +219,27 @@ impl AgentLoop {
             warn!("Failed to persist user history to SQLite: {}", e);
         }
 
-        // Build messages using the history snapshot (without the just-appended user message)
+        // ── Three-step pipeline ────────────────────────────────
+        // 1. Truncate history (pure computation)
+        let processed = process_history(history_snapshot, &self.context.history_config);
+
+        // 2. Compress evicted messages via hook (side-effect)
+        let summary = if let Some(hook) = &self.compression_hook {
+            hook.compress(session_key, &processed.evicted)
+                .await
+                .unwrap_or(None)
+        } else {
+            None
+        };
+
+        // 3. Assemble prompt (pure, synchronous)
         let memory_content = self.memory.read_long_term().await.ok();
-        let messages = self
-            .context
-            .build_messages(
-                history_snapshot,
-                content,
-                memory_content.as_deref(),
-                "cli",
-                "direct",
-                session_key,
-            )
-            .await;
+        let messages = self.context.build_messages(
+            processed.messages,
+            content,
+            memory_content.as_deref(),
+            summary.as_deref(),
+        );
 
         // Run the agent loop — always uses streaming internally; when callback
         // is absent, stream events are silently discarded.

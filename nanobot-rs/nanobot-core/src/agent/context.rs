@@ -6,12 +6,11 @@ use std::sync::Arc;
 use tokio::fs;
 use tracing::{debug, info, warn};
 
-use crate::memory::SqliteStore;
-use crate::providers::{ChatMessage, LlmProvider};
+use crate::providers::ChatMessage;
 use crate::session::SessionMessage;
 
-use super::history_processor::{count_tokens, process_history, HistoryConfig};
-use super::summarization::{SummarizationService, SUMMARY_PREFIX};
+use super::history_processor::{count_tokens, HistoryConfig};
+use super::summarization::SUMMARY_PREFIX;
 
 /// Bootstrap files loaded into the system prompt for the full (main agent) profile
 const BOOTSTRAP_FILES_FULL: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
@@ -24,22 +23,22 @@ const BOOTSTRAP_TOKEN_WARN_THRESHOLD: usize = 2000;
 
 /// Context builder for constructing prompts.
 ///
+/// A **pure, synchronous** data assembler.  It knows how to turn a system
+/// prompt, skills context, history messages, and an optional summary into the
+/// `Vec<ChatMessage>` expected by LLM providers.
+///
+/// Side-effects (LLM summarization, DB persistence) are handled externally
+/// by the `AgentLoop` through the `ContextCompressionHook` trait.
+///
 /// This struct is designed to be created once at startup and shared across
-/// multiple agent loops via `Arc`. The system prompt is built once and cached
-/// to avoid repeated synchronous file I/O in async contexts.
+/// multiple agent loops via `Arc`.
 #[derive(Clone)]
 pub struct ContextBuilder {
     _workspace: PathBuf,
     system_prompt: Arc<String>,
     skills_context: Option<Arc<String>>,
-    /// History processing configuration
-    history_config: HistoryConfig,
-    /// LLM provider for summarization calls
-    provider: Option<Arc<dyn LlmProvider>>,
-    /// SQLite store for summary persistence
-    store: Option<Arc<SqliteStore>>,
-    /// Model name for summarization requests
-    model: Option<String>,
+    /// History processing configuration (pub so AgentLoop can use it)
+    pub history_config: HistoryConfig,
 }
 
 impl ContextBuilder {
@@ -61,9 +60,6 @@ impl ContextBuilder {
             system_prompt: Arc::new(system_prompt),
             skills_context: None,
             history_config,
-            provider: None,
-            store: None,
-            model: None,
         })
     }
 
@@ -84,9 +80,6 @@ impl ContextBuilder {
             system_prompt: Arc::new(system_prompt),
             skills_context: None,
             history_config,
-            provider: None,
-            store: None,
-            model: None,
         })
     }
 
@@ -107,9 +100,6 @@ impl ContextBuilder {
                 token_budget: 4000,
                 recent_keep: 5,
             },
-            provider: self.provider.clone(),
-            store: self.store.clone(),
-            model: self.model.clone(),
         })
     }
 
@@ -123,19 +113,6 @@ impl ContextBuilder {
     /// (token budget management)
     pub fn with_smart_history(mut self, token_budget: usize) -> Self {
         self.history_config.token_budget = token_budget;
-        self
-    }
-
-    /// Set the LLM provider and SQLite store for summarization support.
-    pub fn with_summarization(
-        mut self,
-        provider: Arc<dyn LlmProvider>,
-        store: Arc<SqliteStore>,
-        model: String,
-    ) -> Self {
-        self.provider = Some(provider);
-        self.store = Some(store);
-        self.model = Some(model);
         self
     }
 
@@ -220,20 +197,19 @@ impl ContextBuilder {
 
     /// Build the message list for an LLM request.
     ///
-    /// If summarization is configured (provider + store), this method will:
-    /// 1. Load any existing summary from SQLite
-    /// 2. Check if history exceeds token/message budgets
-    /// 3. If so, call the LLM to summarize older messages
-    /// 4. Persist the summary and clean up old messages
-    /// 5. Inject the summary as an assistant message
-    pub async fn build_messages(
+    /// This is a **pure, synchronous** function.  It only assembles data that
+    /// has already been computed by the caller:
+    ///
+    /// 1. System prompt + memory + skills context
+    /// 2. Optional summary (from the compression hook)
+    /// 3. Processed history messages (already truncated by `process_history`)
+    /// 4. The current user message
+    pub fn build_messages(
         &self,
-        history: Vec<SessionMessage>,
-        _current_message: &str,
+        processed_messages: Vec<SessionMessage>,
+        current_message: &str,
         memory: Option<&str>,
-        _channel: &str,
-        _chat_id: &str,
-        session_key: &str,
+        summary: Option<&str>,
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
@@ -253,58 +229,8 @@ impl ContextBuilder {
         }
         messages.push(ChatMessage::system(system_content));
 
-        // Process history with token budget awareness
-        let processed = process_history(history, &self.history_config);
-
-        // Store stats before moving messages
-        let history_count = processed.messages.len();
-        let filtered_count = processed.filtered_count;
-        let estimated_tokens = processed.estimated_tokens;
-
-        // Check if summarization is needed and configured
-        // Only summarize if we have evicted messages (old messages that exceeded budget)
-        let summary = if !processed.evicted.is_empty()
-            && self.provider.is_some()
-            && self.store.is_some()
-            && self.model.is_some()
-        {
-            // Create summarization service and run summarization
-            let service = SummarizationService::new(
-                self.provider.as_ref().unwrap().clone(),
-                self.store.as_ref().unwrap().clone(),
-                self.model.as_ref().unwrap().clone(),
-            );
-
-            let existing_summary = service.load_summary(session_key).await;
-
-            // Summarize the EVICTED messages (old messages that were dropped from context)
-            match service
-                .summarize(session_key, &processed.evicted, &existing_summary)
-                .await
-            {
-                Ok(new_summary) => Some(new_summary),
-                Err(e) => {
-                    warn!(
-                        "Summarization failed, using existing summary as fallback: {}",
-                        e
-                    );
-                    existing_summary
-                }
-            }
-        } else if self.provider.is_some() && self.store.is_some() && self.model.is_some() {
-            // Load existing summary if store is configured but no summarization needed
-            let service = SummarizationService::new(
-                self.provider.as_ref().unwrap().clone(),
-                self.store.as_ref().unwrap().clone(),
-                self.model.as_ref().unwrap().clone(),
-            );
-            service.load_summary(session_key).await
-        } else {
-            None
-        };
-
         // Inject summary as assistant message (if exists)
-        if let Some(ref summary_text) = summary {
+        if let Some(summary_text) = summary {
             if !summary_text.is_empty() {
                 messages.push(ChatMessage::assistant(format!(
                     "{}{}",
@@ -314,7 +240,8 @@ impl ContextBuilder {
         }
 
         // Add processed history messages
-        for msg in processed.messages {
+        let history_count = processed_messages.len();
+        for msg in processed_messages {
             match msg.role.as_str() {
                 "user" => messages.push(ChatMessage::user(&msg.content)),
                 "assistant" => messages.push(ChatMessage::assistant(&msg.content)),
@@ -323,13 +250,11 @@ impl ContextBuilder {
         }
 
         // Current message
-        messages.push(ChatMessage::user(_current_message));
+        messages.push(ChatMessage::user(current_message));
 
         debug!(
-            "Built messages: {} history ({} filtered, {} tokens est.), summary: {}",
+            "Built messages: {} history msgs, summary: {}",
             history_count,
-            filtered_count,
-            estimated_tokens,
             summary.is_some()
         );
 
