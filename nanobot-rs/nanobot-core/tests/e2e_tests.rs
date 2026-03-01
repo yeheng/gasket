@@ -462,21 +462,6 @@ async fn test_spawn_tool() {
     assert!(params["properties"]["timeout"].is_object());
 }
 
-#[tokio::test]
-async fn test_subagent_task() {
-    let task = SubagentTask::new(
-        "Test task",
-        "telegram",
-        "chat123",
-        "session:telegram:chat123",
-    );
-
-    assert!(!task.id.is_empty());
-    assert_eq!(task.prompt, "Test task");
-    assert_eq!(task.status, TaskStatus::Pending);
-    assert!(!task.is_finished());
-}
-
 // =============================================================================
 // Cron Tool Tests
 // =============================================================================

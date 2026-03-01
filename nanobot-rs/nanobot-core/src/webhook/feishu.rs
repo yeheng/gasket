@@ -1,6 +1,10 @@
 //! Feishu (飞书) webhook handler
 //!
 //! Provides Axum routes for handling Feishu callbacks.
+//!
+//! The webhook handler is **decoupled** from `FeishuChannel`: it only needs
+//! the platform config (for token verification) and an `InboundSender`
+//! (to forward parsed messages to the bus). No `Arc<RwLock<Channel>>` needed.
 
 use std::sync::Arc;
 
@@ -10,33 +14,32 @@ use axum::{
     response::IntoResponse,
     Router,
 };
-use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
 use super::handlers;
+use crate::bus::events::InboundMessage;
+use crate::bus::ChannelType;
 use crate::channels::feishu::{
-    FeishuChallenge, FeishuChallengeResponse, FeishuChannel, FeishuConfig, FeishuEvent,
+    FeishuChallenge, FeishuChallengeResponse, FeishuConfig, FeishuEvent, FeishuTextContent,
 };
 use crate::channels::middleware::InboundSender;
 
-/// State for Feishu webhook routes
+/// State for Feishu webhook routes.
+///
+/// Holds only the data needed for inbound processing — no channel lock.
 #[derive(Clone)]
 pub struct FeishuState {
-    pub channel: Arc<RwLock<FeishuChannel>>,
+    pub config: Arc<FeishuConfig>,
+    pub inbound_sender: InboundSender,
 }
 
 impl FeishuState {
-    /// Create new Feishu state from a channel
-    pub fn new(channel: FeishuChannel) -> Self {
-        Self {
-            channel: Arc::new(RwLock::new(channel)),
-        }
-    }
-
     /// Create from config and inbound sender
     pub fn from_config(config: FeishuConfig, inbound_sender: InboundSender) -> Self {
-        let channel = FeishuChannel::new(config, inbound_sender);
-        Self::new(channel)
+        Self {
+            config: Arc::new(config),
+            inbound_sender,
+        }
     }
 }
 
@@ -82,7 +85,7 @@ async fn handle_post(
         }
     }
 
-    // Regular event handling
+    // Regular event handling — no lock needed, just config + sender
     let event: FeishuEvent = match serde_json::from_value(json_value) {
         Ok(e) => e,
         Err(e) => {
@@ -90,17 +93,13 @@ async fn handle_post(
         }
     };
 
-    let channel = state.channel.read().await;
-
-    match channel.handle_webhook_event(event).await {
+    match process_webhook_event(&state.config, &state.inbound_sender, event).await {
         Ok(()) => {
             debug!("Feishu event processed successfully");
-            // Feishu expects a JSON response
             handlers::json_response(axum::http::StatusCode::OK, &serde_json::json!({"code": 0}))
         }
         Err(e) => {
             error!("Feishu event processing failed: {}", e);
-            // Return error response
             handlers::json_response(
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 &serde_json::json!({"code": -1, "msg": e.to_string()}),
@@ -120,16 +119,94 @@ fn handle_challenge(json_value: &serde_json::Value) -> impl IntoResponse {
         }
     };
 
-    // Verify token if configured
-    // Note: Token verification is done in handle_webhook_event
-    // For challenge, we just need to respond with the challenge string
-
     let response = FeishuChallengeResponse {
         challenge: challenge.challenge,
     };
 
     info!("Feishu URL verification successful");
     handlers::json_response(axum::http::StatusCode::OK, &response)
+}
+
+// ── Standalone webhook processing (no Channel dependency) ───
+
+/// Process an incoming Feishu webhook event.
+///
+/// Only needs `FeishuConfig` (for token verification) and `InboundSender`
+/// (to forward the parsed message). No `FeishuChannel` lock required.
+async fn process_webhook_event(
+    config: &FeishuConfig,
+    inbound_sender: &InboundSender,
+    event: FeishuEvent,
+) -> anyhow::Result<()> {
+    // Verify token if configured
+    if let Some(ref token) = config.verification_token {
+        if event.token != *token {
+            error!("Invalid verification token in Feishu event");
+            return Ok(());
+        }
+    }
+
+    match event.event_type.as_str() {
+        "im.message.receive_v1" => {
+            if let Some(message) = event.event.message {
+                process_message_event(config, inbound_sender, message, event.event.sender).await?;
+            }
+        }
+        _ => {
+            debug!("Ignoring Feishu event type: {}", event.event_type);
+        }
+    }
+
+    Ok(())
+}
+
+/// Process a Feishu message receive event.
+async fn process_message_event(
+    config: &FeishuConfig,
+    inbound_sender: &InboundSender,
+    message: crate::channels::feishu::FeishuMessage,
+    sender: Option<crate::channels::feishu::FeishuSender>,
+) -> anyhow::Result<()> {
+    if let Some(ref sender_info) = sender {
+        let sender_id = &sender_info.sender_id.user_id;
+        if !config.allow_from.is_empty() && !config.allow_from.contains(sender_id) {
+            debug!(
+                "Ignoring message from unauthorized Feishu user: {}",
+                sender_id
+            );
+            return Ok(());
+        }
+
+        // Only handle text messages
+        if message.message_type != "text" {
+            debug!("Ignoring non-text Feishu message: {}", message.message_type);
+            return Ok(());
+        }
+
+        // Parse message content (JSON string for text)
+        let content = serde_json::from_str::<FeishuTextContent>(&message.content)
+            .map(|c| c.text)
+            .unwrap_or_else(|_| message.content.clone());
+
+        debug!("Received Feishu message: {}", content);
+
+        let metadata = serde_json::to_value(&message).ok();
+
+        let inbound = InboundMessage {
+            channel: ChannelType::Feishu,
+            sender_id: sender_info.sender_id.user_id.clone(),
+            chat_id: message.chat_id.clone(),
+            content,
+            media: None,
+            metadata,
+            timestamp: chrono::Utc::now(),
+            trace_id: None,
+        };
+
+        inbound_sender.send(inbound).await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -156,7 +233,7 @@ mod tests {
     fn test_feishu_state_creation() {
         let config = create_test_config();
         let state = FeishuState::from_config(config, create_test_sender());
-        assert!(Arc::strong_count(&state.channel) >= 1);
+        assert!(Arc::strong_count(&state.config) >= 1);
     }
 
     #[test]

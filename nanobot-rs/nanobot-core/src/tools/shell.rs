@@ -16,7 +16,7 @@ use tracing::{debug, info, instrument, warn};
 use super::base::simple_schema;
 use super::command_policy::{CommandPolicy, PolicyVerdict};
 use super::resource_limits::ResourceLimits;
-use super::sandbox::{self, SandboxProvider};
+use super::sandbox::{self, SandboxExecutor};
 use super::{Tool, ToolError, ToolResult};
 use crate::config::ExecToolConfig;
 
@@ -27,7 +27,7 @@ pub struct ExecTool {
     restrict_to_workspace: bool,
     enabled: bool,
     policy: CommandPolicy,
-    sandbox: Box<dyn SandboxProvider>,
+    sandbox: SandboxExecutor,
     limits: ResourceLimits,
 }
 
@@ -82,7 +82,7 @@ impl ExecTool {
         let working_dir = working_dir.into();
         Self {
             policy: CommandPolicy::new(&Default::default()),
-            sandbox: Box::new(super::sandbox::FallbackExecutor),
+            sandbox: SandboxExecutor::Fallback(super::sandbox::FallbackExecutor),
             limits: ResourceLimits::default(),
             working_dir,
             timeout,

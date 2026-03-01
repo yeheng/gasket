@@ -1,6 +1,11 @@
 //! WeCom (企业微信) webhook handler
 //!
 //! Provides Axum routes for handling WeCom callbacks.
+//!
+//! The webhook handler is **decoupled** from `WeComChannel`: it only needs
+//! the platform config (for signature verification and decryption),
+//! a pre-decoded AES key, and an `InboundSender`.
+//! No `Arc<RwLock<Channel>>` needed.
 
 use std::sync::Arc;
 
@@ -11,31 +16,47 @@ use axum::{
     routing::get,
     Router,
 };
-use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::handlers;
+use crate::bus::events::InboundMessage;
+use crate::bus::ChannelType;
 use crate::channels::middleware::InboundSender;
-use crate::channels::wecom::{WeComCallbackBody, WeComCallbackQuery, WeComChannel, WeComConfig};
+use crate::channels::wecom::{WeComCallbackBody, WeComCallbackQuery, WeComConfig};
+use crate::crypto::wecom::{compute_signature, decode_aes_key, decrypt_message};
 
-/// State for WeCom webhook routes
+/// State for WeCom webhook routes.
+///
+/// Holds only the data needed for inbound processing — no channel lock.
 #[derive(Clone)]
 pub struct WeComState {
-    pub channel: Arc<RwLock<WeComChannel>>,
+    pub config: Arc<WeComConfig>,
+    /// Pre-decoded AES key (32 bytes) for message decryption.
+    pub aes_key: Option<Vec<u8>>,
+    pub inbound_sender: InboundSender,
 }
 
 impl WeComState {
-    /// Create new WeCom state from a channel
-    pub fn new(channel: WeComChannel) -> Self {
-        Self {
-            channel: Arc::new(RwLock::new(channel)),
-        }
-    }
-
-    /// Create from config and inbound sender
+    /// Create from config and inbound sender.
+    ///
+    /// Automatically decodes the `encoding_aes_key` if present.
     pub fn from_config(config: WeComConfig, inbound_sender: InboundSender) -> Self {
-        let channel = WeComChannel::new(config, inbound_sender);
-        Self::new(channel)
+        let aes_key =
+            config
+                .encoding_aes_key
+                .as_deref()
+                .and_then(|key| match decode_aes_key(key) {
+                    Ok(k) => Some(k),
+                    Err(e) => {
+                        warn!("Failed to decode WeCom encoding_aes_key: {}", e);
+                        None
+                    }
+                });
+        Self {
+            config: Arc::new(config),
+            aes_key,
+            inbound_sender,
+        }
     }
 }
 
@@ -62,9 +83,7 @@ async fn handle_get(
         }
     };
 
-    let channel = state.channel.read().await;
-
-    match channel.verify_url(&callback_query) {
+    match verify_url(&state.config, state.aes_key.as_deref(), &callback_query) {
         Ok(echostr) => {
             info!("WeCom URL verification successful");
             handlers::success(&echostr)
@@ -101,15 +120,17 @@ async fn handle_post(
         }
     };
 
-    let channel = state.channel.read().await;
-
-    match channel
-        .handle_callback_message(&callback_query, &callback_body)
-        .await
+    match process_callback_message(
+        &state.config,
+        state.aes_key.as_deref(),
+        &state.inbound_sender,
+        &callback_query,
+        &callback_body,
+    )
+    .await
     {
         Ok(()) => {
             debug!("WeCom callback processed successfully");
-            // WeCom expects "success" as response
             handlers::success("success")
         }
         Err(e) => {
@@ -118,6 +139,132 @@ async fn handle_post(
             handlers::success("success")
         }
     }
+}
+
+// ── Standalone webhook processing (no Channel dependency) ───
+
+/// Verify callback URL (handles the GET verification request from WeCom).
+///
+/// Only needs config fields and the pre-decoded AES key.
+fn verify_url(
+    config: &WeComConfig,
+    aes_key: Option<&[u8]>,
+    query: &WeComCallbackQuery,
+) -> anyhow::Result<String> {
+    let token = config
+        .token
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Token not configured for callback verification"))?;
+
+    let echostr = query
+        .echostr
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Missing echostr in URL verification request"))?;
+
+    // Verify signature
+    let expected_sig = compute_signature(token, &query.timestamp, &query.nonce, echostr);
+    if expected_sig != query.msg_signature {
+        anyhow::bail!(
+            "Signature mismatch in URL verification: expected={}, got={}",
+            expected_sig,
+            query.msg_signature
+        );
+    }
+
+    // Decrypt echostr
+    let key =
+        aes_key.ok_or_else(|| anyhow::anyhow!("No AES key. encoding_aes_key not configured."))?;
+    let plaintext = decrypt_message(key, echostr, &config.corpid)?;
+
+    debug!("WeCom URL verification succeeded");
+    Ok(plaintext)
+}
+
+/// Process an incoming WeCom callback message.
+///
+/// Verifies signature, decrypts, parses, and forwards via `InboundSender`.
+async fn process_callback_message(
+    config: &WeComConfig,
+    aes_key: Option<&[u8]>,
+    inbound_sender: &InboundSender,
+    query: &WeComCallbackQuery,
+    body: &WeComCallbackBody,
+) -> anyhow::Result<()> {
+    let token = config
+        .token
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Token not configured for callback"))?;
+
+    // Verify signature
+    let expected_sig = compute_signature(token, &query.timestamp, &query.nonce, &body.encrypt);
+    if expected_sig != query.msg_signature {
+        error!(
+            "WeCom callback signature mismatch: expected={}, got={}",
+            expected_sig, query.msg_signature
+        );
+        anyhow::bail!("Signature verification failed for WeCom callback");
+    }
+
+    // Decrypt
+    let key =
+        aes_key.ok_or_else(|| anyhow::anyhow!("No AES key. encoding_aes_key not configured."))?;
+    let xml_str = decrypt_message(key, &body.encrypt, &config.corpid)?;
+    debug!("Decrypted WeCom callback message: {}", xml_str);
+
+    // Parse the XML message — reuse the parser from the channel module
+    let message = crate::channels::wecom::parse_callback_xml(&xml_str)?;
+
+    // Check allowlist
+    if !config.allow_from.is_empty() && !config.allow_from.contains(&message.from_user_name) {
+        debug!(
+            "Ignoring message from unauthorized WeCom user: {}",
+            message.from_user_name
+        );
+        return Ok(());
+    }
+
+    // Handle by message type
+    match message.msg_type.as_str() {
+        "text" => {
+            let content = message.content.as_deref().unwrap_or("");
+            if content.is_empty() {
+                debug!("Ignoring empty WeCom text message");
+                return Ok(());
+            }
+
+            debug!(
+                "Received WeCom text message from {}: {}",
+                message.from_user_name, content
+            );
+
+            let inbound = InboundMessage {
+                channel: ChannelType::Wecom,
+                sender_id: message.from_user_name.clone(),
+                chat_id: message.from_user_name.clone(),
+                content: content.to_string(),
+                media: None,
+                metadata: serde_json::to_value(&message).ok(),
+                timestamp: chrono::Utc::now(),
+                trace_id: None,
+            };
+
+            inbound_sender.send(inbound).await?;
+        }
+        "event" => {
+            debug!(
+                "Received WeCom event: {:?} from {}",
+                message.event, message.from_user_name
+            );
+        }
+        other => {
+            warn!(
+                "Ignoring unsupported WeCom message type: {} from {}",
+                other, message.from_user_name
+            );
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -145,7 +292,7 @@ mod tests {
     fn test_wecom_state_creation() {
         let config = create_test_config();
         let state = WeComState::from_config(config, create_test_sender());
-        assert!(Arc::strong_count(&state.channel) >= 1);
+        assert!(Arc::strong_count(&state.config) >= 1);
     }
 
     #[test]

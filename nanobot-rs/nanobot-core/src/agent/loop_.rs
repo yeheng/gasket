@@ -156,6 +156,15 @@ impl AgentLoop {
         &self.workspace
     }
 
+    /// Clear the session for the given key (used by CLI for `/new` command).
+    ///
+    /// This resets the conversation history so the next message starts fresh.
+    pub async fn clear_session(&self, session_key: &str) {
+        let mut session = self.sessions.get_or_create(session_key).await;
+        session.clear();
+        self.sessions.save(&session).await;
+    }
+
     /// Process a message directly (for CLI or testing)
     #[instrument(skip(self, content))]
     pub async fn process_direct(&self, content: &str, session_key: &str) -> Result<AgentResponse> {
@@ -176,25 +185,6 @@ impl AgentLoop {
         callback: Option<&StreamCallback>,
     ) -> Result<AgentResponse> {
         let mut session = self.sessions.get_or_create(session_key).await;
-
-        // Handle slash commands
-        let cmd = content.trim().to_lowercase();
-        if cmd == "/new" {
-            session.clear();
-            self.sessions.save(&session).await;
-            return Ok(AgentResponse {
-                content: "New session started.".to_string(),
-                reasoning_content: None,
-                tools_used: Vec::new(),
-            });
-        }
-        if cmd == "/help" {
-            return Ok(AgentResponse {
-                content: "🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands".to_string(),
-                reasoning_content: None,
-                tools_used: Vec::new(),
-            });
-        }
 
         // Save user message BEFORE calling LLM so it persists even if
         // the LLM call fails or the process is interrupted.

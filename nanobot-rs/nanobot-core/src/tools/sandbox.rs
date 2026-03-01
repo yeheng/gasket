@@ -11,16 +11,6 @@ use tracing::{debug, info, warn};
 use super::resource_limits::ResourceLimits;
 use crate::config::SandboxConfig;
 
-/// Trait for building a sandboxed (or fallback) shell command.
-pub trait SandboxProvider: Send + Sync {
-    /// Build a `Command` that will execute `cmd` in the given `working_dir`
-    /// with the specified `limits`.
-    fn build_command(&self, cmd: &str, working_dir: &Path, limits: &ResourceLimits) -> Command;
-
-    /// Human-readable name for logging.
-    fn name(&self) -> &str;
-}
-
 /// Bubblewrap-based sandbox (Linux only).
 ///
 /// Mount layout:
@@ -36,7 +26,7 @@ pub struct BwrapSandbox {
 }
 
 impl BwrapSandbox {
-    /// Detect bwrap binary and create a sandbox provider.
+    /// Detect bwrap binary and create a sandbox.
     /// Returns `None` if bwrap is not available.
     pub fn detect(workspace: &Path, config: &SandboxConfig) -> Option<Self> {
         let bwrap_path = which_bwrap()?;
@@ -47,9 +37,7 @@ impl BwrapSandbox {
             tmp_size_mb: config.tmp_size_mb,
         })
     }
-}
 
-impl SandboxProvider for BwrapSandbox {
     fn build_command(&self, cmd: &str, _working_dir: &Path, limits: &ResourceLimits) -> Command {
         let mut command = Command::new(&self.bwrap_path);
 
@@ -95,10 +83,6 @@ impl SandboxProvider for BwrapSandbox {
         debug!("bwrap command: {:?}", command);
         command
     }
-
-    fn name(&self) -> &str {
-        "bwrap"
-    }
 }
 
 /// Fallback executor — direct `bash -c` with ulimit-based resource limits.
@@ -106,7 +90,7 @@ impl SandboxProvider for BwrapSandbox {
 /// Used when bwrap is unavailable or sandbox is disabled.
 pub struct FallbackExecutor;
 
-impl SandboxProvider for FallbackExecutor {
+impl FallbackExecutor {
     fn build_command(&self, cmd: &str, working_dir: &Path, limits: &ResourceLimits) -> Command {
         let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
@@ -115,9 +99,34 @@ impl SandboxProvider for FallbackExecutor {
 
         command
     }
+}
 
-    fn name(&self) -> &str {
-        "fallback"
+/// Sandbox executor — statically dispatched enum replacing the old
+/// `Box<dyn SandboxProvider>` dynamic dispatch.
+///
+/// Only two variants exist and are known at compile time, so an enum
+/// eliminates the unnecessary heap allocation and vtable indirection.
+pub enum SandboxExecutor {
+    Bwrap(BwrapSandbox),
+    Fallback(FallbackExecutor),
+}
+
+impl SandboxExecutor {
+    /// Build a `Command` that will execute `cmd` in the given `working_dir`
+    /// with the specified `limits`.
+    pub fn build_command(&self, cmd: &str, working_dir: &Path, limits: &ResourceLimits) -> Command {
+        match self {
+            Self::Bwrap(s) => s.build_command(cmd, working_dir, limits),
+            Self::Fallback(s) => s.build_command(cmd, working_dir, limits),
+        }
+    }
+
+    /// Human-readable name for logging.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Bwrap(_) => "bwrap",
+            Self::Fallback(_) => "fallback",
+        }
     }
 }
 
@@ -145,11 +154,11 @@ fn which_bwrap() -> Option<PathBuf> {
     None
 }
 
-/// Create the appropriate sandbox provider based on configuration.
-pub fn create_provider(workspace: &Path, config: &SandboxConfig) -> Box<dyn SandboxProvider> {
+/// Create the appropriate sandbox executor based on configuration.
+pub fn create_provider(workspace: &Path, config: &SandboxConfig) -> SandboxExecutor {
     if !config.enabled {
         debug!("Sandbox disabled by config");
-        return Box::new(FallbackExecutor);
+        return SandboxExecutor::Fallback(FallbackExecutor);
     }
 
     // Only bwrap backend is supported
@@ -158,23 +167,23 @@ pub fn create_provider(workspace: &Path, config: &SandboxConfig) -> Box<dyn Sand
             "Unknown sandbox backend '{}', falling back to unsandboxed",
             config.backend
         );
-        return Box::new(FallbackExecutor);
+        return SandboxExecutor::Fallback(FallbackExecutor);
     }
 
     // macOS: bwrap is Linux-only
     if cfg!(target_os = "macos") {
         warn!("bwrap sandbox is Linux-only. macOS falls back to ulimit-based resource limits.");
-        return Box::new(FallbackExecutor);
+        return SandboxExecutor::Fallback(FallbackExecutor);
     }
 
     match BwrapSandbox::detect(workspace, config) {
         Some(sandbox) => {
             info!("Sandbox enabled: bwrap at {:?}", sandbox.bwrap_path);
-            Box::new(sandbox)
+            SandboxExecutor::Bwrap(sandbox)
         }
         None => {
             warn!("bwrap not available — running without sandbox (ulimit-based limits only)");
-            Box::new(FallbackExecutor)
+            SandboxExecutor::Fallback(FallbackExecutor)
         }
     }
 }

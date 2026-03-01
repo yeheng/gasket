@@ -187,6 +187,25 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                             break;
                         }
 
+                        // Handle CLI-specific slash commands locally
+                        // (these must NOT reach the agent core — other channels
+                        //  like Telegram should treat "/new" as normal LLM input)
+                        let cmd = line.to_lowercase();
+                        if cmd == "/new" {
+                            agent.clear_session("cli:interactive").await;
+                            println!("New session started.");
+                            continue;
+                        }
+                        if cmd == "/help" {
+                            println!(
+                                "🐈 nanobot commands:\n\
+                                 /new  — Start a new conversation\n\
+                                 /help — Show available commands\n\
+                                 /exit — Exit the REPL"
+                            );
+                            continue;
+                        }
+
                         // Process the message
                         if use_streaming {
                             println!();

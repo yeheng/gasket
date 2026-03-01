@@ -173,25 +173,49 @@ impl SessionManager {
             last_consolidated: legacy_session.last_consolidated,
         };
 
-        // Save in new format
-        self.save_session_full(&session).await?;
+        // Persist all messages from legacy format into per-message storage
+        self.migrate_legacy_to_sqlite(&session).await?;
 
         Ok(Some(session))
     }
 
-    /// Save a session (full rewrite to SQLite).
+    /// Save a session after clear().
     ///
-    /// Used after `clear()` or when the full session needs to be persisted.
+    /// When the session has been cleared (messages empty), only deletes
+    /// existing messages and updates metadata — no pointless INSERT loop.
+    /// For sessions with messages this is a full rewrite (safety fallback).
     #[instrument(name = "session.save", skip(self), fields(key = %session.key))]
     pub async fn save(&self, session: &Session) {
-        if let Err(e) = self.save_session_full(session).await {
+        let result = if session.messages.is_empty() {
+            // Fast path for clear(): just delete + meta update
+            self.clear_and_save_meta(&session.key, session.last_consolidated)
+                .await
+        } else {
+            // Full rewrite (safety fallback for edge cases)
+            self.migrate_legacy_to_sqlite(session).await
+        };
+
+        if let Err(e) = result {
             warn!("Failed to save session {} to SQLite: {}", session.key, e);
         }
     }
 
-    /// Save session with all messages (used for new sessions or migrations).
-    async fn save_session_full(&self, session: &Session) -> anyhow::Result<()> {
-        // Clear existing messages
+    /// Clear session messages in the DB and update metadata.
+    ///
+    /// Pure DELETE + meta upsert — O(1), no message re-insertion.
+    async fn clear_and_save_meta(&self, key: &str, last_consolidated: usize) -> anyhow::Result<()> {
+        self.store.clear_session_messages(key).await?;
+        self.store.save_session_meta(key, last_consolidated).await?;
+        debug!("Cleared session messages: {}", key);
+        Ok(())
+    }
+
+    /// Migrate a legacy session by writing all its messages to per-message storage.
+    ///
+    /// This is the only path that does DELETE-all + INSERT-all, and it only
+    /// runs during legacy JSON → SQLite migration.
+    async fn migrate_legacy_to_sqlite(&self, session: &Session) -> anyhow::Result<()> {
+        // Clear any existing messages (idempotent)
         self.store.clear_session_messages(&session.key).await?;
 
         // Save metadata
@@ -199,7 +223,7 @@ impl SessionManager {
             .save_session_meta(&session.key, session.last_consolidated)
             .await?;
 
-        // Insert all messages
+        // Insert all messages from the legacy snapshot
         for msg in &session.messages {
             self.store
                 .append_session_message(
@@ -213,11 +237,22 @@ impl SessionManager {
         }
 
         debug!(
-            "Saved session full: {} ({} messages)",
+            "Migrated session to SQLite: {} ({} messages)",
             session.key,
             session.messages.len()
         );
         Ok(())
+    }
+
+    /// Clear a session's messages in both memory and database.
+    ///
+    /// Preferred method for `/new`-style reset: directly issues a DELETE
+    /// against the DB without loading the full session first.
+    #[instrument(name = "session.clear", skip(self), fields(key = %key))]
+    pub async fn clear_session(&self, key: &str) {
+        if let Err(e) = self.clear_and_save_meta(key, 0).await {
+            warn!("Failed to clear session {} in SQLite: {}", key, e);
+        }
     }
 
     /// Append a single message to session (O(1) operation).

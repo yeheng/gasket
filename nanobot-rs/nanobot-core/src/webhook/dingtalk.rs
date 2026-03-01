@@ -1,6 +1,10 @@
 //! DingTalk (钉钉) webhook handler
 //!
 //! Provides Axum routes for handling DingTalk callbacks.
+//!
+//! The webhook handler is **decoupled** from `DingTalkChannel`: it only needs
+//! the platform config (for allowlist checks) and an `InboundSender`.
+//! No `Arc<RwLock<Channel>>` needed.
 
 use std::sync::Arc;
 
@@ -10,31 +14,30 @@ use axum::{
     response::IntoResponse,
     Router,
 };
-use tokio::sync::RwLock;
 use tracing::{debug, error};
 
 use super::handlers;
-use crate::channels::dingtalk::{DingTalkCallbackMessage, DingTalkChannel, DingTalkConfig};
+use crate::bus::events::InboundMessage;
+use crate::bus::ChannelType;
+use crate::channels::dingtalk::{DingTalkCallbackMessage, DingTalkConfig};
 use crate::channels::middleware::InboundSender;
 
-/// State for DingTalk webhook routes
+/// State for DingTalk webhook routes.
+///
+/// Holds only the data needed for inbound processing — no channel lock.
 #[derive(Clone)]
 pub struct DingTalkState {
-    pub channel: Arc<RwLock<DingTalkChannel>>,
+    pub config: Arc<DingTalkConfig>,
+    pub inbound_sender: InboundSender,
 }
 
 impl DingTalkState {
-    /// Create new DingTalk state from a channel
-    pub fn new(channel: DingTalkChannel) -> Self {
-        Self {
-            channel: Arc::new(RwLock::new(channel)),
-        }
-    }
-
     /// Create from config and inbound sender
     pub fn from_config(config: DingTalkConfig, inbound_sender: InboundSender) -> Self {
-        let channel = DingTalkChannel::new(config, inbound_sender);
-        Self::new(channel)
+        Self {
+            config: Arc::new(config),
+            inbound_sender,
+        }
     }
 }
 
@@ -51,7 +54,6 @@ async fn handle_get(
     _state: State<DingTalkState>,
     _query: Query<serde_json::Value>,
 ) -> impl IntoResponse {
-    // DingTalk doesn't use GET for callbacks
     debug!("DingTalk GET request (unexpected)");
     handlers::bad_request("Use POST for DingTalk webhooks")
 }
@@ -73,12 +75,9 @@ async fn handle_post(
         }
     };
 
-    let channel = state.channel.read().await;
-
-    match channel.handle_callback_message(message).await {
+    match process_callback_message(&state.config, &state.inbound_sender, message).await {
         Ok(()) => {
             debug!("DingTalk callback processed successfully");
-            // DingTalk expects a JSON response with success
             handlers::json_response(
                 axum::http::StatusCode::OK,
                 &serde_json::json!({"msg": "success"}),
@@ -86,13 +85,60 @@ async fn handle_post(
         }
         Err(e) => {
             error!("DingTalk callback processing failed: {}", e);
-            // Return success anyway to avoid retries for non-recoverable errors
             handlers::json_response(
                 axum::http::StatusCode::OK,
                 &serde_json::json!({"msg": "success"}),
             )
         }
     }
+}
+
+// ── Standalone webhook processing (no Channel dependency) ───
+
+/// Process an incoming DingTalk callback message.
+///
+/// Only needs `DingTalkConfig` (for allowlist) and `InboundSender`.
+async fn process_callback_message(
+    config: &DingTalkConfig,
+    inbound_sender: &InboundSender,
+    message: DingTalkCallbackMessage,
+) -> anyhow::Result<()> {
+    // Check allowlist
+    if !config.allow_from.is_empty() {
+        let sender_id = message.sender_id.clone();
+        if !config.allow_from.contains(&sender_id) {
+            debug!(
+                "Ignoring message from unauthorized DingTalk user: {}",
+                sender_id
+            );
+            return Ok(());
+        }
+    }
+
+    // Only handle text messages
+    if message.msgtype != "text" {
+        debug!("Ignoring non-text DingTalk message: {}", message.msgtype);
+        return Ok(());
+    }
+
+    let content = message.text.content.clone();
+    debug!("Received DingTalk message: {}", content);
+
+    let metadata = serde_json::to_value(&message).ok();
+
+    let inbound = InboundMessage {
+        channel: ChannelType::Dingtalk,
+        sender_id: message.sender_id.clone(),
+        chat_id: message.conversation_id.clone(),
+        content,
+        media: None,
+        metadata,
+        timestamp: chrono::Utc::now(),
+        trace_id: None,
+    };
+
+    inbound_sender.send(inbound).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -118,7 +164,7 @@ mod tests {
     fn test_dingtalk_state_creation() {
         let config = create_test_config();
         let state = DingTalkState::from_config(config, create_test_sender());
-        assert!(Arc::strong_count(&state.channel) >= 1);
+        assert!(Arc::strong_count(&state.config) >= 1);
     }
 
     #[test]

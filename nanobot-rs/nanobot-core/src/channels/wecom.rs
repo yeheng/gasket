@@ -439,7 +439,7 @@ impl WeComChannel {
 /// ```
 ///
 /// Uses `quick-xml` for robust XML parsing.
-fn parse_callback_xml(xml: &str) -> anyhow::Result<WeComCallbackMessage> {
+pub fn parse_callback_xml(xml: &str) -> anyhow::Result<WeComCallbackMessage> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
