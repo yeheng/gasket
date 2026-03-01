@@ -1,6 +1,7 @@
 //! Agent 命令实现
 
 use std::io::Write as _;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
@@ -124,7 +125,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     };
 
     // Build tool registry (CLI mode: no bus/cron, but support web tools)
-    let tools = build_tool_registry(&config, &workspace, mcp_tools);
+    let tools = build_tool_registry(&config, &workspace, mcp_tools, None);
 
     let agent = AgentLoop::new(provider_info.provider, workspace, agent_config, tools)
         .await
@@ -234,6 +235,7 @@ fn build_tool_registry(
     config: &Config,
     workspace: &std::path::Path,
     mcp_tools: Vec<Box<dyn nanobot_core::tools::Tool>>,
+    subagent_manager: Option<Arc<nanobot_core::agent::SubagentManager>>,
 ) -> ToolRegistry {
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -324,8 +326,12 @@ fn build_tool_registry(
             is_mutating: true,
         },
     );
+    let spawn_tool = match subagent_manager {
+        Some(mgr) => SpawnTool::with_manager(mgr),
+        None => SpawnTool::new(),
+    };
     tools.register_with_metadata(
-        Box::new(SpawnTool::new()),
+        Box::new(spawn_tool),
         ToolMetadata {
             display_name: "Spawn Subagent".to_string(),
             category: "system".to_string(),

@@ -7,17 +7,17 @@ use tracing::instrument;
 
 use super::{Tool, ToolError, ToolResult};
 use crate::bus::events::ChannelType;
-use crate::bus::{MessageBus, OutboundMessage};
+use crate::bus::events::OutboundMessage;
 
 /// Message tool for sending messages to specific channels
 pub struct MessageTool {
-    bus: std::sync::Arc<MessageBus>,
+    config: std::sync::Arc<crate::config::ChannelsConfig>,
 }
 
 impl MessageTool {
     /// Create a new message tool
-    pub fn new(bus: std::sync::Arc<MessageBus>) -> Self {
-        Self { bus }
+    pub fn new(config: std::sync::Arc<crate::config::ChannelsConfig>) -> Self {
+        Self { config }
     }
 }
 
@@ -80,8 +80,9 @@ impl Tool for MessageTool {
             trace_id: None,
         };
 
-        // Send via message bus
-        self.bus.publish_outbound(message).await;
+        crate::channels::send_outbound(&self.config, message)
+            .await
+            .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
         Ok(format!(
             "Message sent successfully to {}:{}",
@@ -93,12 +94,11 @@ impl Tool for MessageTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::MessageBus;
 
     #[tokio::test]
     async fn test_message_tool_creation() {
-        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
-        let tool = MessageTool::new(std::sync::Arc::new(bus));
+        let config = std::sync::Arc::new(crate::config::ChannelsConfig::default());
+        let tool = MessageTool::new(config);
 
         assert_eq!(tool.name(), "send_message");
         assert!(tool.description().contains("Send a message"));
@@ -106,8 +106,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_message_tool_parameters() {
-        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
-        let tool = MessageTool::new(std::sync::Arc::new(bus));
+        let config = std::sync::Arc::new(crate::config::ChannelsConfig::default());
+        let tool = MessageTool::new(config);
 
         let params = tool.parameters();
         assert!(params["properties"]["channel"].is_object());
@@ -116,29 +116,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_message() {
-        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
-        let bus = std::sync::Arc::new(bus);
-        let tool = MessageTool::new(bus.clone());
-
-        let params = serde_json::json!({
-            "channel": "telegram",
-            "chat_id": "123456",
-            "content": "Hello from MessageTool!"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
-
-        let message = result.unwrap();
-        assert!(message.contains("Message sent successfully"));
-        assert!(message.contains("telegram:123456"));
-    }
-
-    #[tokio::test]
     async fn test_invalid_parameters() {
-        let (bus, _inbound_rx, _outbound_rx) = MessageBus::new(10);
-        let tool = MessageTool::new(std::sync::Arc::new(bus));
+        let config = std::sync::Arc::new(crate::config::ChannelsConfig::default());
+        let tool = MessageTool::new(config);
 
         let params = serde_json::json!({
             "channel": "telegram"

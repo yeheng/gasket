@@ -29,8 +29,6 @@ pub mod tools;
 pub mod webhook;
 
 pub use config::Config;
-pub use providers::{
-    GeminiProvider, LlmProvider, OpenAICompatibleProvider, ProviderMetadata, ProviderRegistry,
-};
+pub use providers::{GeminiProvider, LlmProvider, OpenAICompatibleProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};

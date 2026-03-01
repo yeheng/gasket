@@ -39,7 +39,7 @@ pub async fn cmd_gateway() -> Result<()> {
     println!("🐈 Starting gateway...\n");
 
     // Create message bus — receivers are split out at creation time, no Mutex needed
-    let (bus, mut inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(100);
+    let (bus, mut inbound_rx) = nanobot_core::bus::MessageBus::new(100);
     let bus = Arc::new(bus);
 
     // Create cron service
@@ -70,13 +70,28 @@ pub async fn cmd_gateway() -> Result<()> {
         Vec::new()
     };
 
+    let subagent_manager = Arc::new(
+        nanobot_core::agent::SubagentManager::new(
+            provider_info.provider.clone(),
+            workspace.clone(),
+            Arc::new({
+                let cfg = config.clone();
+                let ws = workspace.clone();
+                let cron_svc = cron_service.clone();
+                move || build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None)
+            }),
+            Arc::new(config.channels.clone()),
+        )
+        .await,
+    );
+
     // Build tool registry externally
     let tools = build_tool_registry(
         &config,
         &workspace,
-        bus.clone(),
         cron_service.clone(),
         mcp_tools,
+        Some(subagent_manager),
     );
 
     let agent = Arc::new(
@@ -105,36 +120,16 @@ pub async fn cmd_gateway() -> Result<()> {
     let inbound_processor = inbound_sender.clone();
 
     // --- Direct outbound routing loop ---
-    // Each outbound message is routed by ChannelType to a stateless send function.
-    // No dynamic dispatch, no RwLock, no HashMap. It just works.
-    {
-        // Clone configs needed for outbound sending
-        #[allow(unused_variables)]
-        let config_for_outbound = config.clone();
-        let mut outbound_rx = outbound_rx;
-        tasks.push(tokio::spawn(async move {
-            while let Some(msg) = outbound_rx.recv().await {
-                #[allow(unused_variables)]
-                let cfg = config_for_outbound.clone();
-                tokio::spawn(async move {
-                    let result = nanobot_core::channels::send_outbound(&cfg.channels, msg).await;
-                    if let Err(e) = result {
-                        tracing::error!("Outbound send error: {}", e);
-                    }
-                });
-            }
-            tracing::info!("Outbound router exited");
-        }));
-    }
+    // (Removed: MessageTool now directly invokes send_outbound)
 
     // --- Inbound message handler ---
     {
         let agent_for_handler = agent.clone();
-        let bus_for_handler = bus.clone();
+        let channels_config = std::sync::Arc::new(config.channels.clone());
         tasks.push(tokio::spawn(async move {
             while let Some(msg) = inbound_rx.recv().await {
                 let agent_clone = agent_for_handler.clone();
-                let bus_clone = bus_for_handler.clone();
+                let channels_cfg_clone = channels_config.clone();
                 // Process each message concurrently
                 tokio::spawn(async move {
                     match agent_clone
@@ -149,7 +144,12 @@ pub async fn cmd_gateway() -> Result<()> {
                                 metadata: None,
                                 trace_id: None,
                             };
-                            bus_clone.publish_outbound(outbound).await;
+                            if let Err(e) =
+                                nanobot_core::channels::send_outbound(&channels_cfg_clone, outbound)
+                                    .await
+                            {
+                                tracing::error!("Outbound send error: {}", e);
+                            }
                         }
                         Err(e) => {
                             tracing::error!("Error processing message: {}", e);
@@ -382,9 +382,9 @@ fn build_agent_config(config: &nanobot_core::config::Config) -> AgentConfig {
 fn build_tool_registry(
     config: &nanobot_core::config::Config,
     workspace: &std::path::Path,
-    bus: Arc<nanobot_core::bus::MessageBus>,
     cron_service: Arc<nanobot_core::cron::CronService>,
     mcp_tools: Vec<Box<dyn nanobot_core::tools::Tool>>,
+    subagent_manager: Option<Arc<nanobot_core::agent::SubagentManager>>,
 ) -> ToolRegistry {
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
@@ -475,8 +475,12 @@ fn build_tool_registry(
             is_mutating: true,
         },
     );
+    let spawn_tool = match subagent_manager {
+        Some(mgr) => SpawnTool::with_manager(mgr),
+        None => SpawnTool::new(),
+    };
     tools.register_with_metadata(
-        Box::new(SpawnTool::new()),
+        Box::new(spawn_tool),
         ToolMetadata {
             display_name: "Spawn Subagent".to_string(),
             category: "system".to_string(),
@@ -488,7 +492,7 @@ fn build_tool_registry(
 
     // Communication tools (gateway-specific)
     tools.register_with_metadata(
-        Box::new(MessageTool::new(bus.clone())),
+        Box::new(MessageTool::new(Arc::new(config.channels.clone()))),
         ToolMetadata {
             display_name: "Send Message".to_string(),
             category: "communication".to_string(),

@@ -12,7 +12,6 @@ mod copilot;
 mod copilot_oauth;
 mod gemini;
 mod model_spec;
-mod registry;
 pub mod streaming;
 
 pub use base::{
@@ -24,4 +23,3 @@ pub use copilot::CopilotProvider;
 pub use copilot_oauth::{CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse};
 pub use gemini::GeminiProvider;
 pub use model_spec::ModelSpec;
-pub use registry::{ProviderMetadata, ProviderRegistry};
