@@ -341,10 +341,10 @@ impl AgentLoop {
             }
         } else {
             // No evictions — still try to load existing summary
-            match self.compression.compress(session_key, &[]).await {
-                Ok(s) => s,
-                Err(_) => None,
-            }
+            self.compression
+                .compress(session_key, &[])
+                .await
+                .unwrap_or_default()
         };
 
         // ── 6. Inject system prompts (direct) ──────────────────────
