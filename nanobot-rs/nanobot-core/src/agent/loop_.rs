@@ -31,7 +31,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
 use tracing::{debug, info, instrument, warn};
 
 use crate::agent::executor::ToolExecutor;
@@ -40,6 +39,7 @@ use crate::agent::request::RequestHandler;
 use crate::agent::storage::{LongTermMemory, SessionStorage};
 use crate::agent::stream::{self, StreamCallback, StreamEvent};
 use crate::agent::summarization::ContextCompressionHook;
+use crate::error::AgentError;
 use crate::hooks::logging::LoggingHook;
 use crate::hooks::prompt;
 use crate::hooks::{
@@ -179,7 +179,7 @@ impl AgentLoop {
         workspace: PathBuf,
         config: AgentConfig,
         tools: ToolRegistry,
-    ) -> Result<Self> {
+    ) -> Result<Self, AgentError> {
         let memory = MemoryStore::new().await;
         let sessions = SessionManager::new(memory.sqlite_store().clone());
 
@@ -223,7 +223,7 @@ impl AgentLoop {
         workspace: PathBuf,
         config: AgentConfig,
         tools: ToolRegistry,
-    ) -> Result<Self> {
+    ) -> Result<Self, AgentError> {
         Ok(Self {
             provider,
             tools,
@@ -274,7 +274,7 @@ impl AgentLoop {
 
     /// Process a message directly (for CLI or testing)
     #[instrument(skip(self, content))]
-    pub async fn process_direct(&self, content: &str, session_key: &str) -> Result<AgentResponse> {
+    pub async fn process_direct(&self, content: &str, session_key: &str) -> Result<AgentResponse, AgentError> {
         self.process_direct_with_callback(content, session_key, None)
             .await
     }
@@ -289,7 +289,7 @@ impl AgentLoop {
         content: &str,
         session_key: &str,
         callback: Option<&StreamCallback>,
-    ) -> Result<AgentResponse> {
+    ) -> Result<AgentResponse, AgentError> {
         let request_id = uuid::Uuid::new_v4().to_string();
 
         // ── 1. Hook: on_request (can skip) ────────────────────────
@@ -457,7 +457,7 @@ impl AgentLoop {
         callback: Option<&StreamCallback>,
         mut hook_metadata: HashMap<String, serde_json::Value>,
         request_id: &str,
-    ) -> Result<AgentLoopResult> {
+    ) -> Result<AgentLoopResult, AgentError> {
         let noop: StreamCallback = Box::new(|_| {});
         let cb: &StreamCallback = callback.unwrap_or(&noop);
 

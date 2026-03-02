@@ -122,6 +122,19 @@ pub enum ChannelError {
     InvalidFormat(String),
 }
 
+// Implement From for common error types to enable `?` operator
+impl From<std::io::Error> for McpError {
+    fn from(err: std::io::Error) -> Self {
+        McpError::ConnectionError(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for McpError {
+    fn from(err: serde_json::Error) -> Self {
+        McpError::ToolCallError(format!("JSON error: {}", err))
+    }
+}
+
 // Implement From<anyhow::Error> for conversion at module boundaries
 impl From<anyhow::Error> for AgentError {
     fn from(err: anyhow::Error) -> Self {
