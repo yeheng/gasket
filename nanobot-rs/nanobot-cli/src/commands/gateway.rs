@@ -125,17 +125,20 @@ pub async fn cmd_gateway() -> Result<()> {
     // --- Inbound message handler ---
     // Per-session serialization: ensures that requests for the same session_key
     // are processed sequentially, while different sessions remain fully concurrent.
+    // Idle semaphores are cleaned up after each request to prevent unbounded growth.
     {
         let agent_for_handler = agent.clone();
         let channels_config = std::sync::Arc::new(config.channels.clone());
-        let session_locks: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>> =
-            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let session_locks: Arc<
+            std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>,
+        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
 
         tasks.push(tokio::spawn(async move {
             while let Some(msg) = inbound_rx.recv().await {
                 let agent_clone = agent_for_handler.clone();
                 let channels_cfg_clone = channels_config.clone();
                 let session_key = msg.session_key();
+                let locks_for_cleanup = session_locks.clone();
 
                 // Obtain or create a per-session semaphore (permits = 1 for serialization)
                 let semaphore = {
@@ -147,6 +150,7 @@ pub async fn cmd_gateway() -> Result<()> {
                 };
 
                 // Spawn task — acquires semaphore before processing
+                let task_session_key = session_key.clone();
                 tokio::spawn(async move {
                     // Acquire permit: blocks until the previous request for this
                     // session completes.  The permit is held for the entire
@@ -154,7 +158,7 @@ pub async fn cmd_gateway() -> Result<()> {
                     let _permit = semaphore.acquire().await.expect("semaphore closed");
 
                     match agent_clone
-                        .process_direct(&msg.content, &msg.session_key())
+                        .process_direct(&msg.content, &task_session_key)
                         .await
                     {
                         Ok(response) => {
@@ -176,7 +180,16 @@ pub async fn cmd_gateway() -> Result<()> {
                             tracing::error!("Error processing message: {}", e);
                         }
                     }
-                    // _permit drops here → next queued request for this session can proceed
+
+                    // Release permit (drop), then clean up idle semaphore.
+                    // After dropping _permit, if this Arc is the only remaining
+                    // clone besides the HashMap entry (strong_count == 2: our
+                    // local clone + HashMap), no other task is waiting or running
+                    // for this session — safe to remove.
+                    drop(_permit);
+                    if Arc::strong_count(&semaphore) == 2 {
+                        locks_for_cleanup.lock().unwrap().remove(&task_session_key);
+                    }
                 });
             }
         }));

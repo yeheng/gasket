@@ -54,6 +54,11 @@ impl SqliteStore {
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true);
 
+        // Pool size rationale: the gateway uses per-session semaphores to
+        // serialize requests within a session, so typical concurrent SQLite
+        // access equals the number of *active sessions* (not total requests).
+        // 5 connections comfortably handles most personal-assistant workloads;
+        // WAL mode further reduces contention by allowing concurrent readers.
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect_with(options)

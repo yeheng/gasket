@@ -68,6 +68,29 @@ pub struct AgentResponse {
     pub tools_used: Vec<String>,
 }
 
+/// Result from the agent loop execution.
+#[derive(Debug)]
+struct AgentLoopResult {
+    /// Main response content
+    content: String,
+    /// Reasoning/thinking content (if thinking mode enabled)
+    reasoning_content: Option<String>,
+    /// Tools used during processing
+    tools_used: Vec<String>,
+    /// Metadata collected from hooks
+    metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Mutable state for tool call handling.
+struct ToolCallState<'a> {
+    /// Conversation messages
+    messages: &'a mut Vec<ChatMessage>,
+    /// List of tools used so far
+    tools_used: &'a mut Vec<String>,
+    /// Metadata collected from hooks
+    hook_metadata: &'a mut HashMap<String, serde_json::Value>,
+}
+
 // ── AgentLoop ───────────────────────────────────────────────
 
 /// The agent loop - core processing engine.
@@ -234,7 +257,7 @@ impl AgentLoop {
             session_key: session_key.to_string(),
             memory_window: self.config.memory_window,
             history: Vec::new(),
-            metadata: req_ctx.metadata.clone(),
+            metadata: std::mem::take(&mut req_ctx.metadata),
         };
         self.hooks.run_on_session_load(&mut load_ctx).await;
         let history_snapshot = load_ctx.history;
@@ -246,7 +269,7 @@ impl AgentLoop {
             role: "user".to_string(),
             content: content.to_string(),
             tools_used: None,
-            metadata: load_ctx.metadata.clone(),
+            metadata: std::mem::take(&mut load_ctx.metadata),
         };
         self.hooks.run_on_session_save(&mut save_ctx).await;
 
@@ -261,7 +284,7 @@ impl AgentLoop {
             system_prompts: Vec::new(),
             summary: None,
             memory: None,
-            metadata: save_ctx.metadata.clone(),
+            metadata: std::mem::take(&mut save_ctx.metadata),
         };
         self.hooks.run_on_context_prepare(&mut ctx_prepare).await;
 
@@ -280,31 +303,39 @@ impl AgentLoop {
         } else {
             None
         };
-        let (response, reasoning, tools_used, loop_metadata) = self
+        let result = self
             .run_agent_loop(messages, effective_cb, ctx_prepare.metadata, &request_id)
             .await?;
 
         // ── Hook: on_response ─────────────────────────────────
-        // Propagate metadata from the agent loop into the response context
+        // Destructure result to avoid cloning (result is not used after this)
+        let AgentLoopResult {
+            content: loop_content,
+            reasoning_content: loop_reasoning,
+            tools_used: loop_tools,
+            metadata: loop_metadata,
+        } = result;
+
         let mut resp_ctx = ResponseContext {
             request_id: request_id.clone(),
-            content: response.clone(),
-            reasoning_content: reasoning.clone(),
-            tools_used: tools_used.clone(),
+            content: loop_content,
+            reasoning_content: loop_reasoning,
+            tools_used: loop_tools,
             session_key: session_key.to_string(),
             metadata: loop_metadata,
         };
         self.hooks.run_on_response(&mut resp_ctx).await;
 
         // ── Hook: on_session_save (assistant response) ─────────
-        // Propagate metadata from response context into the save context
+        // Move metadata (not needed on resp_ctx after this); clone
+        // content/tools_used since they go to both save_ctx and AgentResponse.
         let mut save_ctx = SessionSaveContext {
             request_id: request_id.clone(),
             session_key: session_key.to_string(),
             role: "assistant".to_string(),
             content: resp_ctx.content.clone(),
             tools_used: Some(resp_ctx.tools_used.clone()),
-            metadata: resp_ctx.metadata.clone(),
+            metadata: std::mem::take(&mut resp_ctx.metadata),
         };
         self.hooks.run_on_session_save(&mut save_ctx).await;
 
@@ -330,7 +361,7 @@ impl AgentLoop {
         callback: Option<&StreamCallback>,
         mut hook_metadata: HashMap<String, serde_json::Value>,
         request_id: &str,
-    ) -> Result<(String, Option<String>, Vec<String>, HashMap<String, serde_json::Value>)> {
+    ) -> Result<AgentLoopResult> {
         let noop: StreamCallback = Box::new(|_| {});
         let cb: &StreamCallback = callback.unwrap_or(&noop);
 
@@ -373,29 +404,31 @@ impl AgentLoop {
                     "I've completed processing but have no response to give.".to_string()
                 });
                 cb(&StreamEvent::Done);
-                return Ok((content, response.reasoning_content, tools_used, hook_metadata));
+                return Ok(AgentLoopResult {
+                    content,
+                    reasoning_content: response.reasoning_content,
+                    tools_used,
+                    metadata: hook_metadata,
+                });
             }
 
             // Has tool calls — execute them and continue the loop
-            self.handle_tool_calls(
-                &response,
-                &executor,
-                &mut messages,
-                &mut tools_used,
-                cb,
-                &mut hook_metadata,
-                request_id,
-            )
-            .await;
+            let mut state = ToolCallState {
+                messages: &mut messages,
+                tools_used: &mut tools_used,
+                hook_metadata: &mut hook_metadata,
+            };
+            self.handle_tool_calls(&response, &executor, &mut state, cb, request_id)
+                .await;
         }
 
         // Exhausted max iterations without a final response
-        Ok((
-            "I've completed processing but have no response to give.".to_string(),
-            None,
+        Ok(AgentLoopResult {
+            content: "I've completed processing but have no response to give.".to_string(),
+            reasoning_content: None,
             tools_used,
-            hook_metadata,
-        ))
+            metadata: hook_metadata,
+        })
     }
 
     /// Execute tool calls, append results to messages, and update tracking.
@@ -403,10 +436,8 @@ impl AgentLoop {
         &self,
         response: &ChatResponse,
         executor: &ToolExecutor<'_>,
-        messages: &mut Vec<ChatMessage>,
-        tools_used: &mut Vec<String>,
+        state: &mut ToolCallState<'_>,
         cb: &StreamCallback,
-        hook_metadata: &mut HashMap<String, serde_json::Value>,
         request_id: &str,
     ) {
         info!(
@@ -423,10 +454,10 @@ impl AgentLoop {
         // Add assistant message with tool calls to the conversation
         if response.tool_calls.is_empty() {
             if let Some(ref c) = response.content {
-                messages.push(ChatMessage::assistant(c));
+                state.messages.push(ChatMessage::assistant(c));
             }
         } else {
-            messages.push(ChatMessage::assistant_with_tools(
+            state.messages.push(ChatMessage::assistant_with_tools(
                 response.content.clone(),
                 response.tool_calls.clone(),
             ));
@@ -444,10 +475,10 @@ impl AgentLoop {
                 tool_args: tool_args.clone(),
                 skip: false,
                 skip_result: None,
-                metadata: hook_metadata.clone(),
+                metadata: state.hook_metadata.clone(),
             };
             self.hooks.run_on_tool_execute(&mut tool_ctx).await;
-            *hook_metadata = tool_ctx.metadata;
+            *state.hook_metadata = tool_ctx.metadata;
 
             let start = std::time::Instant::now();
 
@@ -468,12 +499,12 @@ impl AgentLoop {
                 tool_name: tool_name.clone(),
                 tool_result: output.clone(),
                 duration_ms,
-                metadata: hook_metadata.clone(),
+                metadata: state.hook_metadata.clone(),
             };
             self.hooks.run_on_tool_result(&mut result_ctx).await;
-            *hook_metadata = result_ctx.metadata;
+            *state.hook_metadata = result_ctx.metadata;
 
-            tools_used.push(tool_name.clone());
+            state.tools_used.push(tool_name.clone());
 
             cb(&StreamEvent::ToolStart {
                 name: tool_name.clone(),
@@ -486,7 +517,7 @@ impl AgentLoop {
                 output: output_preview,
             });
             // Add the tool result to the conversation
-            messages.push(ChatMessage::tool_result(
+            state.messages.push(ChatMessage::tool_result(
                 tool_call.id.clone(),
                 tool_name.clone(),
                 result_ctx.tool_result.clone(),

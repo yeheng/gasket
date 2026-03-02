@@ -12,6 +12,12 @@ use super::{AgentHook, LlmResponseContext, ToolResultContext};
 /// Registered automatically by [`AgentLoop::new()`].
 pub struct LoggingHook;
 
+impl Default for LoggingHook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoggingHook {
     pub fn new() -> Self {
         Self

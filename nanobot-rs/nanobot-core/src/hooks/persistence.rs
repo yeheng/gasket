@@ -67,7 +67,12 @@ impl AgentHook for PersistenceHook {
         // Stateless write: directly append to SQLite without any in-memory cache
         if let Err(e) = self
             .sessions
-            .append_by_key(&ctx.session_key, &ctx.role, &ctx.content, ctx.tools_used.clone())
+            .append_by_key(
+                &ctx.session_key,
+                &ctx.role,
+                &ctx.content,
+                ctx.tools_used.clone(),
+            )
             .await
         {
             warn!("Failed to persist {} message to SQLite: {}", ctx.role, e);
