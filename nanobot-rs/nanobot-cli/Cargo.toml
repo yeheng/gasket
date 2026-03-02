@@ -68,3 +68,6 @@ termimad = { workspace = true, optional = true }
 
 # Telegram (optional)
 teloxide = { workspace = true, optional = true }
+
+# TLS
+rustls = { version = "0.23", features = ["ring"] }

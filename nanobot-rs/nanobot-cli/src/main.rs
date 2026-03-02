@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::Parser;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
+use rustls::crypto::ring::default_provider;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
@@ -15,6 +16,11 @@ use cli::{AuthCommands, ChannelsCommands, Cli, Commands, CronCommands};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install rustls CryptoProvider (required for rustls 0.23+)
+    default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // Initialize logging and OpenTelemetry
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
 
