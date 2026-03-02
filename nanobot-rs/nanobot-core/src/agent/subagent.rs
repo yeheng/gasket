@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tracing::{info, instrument, warn};
 
 use crate::config::ChannelsConfig;
-use crate::hooks::prompt::BootstrapHook;
+use crate::hooks::prompt;
 use crate::providers::LlmProvider;
 use crate::tools::ToolRegistry;
 
@@ -71,15 +71,17 @@ impl SubagentManager {
                     }
                 };
 
-            // Register minimal bootstrap hook for subagents
-            let hook = match BootstrapHook::new_minimal(&workspace).await {
-                Ok(h) => h,
-                Err(e) => {
-                    warn!("Failed to load minimal bootstrap hook: {}", e);
-                    return;
-                }
-            };
-            agent.register_hook(Arc::new(hook));
+            // Load minimal system prompt directly (no hook dispatch)
+            let system_prompt =
+                match prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL).await
+                {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("Failed to load minimal system prompt: {}", e);
+                        return;
+                    }
+                };
+            agent.set_system_prompt(system_prompt);
 
             let result = agent.process_direct(&prompt, &session_key).await;
 

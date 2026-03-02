@@ -28,7 +28,7 @@ pub mod wecom;
 pub use base::Channel;
 pub use manager::ChannelManager;
 pub use middleware::{
-    log_inbound, log_outbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
+    log_inbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
 };
 
 use crate::bus::events::OutboundMessage;

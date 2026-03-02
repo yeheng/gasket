@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::events::InboundMessage;
 use crate::bus::ChannelType;
 use crate::channels::middleware::InboundSender;
 
@@ -277,10 +277,6 @@ impl Channel for FeishuChannel {
     async fn stop(&mut self) -> anyhow::Result<()> {
         info!("Stopping Feishu channel");
         Ok(())
-    }
-
-    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        self.send_text(&msg.chat_id, &msg.content).await
     }
 }
 

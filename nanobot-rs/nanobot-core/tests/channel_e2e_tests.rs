@@ -126,27 +126,18 @@ mod dingtalk_e2e {
 
     #[tokio::test]
     #[ignore]
-    async fn test_dingtalk_send_via_channel_trait_real_api() {
+    async fn test_dingtalk_send_via_stateless_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
         let channel = DingTalkChannel::new(config, create_test_sender());
 
-        let msg = OutboundMessage {
-            channel: ChannelType::Dingtalk,
-            chat_id: "unused".to_string(), // DingTalk send() uses webhook, not chat_id
-            content: "[E2E Test] DingTalk Channel::send trait - nanobot".to_string(),
-            metadata: None,
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        let result = channel
+            .send_text("[E2E Test] DingTalk stateless send - nanobot")
+            .await;
         assert!(
             result.is_ok(),
-            "DingTalk Channel::send failed: {:?}",
+            "DingTalk stateless send failed: {:?}",
             result.err()
         );
     }
@@ -248,11 +239,8 @@ mod feishu_e2e {
 
     #[tokio::test]
     #[ignore]
-    async fn test_feishu_send_via_channel_trait_real_api() {
+    async fn test_feishu_send_via_stateless_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
         let chat_id = env_or_skip!("FEISHU_CHAT_ID");
@@ -260,22 +248,16 @@ mod feishu_e2e {
         let mut channel = FeishuChannel::new(config, create_test_sender());
 
         // Must start to get access token
-        Channel::start(&mut channel)
+        nanobot_core::channels::base::Channel::start(&mut channel)
             .await
             .expect("Feishu start failed");
 
-        let msg = OutboundMessage {
-            channel: ChannelType::Feishu,
-            chat_id,
-            content: "[E2E Test] Feishu Channel::send trait - nanobot".to_string(),
-            metadata: None,
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        let result = channel
+            .send_text(&chat_id, "[E2E Test] Feishu stateless send - nanobot")
+            .await;
         assert!(
             result.is_ok(),
-            "Feishu Channel::send failed: {:?}",
+            "Feishu stateless send failed: {:?}",
             result.err()
         );
     }
@@ -378,61 +360,49 @@ mod slack_e2e {
 
     #[tokio::test]
     #[ignore]
-    async fn test_slack_send_via_channel_trait_real_api() {
+    async fn test_slack_send_via_stateless_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
         let channel = SlackChannel::new(config, create_raw_test_sender());
 
-        let msg = OutboundMessage {
-            channel: ChannelType::Slack,
-            chat_id: channel_id,
-            content: "[E2E Test] Slack Channel::send trait - nanobot".to_string(),
-            metadata: None,
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        let result = channel
+            .send_message(
+                &channel_id,
+                "[E2E Test] Slack stateless send - nanobot",
+                None,
+            )
+            .await;
         assert!(
             result.is_ok(),
-            "Slack Channel::send failed: {:?}",
+            "Slack stateless send failed: {:?}",
             result.err()
         );
     }
 
     #[tokio::test]
     #[ignore]
-    async fn test_slack_send_via_channel_trait_with_thread_metadata_real_api() {
+    async fn test_slack_send_with_thread_metadata_real_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
         let channel_id = env_or_skip!("SLACK_CHANNEL_ID");
 
         let channel = SlackChannel::new(config, create_raw_test_sender());
 
-        // Send with thread_ts metadata (thread_ts is null, but the code path is exercised)
-        let msg = OutboundMessage {
-            channel: ChannelType::Slack,
-            chat_id: channel_id,
-            content: "[E2E Test] Slack Channel::send with metadata - nanobot".to_string(),
-            metadata: Some(serde_json::json!({
-                "thread_ts": null
-            })),
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        // Send with thread_ts=None (the code path is exercised)
+        let result = channel
+            .send_message(
+                &channel_id,
+                "[E2E Test] Slack send with metadata - nanobot",
+                None,
+            )
+            .await;
         assert!(
             result.is_ok(),
-            "Slack Channel::send with metadata failed: {:?}",
+            "Slack send with metadata failed: {:?}",
             result.err()
         );
     }
@@ -566,30 +536,24 @@ mod email_e2e {
 
     #[tokio::test]
     #[ignore]
-    async fn test_email_send_via_channel_trait_real_api() {
+    async fn test_email_send_via_stateless_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
 
         let config = make_smtp_config!();
         let to_address = env_or_skip!("EMAIL_TO_ADDRESS");
 
         let channel = EmailChannel::new(config, create_raw_test_sender());
 
-        // Channel::send parses chat_id as "email:recipient@example.com"
-        let msg = OutboundMessage {
-            channel: ChannelType::Email,
-            chat_id: format!("email:{}", to_address),
-            content: "[E2E Test] Email Channel::send trait - nanobot".to_string(),
-            metadata: None,
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        let result = channel
+            .send_email(
+                &to_address,
+                "[E2E Test] Nanobot Email Stateless Send",
+                "[E2E Test] Email stateless send - nanobot",
+            )
+            .await;
         assert!(
             result.is_ok(),
-            "Email Channel::send failed: {:?}",
+            "Email stateless send failed: {:?}",
             result.err()
         );
     }
@@ -662,24 +626,17 @@ mod telegram_e2e {
     #[ignore]
     async fn test_telegram_send_message_real_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
+        use nanobot_core::channels::telegram;
 
         let config = make_config!();
         let chat_id = env_or_skip!("TELEGRAM_CHAT_ID");
 
-        let channel = TelegramChannel::new(config, create_raw_test_sender());
-
-        let msg = OutboundMessage {
-            channel: ChannelType::Telegram,
-            chat_id,
-            content: "[E2E Test] Telegram Channel::send - nanobot channel test".to_string(),
-            metadata: None,
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        let result = telegram::send_text_stateless(
+            &config.token,
+            &chat_id,
+            "[E2E Test] Telegram stateless send - nanobot channel test",
+        )
+        .await;
         assert!(result.is_ok(), "Telegram send failed: {:?}", result.err());
     }
 
@@ -727,29 +684,17 @@ mod telegram_e2e {
     #[ignore]
     async fn test_telegram_send_long_message_real_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
+        use nanobot_core::channels::telegram;
 
         let config = make_config!();
         let chat_id = env_or_skip!("TELEGRAM_CHAT_ID");
-
-        let channel = TelegramChannel::new(config, create_raw_test_sender());
 
         let long_content = format!(
             "[E2E Test] Telegram long message test - nanobot\n\n{}\n\nEnd of message.",
             "This is a line of test content. ".repeat(20)
         );
 
-        let msg = OutboundMessage {
-            channel: ChannelType::Telegram,
-            chat_id,
-            content: long_content,
-            metadata: None,
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        let result = telegram::send_text_stateless(&config.token, &chat_id, &long_content).await;
         assert!(
             result.is_ok(),
             "Telegram send long message failed: {:?}",
@@ -1093,32 +1038,23 @@ mod wecom_e2e {
 
     #[tokio::test]
     #[ignore]
-    async fn test_wecom_send_via_channel_trait_real_api() {
+    async fn test_wecom_send_via_stateless_api() {
         load_env();
-        use nanobot_core::bus::events::OutboundMessage;
-        use nanobot_core::bus::ChannelType;
-        use nanobot_core::channels::base::Channel;
 
         let config = make_config!();
         let to_user = env_or_skip!("WECOM_TO_USER");
 
         let mut channel = WeComChannel::new(config, create_test_sender());
-        Channel::start(&mut channel)
+        nanobot_core::channels::base::Channel::start(&mut channel)
             .await
             .expect("WeCom start failed");
 
-        let msg = OutboundMessage {
-            channel: ChannelType::Wecom,
-            chat_id: to_user,
-            content: "[E2E Test] WeCom Channel::send trait - nanobot".to_string(),
-            metadata: None,
-            trace_id: None,
-        };
-
-        let result = channel.send(msg).await;
+        let result = channel
+            .send_text(&to_user, "[E2E Test] WeCom stateless send - nanobot")
+            .await;
         assert!(
             result.is_ok(),
-            "WeCom Channel::send failed: {:?}",
+            "WeCom stateless send failed: {:?}",
             result.err()
         );
     }

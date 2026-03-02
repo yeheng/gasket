@@ -64,7 +64,10 @@ impl AgentHook for PersistenceHook {
     }
 
     async fn on_session_save(&self, ctx: &mut SessionSaveContext) {
-        // Stateless write: directly append to SQLite without any in-memory cache
+        // Stateless write: directly append to SQLite without any in-memory cache.
+        // Messages are stored in `session_messages` table with proper `session_key`
+        // isolation.  The global `history` table is intentionally NOT written to,
+        // as it lacks session scoping and would leak data across sessions.
         if let Err(e) = self
             .sessions
             .append_by_key(
@@ -77,11 +80,6 @@ impl AgentHook for PersistenceHook {
         {
             warn!("Failed to persist {} message to SQLite: {}", ctx.role, e);
         }
-
-        let history_entry = format!("{}: {}", capitalize_role(&ctx.role), &ctx.content);
-        if let Err(e) = self.memory.append_history(&history_entry).await {
-            warn!("Failed to persist {} history to SQLite: {}", ctx.role, e);
-        }
     }
 
     async fn on_context_prepare(&self, ctx: &mut ContextPrepareContext) {
@@ -89,13 +87,5 @@ impl AgentHook for PersistenceHook {
         if ctx.memory.is_none() {
             ctx.memory = self.memory.read_long_term().await.ok();
         }
-    }
-}
-
-fn capitalize_role(role: &str) -> &str {
-    match role {
-        "user" => "User",
-        "assistant" => "Assistant",
-        other => other,
     }
 }

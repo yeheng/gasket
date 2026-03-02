@@ -7,7 +7,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::events::InboundMessage;
 use crate::bus::ChannelType;
 
 /// Telegram channel configuration
@@ -106,11 +106,6 @@ impl Channel for TelegramChannel {
     async fn stop(&mut self) -> anyhow::Result<()> {
         info!("Stopping Telegram channel");
         Ok(())
-    }
-
-    #[instrument(name = "channel.telegram.send", skip_all, fields(chat_id = %msg.chat_id))]
-    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        send_text_stateless(&self.config.token, &msg.chat_id, &msg.content).await
     }
 }
 

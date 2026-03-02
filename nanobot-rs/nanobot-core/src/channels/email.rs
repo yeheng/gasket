@@ -14,7 +14,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument, warn};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::events::InboundMessage;
 use crate::bus::ChannelType;
 
 /// Email channel configuration
@@ -309,12 +309,6 @@ impl Channel for EmailChannel {
     async fn stop(&mut self) -> anyhow::Result<()> {
         info!("Stopping Email channel");
         Ok(())
-    }
-
-    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        // Parse email address from chat_id
-        let to = msg.chat_id.trim_start_matches("email:");
-        self.send_email(to, "Re: Your message", &msg.content).await
     }
 }
 

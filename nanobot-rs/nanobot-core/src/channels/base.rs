@@ -2,11 +2,13 @@
 
 use async_trait::async_trait;
 
-use crate::bus::events::OutboundMessage;
-
 /// Channel trait for implementing chat channel integrations.
 ///
-/// Provides a unified lifecycle: `init` → `start` → `stop` → `graceful_shutdown`.
+/// Channels are **inbound-only**: they receive messages and push them to the
+/// internal bus.  All **outbound** sending is handled by the stateless
+/// [`super::send_outbound`] function, which routes based on channel type.
+///
+/// Provides a unified lifecycle: `start` → `stop` → `graceful_shutdown`.
 #[async_trait]
 pub trait Channel: Send + Sync {
     /// Get the channel name
@@ -17,9 +19,6 @@ pub trait Channel: Send + Sync {
 
     /// Stop the channel
     async fn stop(&mut self) -> anyhow::Result<()>;
-
-    /// Send a message through this channel
-    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()>;
 
     /// Graceful shutdown with optional timeout.
     ///

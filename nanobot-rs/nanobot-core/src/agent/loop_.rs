@@ -1,4 +1,25 @@
 //! Agent loop: the core processing engine
+//!
+//! ## Execution Flow
+//!
+//! The main pipeline in `process_direct_with_callback` is a straight-line sequence:
+//!
+//! ```text
+//! 1. on_request         → hooks can skip the request
+//! 2. load_session       → inline: SessionManager loads history
+//! 3. save_user_message  → inline: SessionManager persists user msg
+//! 4. process_history    → pure: truncate history, compute evictions
+//! 5. summarize          → inline: SummarizationService compresses evicted msgs
+//! 6. on_context_prepare → hooks inject system_prompts (bootstrap, skills)
+//! 7. read_long_term     → inline: MemoryStore reads MEMORY.md
+//! 8. assemble_prompt    → pure: build Vec<ChatMessage>
+//! 9. run_agent_loop     → LLM iteration (with on_llm_request/response, tool hooks)
+//! 10. on_response       → hooks post-process
+//! 11. save_assistant_msg → inline: SessionManager persists assistant msg
+//! ```
+//!
+//! Steps 2, 3, 5, 7, 11 are **direct method calls** on owned services
+//! (not hidden behind hooks), making the data flow explicit and debuggable.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,13 +34,10 @@ use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamCallback, StreamEvent};
 use crate::agent::summarization::SummarizationService;
 use crate::hooks::logging::LoggingHook;
-use crate::hooks::persistence::PersistenceHook;
-use crate::hooks::prompt::{BootstrapHook, SkillsHook};
-use crate::hooks::summarization::SummarizationHook;
+use crate::hooks::prompt;
 use crate::hooks::{
     AgentHook, ContextPrepareContext, HookRegistry, LlmRequestContext, LlmResponseContext,
-    RequestContext, ResponseContext, SessionLoadContext, SessionSaveContext, ToolExecuteContext,
-    ToolResultContext,
+    RequestContext, ResponseContext, ToolExecuteContext, ToolResultContext,
 };
 use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
 use crate::tools::ToolRegistry;
@@ -95,29 +113,53 @@ struct ToolCallState<'a> {
 
 /// The agent loop - core processing engine.
 ///
-/// After decoupling, the agent loop only holds:
-/// - **LLM provider** — for making chat calls
-/// - **ContextBuilder** — pure data assembler for prompts
-/// - **ToolRegistry** — registered tool definitions
-/// - **HookRegistry** — all extensions (persistence, summarization, etc.)
-/// - **Config** — model, iteration limits, etc.
+/// Directly owns the core services needed for conversation management:
+/// - **SessionManager** — session persistence (load/save messages)
+/// - **MemoryStore** — long-term memory (MEMORY.md)
+/// - **SummarizationService** — LLM-based context compression
+///
+/// System prompt and skills context are loaded **once** at initialization
+/// and stored as plain `String` fields — no dynamic hook dispatch.
+///
+/// Uses **HookRegistry** only for truly extensible concerns:
+/// - Logging (LLM response + tool result logging)
+/// - Custom extensions via `register_hook()`
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
     config: AgentConfig,
     workspace: PathBuf,
-    /// Lifecycle hooks for extending agent behavior.
+    /// Lifecycle hooks for extensible (non-core) behavior.
     hooks: HookRegistry,
     /// History truncator configuration.
     history_config: HistoryConfig,
+    /// Session persistence — owned directly for explicit control flow.
+    sessions: Option<SessionManager>,
+    /// Long-term memory store — owned directly for explicit control flow.
+    memory: Option<MemoryStore>,
+    /// Context compression — owned directly for explicit control flow.
+    summarization: Option<SummarizationService>,
+    /// Pre-loaded system prompt (from workspace bootstrap files).
+    /// Injected directly in step 6 — no hook dispatch.
+    system_prompt: String,
+    /// Pre-loaded skills context (from workspace skills).
+    /// Injected directly in step 6 — no hook dispatch.
+    skills_context: Option<String>,
 }
 
 impl AgentLoop {
     /// Create a new agent loop with a pre-built tool registry.
     ///
-    /// Automatically registers default hooks:
-    /// - **PersistenceHook** — session + memory I/O
-    /// - **SummarizationHook** — LLM-based context compression
+    /// Owns core services directly:
+    /// - **SessionManager** — session load/save
+    /// - **MemoryStore** — long-term memory
+    /// - **SummarizationService** — context compression
+    ///
+    /// Loads system prompt and skills context **once** at initialization
+    /// and injects them directly into the prompt — no hook dispatch.
+    ///
+    /// Registers hooks only for truly extensible concerns:
+    /// - **LoggingHook** — LLM + tool logging
     ///
     /// # Errors
     ///
@@ -131,19 +173,18 @@ impl AgentLoop {
         let memory = MemoryStore::new().await;
         let sessions = SessionManager::new(memory.sqlite_store().clone());
 
-        // Create default hooks
         let store_arc = Arc::new(memory.sqlite_store().clone());
-        let summarization_service =
+        let summarization =
             SummarizationService::new(provider.clone(), store_arc, config.model.clone());
 
-        let mut hooks = HookRegistry::new();
-        hooks.register(Arc::new(PersistenceHook::new(sessions, memory)));
-        hooks.register(Arc::new(SummarizationHook::new(summarization_service)));
-        hooks.register(Arc::new(LoggingHook::new()));
+        // Load system prompt and skills directly — no hook indirection
+        let system_prompt =
+            prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
+        let skills_context = prompt::load_skills_context(&workspace).await;
 
-        // Add context building hooks
-        hooks.register(Arc::new(BootstrapHook::new_full(&workspace).await?));
-        hooks.register(Arc::new(SkillsHook::new(&workspace).await));
+        // Only register hooks for truly extensible concerns
+        let mut hooks = HookRegistry::new();
+        hooks.register(Arc::new(LoggingHook::new()));
 
         Ok(Self {
             provider,
@@ -152,12 +193,18 @@ impl AgentLoop {
             workspace,
             hooks,
             history_config: HistoryConfig::default(),
+            sessions: Some(sessions),
+            memory: Some(memory),
+            summarization: Some(summarization),
+            system_prompt,
+            skills_context,
         })
     }
 
-    /// Create a new agent loop for subagents without default hooks.
+    /// Create a new agent loop for subagents without default hooks or services.
     ///
-    /// Callers are responsible for registering hooks as needed (e.g. `BootstrapHook::new_minimal`).
+    /// System prompt is empty by default; use `set_system_prompt()` to configure.
+    /// Subagents typically don't need session persistence or summarization.
     pub async fn builder(
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
@@ -175,7 +222,17 @@ impl AgentLoop {
                 token_budget: 4000,
                 recent_keep: 5,
             },
+            sessions: None,
+            memory: None,
+            summarization: None,
+            system_prompt: String::new(),
+            skills_context: None,
         })
+    }
+
+    /// Set the system prompt (used by subagents to configure identity).
+    pub fn set_system_prompt(&mut self, prompt: String) {
+        self.system_prompt = prompt;
     }
 
     /// Register a lifecycle hook.
@@ -198,17 +255,13 @@ impl AgentLoop {
     /// Clear the session for the given key (used by CLI for `/new` command).
     ///
     /// This resets the conversation history so the next message starts fresh.
-    ///
-    /// Requires that a `PersistenceHook` is registered (which is the case
-    /// when using `AgentLoop::new()`).
     pub async fn clear_session(&self, session_key: &str) {
-        // Access the PersistenceHook's SessionManager
-        if let Some(persistence) = self.hooks.get_hook::<PersistenceHook>() {
-            let mut session = persistence.sessions().get_or_create(session_key).await;
+        if let Some(ref sessions) = self.sessions {
+            let mut session = sessions.get_or_create(session_key).await;
             session.clear();
-            persistence.sessions().save(&session).await;
+            sessions.save(&session).await;
         } else {
-            warn!("clear_session called but no PersistenceHook is registered");
+            warn!("clear_session called but no SessionManager is configured");
         }
     }
 
@@ -221,9 +274,8 @@ impl AgentLoop {
 
     /// Process a message with optional streaming callback.
     ///
-    /// When `callback` is `Some` and `config.streaming` is enabled, the agent
-    /// loop will use streaming LLM calls and emit `StreamEvent`s via the
-    /// callback as content arrives.
+    /// The pipeline is a straight-line sequence with no hidden control flow.
+    /// See module-level docs for the full execution flow diagram.
     #[instrument(skip(self, content, callback))]
     pub async fn process_direct_with_callback(
         &self,
@@ -231,10 +283,9 @@ impl AgentLoop {
         session_key: &str,
         callback: Option<&StreamCallback>,
     ) -> Result<AgentResponse> {
-        // Generate a unique request ID for this entire pipeline
         let request_id = uuid::Uuid::new_v4().to_string();
 
-        // ── Hook: on_request ───────────────────────────────────
+        // ── 1. Hook: on_request (can skip) ────────────────────────
         let mut req_ctx = RequestContext {
             request_id: request_id.clone(),
             session_key: session_key.to_string(),
@@ -250,45 +301,82 @@ impl AgentLoop {
                 tools_used: vec![],
             });
         }
+        let mut metadata = req_ctx.metadata;
 
-        // ── Hook: on_session_load ──────────────────────────────
-        let mut load_ctx = SessionLoadContext {
-            request_id: request_id.clone(),
-            session_key: session_key.to_string(),
-            memory_window: self.config.memory_window,
-            history: Vec::new(),
-            metadata: std::mem::take(&mut req_ctx.metadata),
+        // ── 2. Load session history (direct) ──────────────────────
+        let history_snapshot = if let Some(ref sessions) = self.sessions {
+            let session = sessions.get_or_create(session_key).await;
+            session.get_history(self.config.memory_window)
+        } else {
+            Vec::new()
         };
-        self.hooks.run_on_session_load(&mut load_ctx).await;
-        let history_snapshot = load_ctx.history;
 
-        // ── Hook: on_session_save (user message) ───────────────
-        let mut save_ctx = SessionSaveContext {
-            request_id: request_id.clone(),
-            session_key: session_key.to_string(),
-            role: "user".to_string(),
-            content: content.to_string(),
-            tools_used: None,
-            metadata: std::mem::take(&mut load_ctx.metadata),
-        };
-        self.hooks.run_on_session_save(&mut save_ctx).await;
+        // ── 3. Save user message (direct) ─────────────────────────
+        if let Some(ref sessions) = self.sessions {
+            if let Err(e) = sessions
+                .append_by_key(session_key, "user", content, None)
+                .await
+            {
+                warn!("Failed to persist user message: {}", e);
+            }
+        }
 
-        // ── Three-step pipeline ────────────────────────────────
-        // 1. Truncate history (pure computation)
+        // ── 4. Truncate history (pure computation) ────────────────
         let processed = process_history(history_snapshot, &self.history_config);
 
+        // ── 5. Summarize evicted messages (direct) ────────────────
+        let summary = if let Some(ref summarization) = self.summarization {
+            if !processed.evicted.is_empty() {
+                let existing = summarization.load_summary(session_key).await;
+                match summarization
+                    .summarize(session_key, &processed.evicted, &existing)
+                    .await
+                {
+                    Ok(new_summary) => Some(new_summary),
+                    Err(e) => {
+                        warn!("Summarization failed, using fallback: {}", e);
+                        existing
+                    }
+                }
+            } else {
+                summarization.load_summary(session_key).await
+            }
+        } else {
+            None
+        };
+
+        // ── 6. Inject system prompts (direct) ──────────────────────
+        //    Previously done via BootstrapHook/SkillsHook dynamic dispatch;
+        //    now inlined for clarity and zero overhead.
         let mut ctx_prepare = ContextPrepareContext {
             request_id: request_id.clone(),
             session_key: session_key.to_string(),
             evicted_messages: processed.evicted,
             system_prompts: Vec::new(),
-            summary: None,
+            summary,
             memory: None,
-            metadata: std::mem::take(&mut save_ctx.metadata),
+            metadata: std::mem::take(&mut metadata),
         };
+
+        // Inject pre-loaded system prompt directly
+        if !self.system_prompt.is_empty() {
+            ctx_prepare.system_prompts.push(self.system_prompt.clone());
+        }
+        // Inject pre-loaded skills context directly
+        if let Some(ref skills) = self.skills_context {
+            ctx_prepare.system_prompts.push(skills.clone());
+        }
+        // Run remaining hooks (logging, custom extensions)
         self.hooks.run_on_context_prepare(&mut ctx_prepare).await;
 
-        // 3. Assemble prompt (pure, synchronous)
+        // ── 7. Read long-term memory (direct) ─────────────────────
+        if ctx_prepare.memory.is_none() {
+            if let Some(ref memory) = self.memory {
+                ctx_prepare.memory = memory.read_long_term().await.ok();
+            }
+        }
+
+        // ── 8. Assemble prompt (pure, synchronous) ────────────────
         let messages = Self::assemble_prompt(
             processed.messages,
             content,
@@ -297,7 +385,7 @@ impl AgentLoop {
             ctx_prepare.summary.as_deref(),
         );
 
-        // Run the agent loop
+        // ── 9. Run agent loop ─────────────────────────────────────
         let effective_cb = if self.config.streaming {
             callback
         } else {
@@ -307,8 +395,7 @@ impl AgentLoop {
             .run_agent_loop(messages, effective_cb, ctx_prepare.metadata, &request_id)
             .await?;
 
-        // ── Hook: on_response ─────────────────────────────────
-        // Destructure result to avoid cloning (result is not used after this)
+        // ── 10. Hook: on_response ─────────────────────────────────
         let AgentLoopResult {
             content: loop_content,
             reasoning_content: loop_reasoning,
@@ -326,18 +413,20 @@ impl AgentLoop {
         };
         self.hooks.run_on_response(&mut resp_ctx).await;
 
-        // ── Hook: on_session_save (assistant response) ─────────
-        // Move metadata (not needed on resp_ctx after this); clone
-        // content/tools_used since they go to both save_ctx and AgentResponse.
-        let mut save_ctx = SessionSaveContext {
-            request_id: request_id.clone(),
-            session_key: session_key.to_string(),
-            role: "assistant".to_string(),
-            content: resp_ctx.content.clone(),
-            tools_used: Some(resp_ctx.tools_used.clone()),
-            metadata: std::mem::take(&mut resp_ctx.metadata),
-        };
-        self.hooks.run_on_session_save(&mut save_ctx).await;
+        // ── 11. Save assistant message (direct) ───────────────────
+        if let Some(ref sessions) = self.sessions {
+            if let Err(e) = sessions
+                .append_by_key(
+                    session_key,
+                    "assistant",
+                    &resp_ctx.content,
+                    Some(resp_ctx.tools_used.clone()),
+                )
+                .await
+            {
+                warn!("Failed to persist assistant message: {}", e);
+            }
+        }
 
         Ok(AgentResponse {
             content: resp_ctx.content,

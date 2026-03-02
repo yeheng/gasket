@@ -7,7 +7,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::events::InboundMessage;
 use crate::bus::ChannelType;
 
 /// Slack channel configuration
@@ -256,16 +256,6 @@ impl Channel for SlackChannel {
     async fn stop(&mut self) -> anyhow::Result<()> {
         info!("Stopping Slack channel");
         Ok(())
-    }
-
-    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        let thread_ts = msg
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("thread_ts"))
-            .and_then(|v| v.as_str());
-        self.send_message(&msg.chat_id, &msg.content, thread_ts)
-            .await
     }
 }
 

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::events::InboundMessage;
 use crate::bus::ChannelType;
 use crate::channels::middleware::InboundSender;
 use crate::crypto::wecom::{compute_signature, decode_aes_key, decrypt_message};
@@ -561,10 +561,6 @@ impl Channel for WeComChannel {
     async fn stop(&mut self) -> anyhow::Result<()> {
         info!("Stopping WeCom channel");
         Ok(())
-    }
-
-    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        self.send_text(&msg.chat_id, &msg.content).await
     }
 }
 

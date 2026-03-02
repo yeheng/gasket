@@ -3,13 +3,11 @@
 //! The `SqliteStore` is split across several files for clarity:
 //! - `mod.rs` — core struct, construction, schema migration
 //! - `memories.rs` — `MemoryStore` trait implementation (FTS5 search)
-//! - `history.rs` — conversation history API
 //! - `kv.rs` — key-value store API
 //! - `session.rs` — session metadata, messages, and summaries API
 //! - `cron.rs` — cron job persistence API
 
 mod cron;
-mod history;
 mod kv;
 mod memories;
 mod session;
@@ -26,7 +24,7 @@ pub use session::{MessageRow, SessionMeta};
 
 /// SQLite-backed memory store with FTS5 full-text search.
 ///
-/// Persists memory entries, history, long-term memory, and sessions in a
+/// Persists memory entries, long-term memory, and sessions in a
 /// single SQLite database file. Uses `sqlx::SqlitePool` for native async
 /// I/O without blocking the tokio runtime.
 #[derive(Clone)]
@@ -166,22 +164,6 @@ impl SqliteStore {
         )
         .execute(&self.pool)
         .await?;
-
-        // ── History table ──
-
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS history (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                content     TEXT NOT NULL,
-                created_at  TEXT NOT NULL
-            )",
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at)")
-            .execute(&self.pool)
-            .await?;
 
         // ── Key-value store ──
 
@@ -551,73 +533,6 @@ mod tests {
 
         let all = store.search(&MemoryQuery::default()).await.unwrap();
         assert_eq!(all.len(), 10);
-    }
-
-    // ── History tests ──
-
-    #[tokio::test]
-    async fn test_sqlite_history_append_and_read() {
-        let store = temp_store().await;
-
-        store.append_history("First entry\n").await.unwrap();
-        store.append_history("Second entry\n").await.unwrap();
-
-        let history = store.read_history().await.unwrap();
-        assert!(history.contains("First entry"));
-        assert!(history.contains("Second entry"));
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_history_read_empty() {
-        let store = temp_store().await;
-        let history = store.read_history().await.unwrap();
-        assert!(history.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_history_write() {
-        let store = temp_store().await;
-
-        store.append_history("Old entry\n").await.unwrap();
-        store.write_history("New content\n").await.unwrap();
-
-        let history = store.read_history().await.unwrap();
-        assert!(!history.contains("Old entry"));
-        assert!(history.contains("New content"));
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_history_clear() {
-        let store = temp_store().await;
-
-        store.append_history("Entry 1\n").await.unwrap();
-        store.append_history("Entry 2\n").await.unwrap();
-
-        store.clear_history().await.unwrap();
-
-        let history = store.read_history().await.unwrap();
-        assert!(history.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_sqlite_history_persistence() {
-        let path = std::env::temp_dir().join(format!(
-            "nanobot_sqlite_history_{}.db",
-            uuid::Uuid::new_v4()
-        ));
-
-        {
-            let store = SqliteStore::with_path(path.clone()).await.unwrap();
-            store.append_history("Persisted history\n").await.unwrap();
-        }
-
-        {
-            let store = SqliteStore::with_path(path.clone()).await.unwrap();
-            let history = store.read_history().await.unwrap();
-            assert!(history.contains("Persisted history"));
-        }
-
-        let _ = std::fs::remove_file(path);
     }
 
     // ── Key-value store tests ──

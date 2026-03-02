@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use moka::future::Cache;
+use std::time::Duration;
 
 use nanobot_core::agent::{AgentConfig, AgentLoop};
 use nanobot_core::config::load_config;
@@ -125,29 +127,33 @@ pub async fn cmd_gateway() -> Result<()> {
     // --- Inbound message handler ---
     // Per-session serialization: ensures that requests for the same session_key
     // are processed sequentially, while different sessions remain fully concurrent.
-    // Idle semaphores are cleaned up after each request to prevent unbounded growth.
+    //
+    // We use moka::future::Cache with TTL to automatically evict idle semaphores,
+    // preventing unbounded memory growth from malicious/accidental session_key flooding.
+    // Cache capacity: 10,000 sessions, TTL: 1 hour idle timeout.
     {
         let agent_for_handler = agent.clone();
-        let channels_config = std::sync::Arc::new(config.channels.clone());
-        let session_locks: Arc<
-            std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>>,
-        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let channels_config = Arc::new(config.channels.clone());
+
+        // LRU cache with TTL to prevent memory leak from unbounded session growth.
+        // This fixes the DoS vulnerability where session_keys would accumulate forever.
+        let session_locks: Cache<String, Arc<tokio::sync::Semaphore>> = Cache::builder()
+            .max_capacity(10_000)
+            .time_to_idle(Duration::from_secs(3600)) // 1 hour idle TTL
+            .build();
 
         tasks.push(tokio::spawn(async move {
             while let Some(msg) = inbound_rx.recv().await {
                 let agent_clone = agent_for_handler.clone();
                 let channels_cfg_clone = channels_config.clone();
                 let session_key = msg.session_key();
-                let locks_for_cleanup = session_locks.clone();
 
-                // Obtain or create a per-session semaphore (permits = 1 for serialization)
-                let semaphore = {
-                    let mut locks = session_locks.lock().unwrap();
-                    locks
-                        .entry(session_key.clone())
-                        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
-                        .clone()
-                };
+                // Get or create semaphore via LRU cache with automatic eviction
+                let semaphore = session_locks
+                    .get_with(session_key.clone(), async {
+                        Arc::new(tokio::sync::Semaphore::new(1))
+                    })
+                    .await;
 
                 // Spawn task — acquires semaphore before processing
                 let task_session_key = session_key.clone();
@@ -179,16 +185,6 @@ pub async fn cmd_gateway() -> Result<()> {
                         Err(e) => {
                             tracing::error!("Error processing message: {}", e);
                         }
-                    }
-
-                    // Release permit (drop), then clean up idle semaphore.
-                    // After dropping _permit, if this Arc is the only remaining
-                    // clone besides the HashMap entry (strong_count == 2: our
-                    // local clone + HashMap), no other task is waiting or running
-                    // for this session — safe to remove.
-                    drop(_permit);
-                    if Arc::strong_count(&semaphore) == 2 {
-                        locks_for_cleanup.lock().unwrap().remove(&task_session_key);
                     }
                 });
             }

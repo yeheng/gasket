@@ -1,4 +1,12 @@
 //! Channel manager for coordinating multiple chat channels
+//!
+//! NOTE: The gateway currently bypasses `ChannelManager` entirely.
+//! - Inbound: channels push to `InboundSender::raw_sender()` directly.
+//! - Outbound: `send_outbound()` in `channels/mod.rs` handles stateless routing.
+//!
+//! This module is retained for potential future use (e.g., managed channel lifecycle).
+//! The previous `send()` and `spawn_outbound_router()` outbound methods have been
+//! removed to eliminate the duplicate routing path that `send_outbound()` already covers.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,16 +16,16 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use super::base::Channel;
-use super::middleware::{
-    log_inbound, log_outbound, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
-};
-use crate::bus::events::{ChannelType, InboundMessage, OutboundMessage};
+use super::middleware::{InboundSender, SimpleAuthChecker, SimpleRateLimiter};
+use crate::bus::events::{ChannelType, InboundMessage};
 use crate::bus::MessageBus;
 
 /// Manager for coordinating multiple channels.
 ///
-/// Owns the `MessageBus` and drives the outbound message routing loop.
-/// Uses simple, direct method calls instead of over-engineered middleware stacks.
+/// Handles channel lifecycle (register / start / stop) and inbound processing
+/// with optional auth + rate-limit middleware.
+///
+/// **Outbound routing** is handled by [`super::send_outbound`], not this struct.
 pub struct ChannelManager {
     channels: Arc<RwLock<HashMap<ChannelType, Box<dyn Channel>>>>,
     bus: Arc<MessageBus>,
@@ -59,7 +67,6 @@ impl ChannelManager {
 
     /// Start all registered channels
     pub async fn start_all(&self) -> Result<()> {
-        // We need write access to call start(&mut self) on each channel
         let mut channels = self.channels.write().await;
         for (channel_type, channel) in channels.iter_mut() {
             info!("Starting channel: {}", channel_type);
@@ -84,42 +91,22 @@ impl ChannelManager {
 
     /// Process an inbound message through simple checks, then publish to the bus.
     pub async fn process_inbound(&self, msg: InboundMessage) -> Result<()> {
-        // Log the message
+        use super::middleware::log_inbound;
         log_inbound(&msg);
 
-        // Check auth if configured
         if let Some(ref auth) = self.auth_checker {
             if !auth.check_and_log(&msg) {
-                return Ok(()); // Silently drop unauthorized messages
+                return Ok(());
             }
         }
 
-        // Check rate limit if configured
         if let Some(ref rl) = self.rate_limiter {
             if !rl.check_and_log(&msg) {
-                return Ok(()); // Silently drop rate-limited messages
+                return Ok(());
             }
         }
 
-        // Publish to bus
         self.bus.publish_inbound(msg).await;
-        Ok(())
-    }
-
-    /// Send a message through a specific channel.
-    pub async fn send(&self, msg: OutboundMessage) -> Result<()> {
-        let channels = self.channels.read().await;
-        if let Some(channel) = channels.get(&msg.channel) {
-            // Log outbound message
-            log_outbound(&msg.channel.to_string(), &msg.chat_id, msg.content.len());
-
-            channel.send(msg).await?;
-        } else {
-            warn!(
-                "No channel registered for type {:?}, dropping outbound message to {}",
-                msg.channel, msg.chat_id
-            );
-        }
         Ok(())
     }
 
@@ -131,8 +118,7 @@ impl ChannelManager {
     /// Get a cloneable sender for inbound messages.
     ///
     /// The returned `InboundSender` wraps the raw bus sender with the same
-    /// auth and rate-limit middleware that `process_inbound` applies. This
-    /// ensures that webhook-driven channels cannot bypass the middleware.
+    /// auth and rate-limit middleware that `process_inbound` applies.
     pub fn inbound_sender(&self) -> InboundSender {
         let mut sender = InboundSender::new(self.bus.inbound_sender());
         if let Some(ref rl) = self.rate_limiter {
@@ -142,29 +128,5 @@ impl ChannelManager {
             sender = sender.with_auth_checker(Arc::clone(ac));
         }
         sender
-    }
-
-    /// Spawn the outbound routing loop.
-    ///
-    /// Consumes `outbound_rx` and routes each message to the matching channel.
-    /// Each message is sent in its own tokio task to avoid head-of-line blocking
-    /// across different channels (e.g., a slow Telegram API won't block Discord).
-    /// Returns a `JoinHandle` so the caller can track the task.
-    pub fn spawn_outbound_router(
-        self: &Arc<Self>,
-        mut outbound_rx: tokio::sync::mpsc::Receiver<OutboundMessage>,
-    ) -> tokio::task::JoinHandle<()> {
-        let mgr = self.clone();
-        tokio::spawn(async move {
-            while let Some(msg) = outbound_rx.recv().await {
-                let mgr_clone = mgr.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = mgr_clone.send(msg).await {
-                        warn!("Outbound routing error: {}", e);
-                    }
-                });
-            }
-            info!("Outbound router exited");
-        })
     }
 }

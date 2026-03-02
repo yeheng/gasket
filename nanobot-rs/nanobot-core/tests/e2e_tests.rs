@@ -395,13 +395,6 @@ async fn test_memory_store() {
 
     let content = memory.read_long_term().await.unwrap_or_default();
     assert!(content.contains("pizza"));
-
-    let _ = memory
-        .append_history("[2024-01-01] User asked about pizza.")
-        .await;
-
-    let history = memory.read_history().await.unwrap_or_default();
-    assert!(history.contains("pizza"));
 }
 
 // =============================================================================
@@ -443,23 +436,6 @@ async fn test_web_fetch_tool_with_options() {
         .with_max_size(5_000_000);
 
     assert_eq!(tool.name(), "web_fetch");
-}
-
-// =============================================================================
-// Spawn Tool Tests
-// =============================================================================
-
-#[tokio::test]
-async fn test_spawn_tool() {
-    use nanobot_core::tools::SpawnTool;
-
-    let tool = SpawnTool::new();
-
-    assert_eq!(tool.name(), "spawn");
-
-    let params = tool.parameters();
-    assert!(params["properties"]["task"].is_object());
-    assert!(params["properties"]["timeout"].is_object());
 }
 
 // =============================================================================

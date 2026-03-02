@@ -47,11 +47,24 @@ impl ResourceLimits {
     }
 
     /// Truncate output to `max_output_bytes`, appending a marker if truncated.
+    ///
+    /// SAFETY: This function correctly handles UTF-8 character boundaries.
+    /// If `max_output_bytes` falls in the middle of a multi-byte character,
+    /// we walk back to the nearest safe boundary.
     pub fn truncate_output(&self, output: &str) -> String {
         if output.len() <= self.max_output_bytes {
             return output.to_string();
         }
-        let mut truncated = output[..self.max_output_bytes].to_string();
+
+        // Find a safe UTF-8 boundary by walking backwards from max_output_bytes.
+        // Rust strings are UTF-8 encoded, so slicing at arbitrary byte offsets
+        // can panic if we split a multi-byte character.
+        let mut end = self.max_output_bytes;
+        while end > 0 && !output.is_char_boundary(end) {
+            end -= 1;
+        }
+
+        let mut truncated = output[..end].to_string();
         truncated.push_str(&format!(
             "\n\n[OUTPUT TRUNCATED: {} bytes exceeded limit of {} bytes]",
             output.len(),
@@ -117,6 +130,52 @@ mod tests {
         let output = "this is a long output that exceeds the limit";
         let result = limits.truncate_output(output);
         assert!(result.starts_with("this is a "));
+        assert!(result.contains("[OUTPUT TRUNCATED"));
+    }
+
+    #[test]
+    fn test_truncate_output_utf8_boundary_safe() {
+        // "中" is 3 bytes, "文" is 3 bytes, "字" is 3 bytes
+        // "中文字" = 9 bytes total
+        let limits = ResourceLimits {
+            max_memory_bytes: 0,
+            max_cpu_secs: 0,
+            max_output_bytes: 5, // Cuts in the middle of "文" (bytes 3-5)
+        };
+        let output = "中文字符";
+        let result = limits.truncate_output(output);
+        // Should truncate to "中" (3 bytes) not panic
+        assert!(result.starts_with("中"));
+        assert!(result.contains("[OUTPUT TRUNCATED"));
+    }
+
+    #[test]
+    fn test_truncate_output_emoji_boundary() {
+        // "😀" is 4 bytes
+        let limits = ResourceLimits {
+            max_memory_bytes: 0,
+            max_cpu_secs: 0,
+            max_output_bytes: 6, // Cuts in the middle of second emoji
+        };
+        let output = "😀😀😀"; // 12 bytes total
+        let result = limits.truncate_output(output);
+        // Should truncate to "😀" (4 bytes) not panic
+        assert!(result.starts_with("😀"));
+        assert!(result.contains("[OUTPUT TRUNCATED"));
+    }
+
+    #[test]
+    fn test_truncate_output_mixed_ascii_multibyte() {
+        // "abc中" = 6 bytes (3 + 3)
+        let limits = ResourceLimits {
+            max_memory_bytes: 0,
+            max_cpu_secs: 0,
+            max_output_bytes: 5, // Cuts in the middle of "中"
+        };
+        let output = "abc中文字";
+        let result = limits.truncate_output(output);
+        // Should truncate to "abc" (3 bytes) not panic
+        assert!(result.starts_with("abc"));
         assert!(result.contains("[OUTPUT TRUNCATED"));
     }
 

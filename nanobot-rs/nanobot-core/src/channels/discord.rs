@@ -7,7 +7,7 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::{InboundMessage, OutboundMessage};
+use crate::bus::events::InboundMessage;
 use crate::bus::ChannelType;
 
 /// Discord channel configuration
@@ -75,10 +75,6 @@ impl Channel for DiscordChannel {
     async fn stop(&mut self) -> anyhow::Result<()> {
         info!("Stopping Discord channel");
         Ok(())
-    }
-
-    async fn send(&self, msg: OutboundMessage) -> anyhow::Result<()> {
-        send_message_stateless(&self.config.token, &msg.chat_id, &msg.content).await
     }
 }
 
