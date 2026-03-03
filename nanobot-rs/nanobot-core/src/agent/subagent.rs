@@ -83,11 +83,20 @@ impl SubagentManager {
                 };
             agent.set_system_prompt(system_prompt);
 
-            let result = agent.process_direct(&prompt, &session_key).await;
+            let timeout_duration = std::time::Duration::from_secs(600); // 10 minutes hard timeout
+            let result = tokio::time::timeout(
+                timeout_duration,
+                agent.process_direct(&prompt, &session_key),
+            )
+            .await;
 
             let content = match result {
-                Ok(response) => format!("Background task completed:\n{}", response.content),
-                Err(e) => format!("Background task failed: {}", e),
+                Ok(Ok(response)) => format!("Background task completed:\n{}", response.content),
+                Ok(Err(e)) => format!("Background task failed: {}", e),
+                Err(_) => format!(
+                    "Background task failed: Execution timed out after {:?}",
+                    timeout_duration
+                ),
             };
 
             let msg = crate::bus::events::OutboundMessage {

@@ -529,18 +529,13 @@ impl AgentLoop {
             });
         }
 
-        // Execute tool calls concurrently using join_all
-        let futures = response.tool_calls.iter().map(|tool_call| async move {
+        // Execute tool calls sequentially to prevent race conditions
+        // and maintain LLM's expected causal ordering
+        for tool_call in &response.tool_calls {
             let start = std::time::Instant::now();
             let result = executor.execute_one(tool_call).await;
-            let duration = start.elapsed().as_millis() as u64;
-            (tool_call, result, duration)
-        });
+            let duration_ms = start.elapsed().as_millis() as u64;
 
-        let results = futures::future::join_all(futures).await;
-
-        // Process results sequentially to maintain deterministic ordering in messages
-        for (tool_call, result, duration_ms) in results {
             let tool_name = tool_call.function.name.clone();
 
             // Inline logging (replaces LoggingHook::on_tool_result)
