@@ -40,31 +40,30 @@ Standard 5-field cron format:
 | `0 */2 * * *` | Every 2 hours |
 | `0 9-17 * * *` | Every hour from 9 AM to 5 PM |
 
-## Using the Cron Tool
+## Defining Cron Jobs
+
+Cron jobs are now defined using YAML instead of JSON.
 
 ### Add a Scheduled Task
 
-```
 Use the cron tool with action "add":
 
-{
-  "action": "add",
-  "name": "daily-standup",
-  "schedule": "0 9 * * 1-5",  // Weekdays at 9 AM
-  "message": "Time for daily standup meeting!",
-  "channel": "telegram",
-  "chat_id": "123456"
-}
+```yaml
+action: add
+name: daily-standup
+schedule: "0 9 * * 1-5"  # Weekdays at 9 AM
+message: "Time for daily standup meeting!"
+channel: telegram
+chat_id: "123456"
 ```
 
 ### List All Tasks
 
-```
 Use the cron tool with action "list":
 
-{
-  "action": "list"
-}
+```yaml
+action: list
+```
 
 Returns:
 - Task ID
@@ -72,96 +71,87 @@ Returns:
 - Schedule
 - Next run time
 - Status (enabled/disabled)
-```
 
 ### Remove a Task
 
-```
 Use the cron tool with action "remove":
 
-{
-  "action": "remove",
-  "id": "task-uuid-here"
-}
+```yaml
+action: remove
+id: "task-uuid-here"
 ```
 
 ### Enable/Disable a Task
 
-```
 Use the cron tool with action "enable" or "disable":
 
-{
-  "action": "enable",
-  "id": "task-uuid-here"
-}
+```yaml
+action: enable
+id: "task-uuid-here"
 ```
 
 ### Run a Task Manually
 
-```
 Use the cron tool with action "run":
 
-{
-  "action": "run",
-  "id": "task-uuid-here"
-}
+```yaml
+action: run
+id: "task-uuid-here"
 ```
 
 ## One-Time Tasks
 
 For tasks that run once at a specific time:
 
-```
-{
-  "action": "add",
-  "name": "meeting-reminder",
-  "at": "2024-01-20 14:30",  // Use "at" instead of "schedule"
-  "message": "Meeting in 30 minutes",
-  "channel": "telegram",
-  "chat_id": "123456"
-}
+```yaml
+action: add
+name: meeting-reminder
+at: "2024-01-20 14:30"  # Use "at" instead of "schedule"
+message: "Meeting in 30 minutes"
+channel: telegram
+chat_id: "123456"
 ```
 
 ## Task Persistence
 
-Tasks are persisted to `~/.nanobot/cron/jobs.json` and will survive restarts.
+Cron jobs exist in two storage locations:
+1. **SQLite Database**: Managed by the system, typically where dynamically added jobs via tools or CLI are stored.
+2. **YAML Files**: Located in `USER_HOME/cron/*.yaml` (e.g. `~/.nanobot/cron/*.yaml`), allowing users to statically define and manage jobs via YAML configuration files.
+
+These jobs will survive restarts.
 
 ## Use Cases
 
 ### 1. Daily Standup Reminder
-```
-Add cron task:
-- Name: "daily-standup"
-- Schedule: "0 9 * * 1-5" (weekdays at 9 AM)
-- Message: "Time for daily standup!"
-- Channel: telegram
-- Chat ID: 123456
+```yaml
+name: "daily-standup"
+schedule: "0 9 * * 1-5" # weekdays at 9 AM
+message: "Time for daily standup!"
+channel: telegram
+chat_id: "123456"
 ```
 
 ### 2. Weekly Report
-```
-Add cron task:
-- Name: "weekly-report"
-- Schedule: "0 17 * * 5" (Friday at 5 PM)
-- Message: "Don't forget to submit your weekly report!"
-- Channel: slack
-- Chat ID: general
+```yaml
+name: "weekly-report"
+schedule: "0 17 * * 5" # Friday at 5 PM
+message: "Don't forget to submit your weekly report!"
+channel: slack
+chat_id: "general"
 ```
 
 ### 3. Hourly Health Check
-```
-Add cron task:
-- Name: "health-check"
-- Schedule: "0 * * * *" (every hour)
-- Message: "check_system_health" (custom action)
+```yaml
+name: "health-check"
+schedule: "0 * * * *" # every hour
+message: "check_system_health" # custom action
 ```
 
 ### 4. Monthly Backup Reminder
-```
-Add cron task:
-- Name: "monthly-backup"
-- Schedule: "0 2 1 * *" (1st of month at 2 AM)
-- Message: "Time to perform monthly backup"
+```yaml
+name: "monthly-backup"
+schedule: "0 2 1 * *" # 1st of month at 2 AM
+message: "Time to perform monthly backup"
 ```
 
 ## Best Practices
