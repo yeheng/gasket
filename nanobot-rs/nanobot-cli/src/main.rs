@@ -22,15 +22,13 @@ async fn main() -> Result<()> {
         .expect("Failed to install rustls crypto provider");
 
     // Initialize logging and OpenTelemetry
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Try to initialize OpenTelemetry, fall back to plain logging if unavailable
     if !init_telemetry(env_filter.clone()) {
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
-            .with_level(true)
             .with_ansi(true)
-            .with_line_number(true)
             .init();
     }
 

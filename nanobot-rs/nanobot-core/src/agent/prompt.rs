@@ -21,16 +21,11 @@ pub const BOOTSTRAP_FILES_MINIMAL: &[&str] = &["SOUL.md"];
 /// Maximum tokens allowed per single bootstrap file before emitting a warning
 const BOOTSTRAP_TOKEN_WARN_THRESHOLD: usize = 2000;
 
-/// Fallback instructions when no bootstrap files exist
-const DEFAULT_INSTRUCTIONS: &str = r#"You have access to tools for reading files, writing files, editing files, listing directories, and executing shell commands.
-
-Be concise and helpful. When using tools, explain what you're doing before and after the tool call."#;
-
 /// Load the system prompt from workspace bootstrap files.
 ///
-/// Reads the specified files from the workspace directory, concatenates them,
-/// and prepends an identity header. If no files are found, falls back to
-/// default instructions.
+/// Reads the specified files from the workspace directory and concatenates them.
+/// Returns an identity header plus any loaded bootstrap file contents.
+/// If no files are found, returns only the identity header.
 ///
 /// # Errors
 /// Returns an error if a bootstrap file **exists** but cannot be read.
@@ -42,7 +37,7 @@ pub async fn load_system_prompt(
 
     // Identity header
     parts.push(format!(
-        "你叫阿乐 🐈, 夜痕的专业私人助理.\n\nWorking directory: {}",
+        "You are TinyDog 🐈, a personal AI assistant.\nYour working directory: {}.YOU can ONLY READ and WRITE under working directory.",
         workspace.display()
     ));
 
@@ -69,13 +64,10 @@ pub async fn load_system_prompt(
         }
     }
 
-    if !loaded_any {
-        parts.push(DEFAULT_INSTRUCTIONS.to_string());
-    }
-
     info!(
-        "System prompt: {} bootstrap files, ~{} tokens total",
+        "System prompt: {} bootstrap files loaded ({} found), ~{} tokens total",
         files.len(),
+        loaded_any,
         total_tokens
     );
 

@@ -44,26 +44,21 @@ fn create_workspace_templates(workspace: &std::path::Path) -> Result<()> {
     fs::create_dir_all(workspace.join("skills"))?;
 
     let templates: &[(&str, &str)] = &[
+        ("AGENTS.md", include_str!("../../../../workspace/AGENTS.md")),
         (
-            "AGENTS.md",
-            include_str!("../../../nanobot-core/workspace/AGENTS.md"),
-        ),
-        (
-            "SOUL.md",
-            include_str!("../../../nanobot-core/workspace/SOUL.md"),
-        ),
-        (
-            "USER.md",
-            include_str!("../../../nanobot-core/workspace/USER.md"),
-        ),
-        (
-            "TOOLS.md",
-            include_str!("../../../nanobot-core/workspace/TOOLS.md"),
+            "BOOTSTRAP.md",
+            include_str!("../../../../workspace/BOOTSTRAP.md"),
         ),
         (
             "HEARTBEAT.md",
-            include_str!("../../../nanobot-core/workspace/HEARTBEAT.md"),
+            include_str!("../../../../workspace/HEARTBEAT.md"),
         ),
+        ("MEMORY.md", include_str!("../../../../workspace/MEMORY.md")),
+        (
+            "PROFILE.md",
+            include_str!("../../../../workspace/PROFILE.md"),
+        ),
+        ("SOUL.md", include_str!("../../../../workspace/SOUL.md")),
     ];
 
     for (filename, content) in templates {
