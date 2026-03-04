@@ -1,11 +1,6 @@
-[workspace]
-resolver = "2"
-members = ["nanobot-core", "nanobot-cli"]
+# Rustfmt configuration
+# See https://rust-lang.github.io/rustfmt/
 
-[workspace.lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
-
-[workspace.lints.rust]
-unsafe_code = "forbid"
+max_width = 100
+tab_spaces = 4
+edition = "2021"
