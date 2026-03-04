@@ -8,8 +8,8 @@ use colored::Colorize;
 use reedline::{DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
 use tracing::{info, Level};
 
-use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 use nanobot_core::agent::memory::MemoryStore;
+use nanobot_core::agent::{AgentConfig, AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 use nanobot_core::bus::events::SessionKey;
 use nanobot_core::config::{load_config, Config};
 use nanobot_core::tools::{
@@ -129,7 +129,13 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     // Build tool registry (CLI mode: no bus/cron, but support web tools)
     // Hoist MemoryStore creation so it can be shared with MemorySearchTool
     let memory_store = Arc::new(MemoryStore::new().await);
-    let tools = build_tool_registry(&config, &workspace, mcp_tools, None, Some(memory_store.clone()));
+    let tools = build_tool_registry(
+        &config,
+        &workspace,
+        mcp_tools,
+        None,
+        Some(memory_store.clone()),
+    );
 
     let agent = AgentLoop::with_memory_store(
         provider_info.provider,

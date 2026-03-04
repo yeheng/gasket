@@ -440,9 +440,13 @@ impl AgentLoop {
                     if tokens > prompt::MEMORY_TOKEN_HARD_LIMIT {
                         warn!(
                             "Long-term memory (SQLite) has {} tokens (limit {}). Truncating.",
-                            tokens, prompt::MEMORY_TOKEN_HARD_LIMIT
+                            tokens,
+                            prompt::MEMORY_TOKEN_HARD_LIMIT
                         );
-                        Some(prompt::truncate_keep_tail(&mem, prompt::MEMORY_TOKEN_HARD_LIMIT))
+                        Some(prompt::truncate_keep_tail(
+                            &mem,
+                            prompt::MEMORY_TOKEN_HARD_LIMIT,
+                        ))
                     } else {
                         Some(mem)
                     }

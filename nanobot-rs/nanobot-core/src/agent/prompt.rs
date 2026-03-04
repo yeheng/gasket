@@ -66,23 +66,22 @@ pub async fn load_system_prompt(
                 let tokens = count_tokens(trimmed);
 
                 // Hard truncation for memory-class files (e.g. MEMORY.md)
-                let content = if TRUNCATABLE_FILES.contains(filename)
-                    && tokens > MEMORY_TOKEN_HARD_LIMIT
-                {
-                    warn!(
+                let content =
+                    if TRUNCATABLE_FILES.contains(filename) && tokens > MEMORY_TOKEN_HARD_LIMIT {
+                        warn!(
                         "Bootstrap file {} has {} tokens (hard limit {}). Truncating tail-keep.",
                         filename, tokens, MEMORY_TOKEN_HARD_LIMIT
                     );
-                    truncate_keep_tail(trimmed, MEMORY_TOKEN_HARD_LIMIT)
-                } else {
-                    if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {
-                        warn!(
+                        truncate_keep_tail(trimmed, MEMORY_TOKEN_HARD_LIMIT)
+                    } else {
+                        if tokens > BOOTSTRAP_TOKEN_WARN_THRESHOLD {
+                            warn!(
                             "Bootstrap file {} has {} tokens (threshold {}). Consider trimming it.",
                             filename, tokens, BOOTSTRAP_TOKEN_WARN_THRESHOLD
                         );
-                    }
-                    trimmed.to_string()
-                };
+                        }
+                        trimmed.to_string()
+                    };
 
                 let final_tokens = count_tokens(&content);
                 total_tokens += final_tokens;

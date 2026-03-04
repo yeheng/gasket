@@ -48,7 +48,12 @@ impl Tool for MemorySearchTool {
 
     fn parameters(&self) -> Value {
         simple_schema(&[
-            ("query", "string", true, "Search query text (keywords or phrases)"),
+            (
+                "query",
+                "string",
+                true,
+                "Search query text (keywords or phrases)",
+            ),
             (
                 "tags",
                 "array",
@@ -65,9 +70,8 @@ impl Tool for MemorySearchTool {
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
-        let parsed: SearchArgs = serde_json::from_value(args).map_err(|e| {
-            super::ToolError::InvalidArguments(format!("Invalid arguments: {}", e))
-        })?;
+        let parsed: SearchArgs = serde_json::from_value(args)
+            .map_err(|e| super::ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 
         let query = MemoryQuery {
             text: Some(parsed.query.clone()),
@@ -83,13 +87,14 @@ impl Tool for MemorySearchTool {
             .map_err(|e| super::ToolError::ExecutionError(format!("Search failed: {}", e)))?;
 
         if results.is_empty() {
-            return Ok(format!(
-                "No memories found matching '{}'.",
-                parsed.query
-            ));
+            return Ok(format!("No memories found matching '{}'.", parsed.query));
         }
 
-        let mut output = format!("Found {} memor{}:\n\n", results.len(), if results.len() == 1 { "y" } else { "ies" });
+        let mut output = format!(
+            "Found {} memor{}:\n\n",
+            results.len(),
+            if results.len() == 1 { "y" } else { "ies" }
+        );
         for (i, entry) in results.iter().enumerate() {
             output.push_str(&format!(
                 "--- Memory {} [{}] ---\n{}\n(tags: {:?}, updated: {})\n\n",

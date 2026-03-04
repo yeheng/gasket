@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use nanobot_core::agent::{AgentConfig, AgentLoop, SubagentManager};
 use nanobot_core::agent::memory::MemoryStore;
+use nanobot_core::agent::{AgentConfig, AgentLoop, SubagentManager};
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
 use nanobot_core::tools::{
@@ -90,7 +90,15 @@ pub async fn cmd_gateway() -> Result<()> {
                 let cron_svc = cron_service.clone();
                 let ob_tx = bus.outbound_sender();
                 move || {
-                    build_tool_registry(&cfg, &ws, cron_svc.clone(), vec![], None, ob_tx.clone(), None)
+                    build_tool_registry(
+                        &cfg,
+                        &ws,
+                        cron_svc.clone(),
+                        vec![],
+                        None,
+                        ob_tx.clone(),
+                        None,
+                    )
                 }
             }),
             bus.outbound_sender(),
