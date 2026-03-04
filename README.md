@@ -57,6 +57,7 @@ nanobot-rs/                    (Cargo workspace)
 | [数据结构设计](docs/data-structures.md) | 消息类型、LLM 请求/响应、SQLite 表结构、文件系统存储 |
 | [数据流设计](docs/data-flow.md) | CLI/Gateway/Heartbeat/Cron 模式数据流、Agent 执行流程、流式输出 |
 | [模块设计](docs/modules.md) | providers, tools, channels, mcp, bus, hooks, memory, session 等模块详解 |
+| [Copilot 配置](docs/copilot-setup.md) | GitHub Copilot (PAT/OAuth) 的两种调用方式与设置指南 |
 
 ---
 
