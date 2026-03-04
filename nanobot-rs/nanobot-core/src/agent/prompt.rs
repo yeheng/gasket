@@ -13,10 +13,16 @@ use crate::agent::history_processor::count_tokens;
 use crate::agent::skill_loader;
 
 /// Bootstrap files loaded into the system prompt for the full (main agent) profile
-pub const BOOTSTRAP_FILES_FULL: &[&str] = &["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"];
+pub const BOOTSTRAP_FILES_FULL: &[&str] = &[
+    "PROFILE.md",
+    "SOUL.md",
+    "AGENTS.md",
+    "MEMORY.md",
+    "BOOTSTRAP.md",
+];
 
 /// Bootstrap files loaded for the minimal (subagent) profile — only core identity
-pub const BOOTSTRAP_FILES_MINIMAL: &[&str] = &["SOUL.md"];
+pub const BOOTSTRAP_FILES_MINIMAL: &[&str] = &["PROFILE.md", "SOUL.md"];
 
 /// Maximum tokens allowed per single bootstrap file before emitting a warning
 const BOOTSTRAP_TOKEN_WARN_THRESHOLD: usize = 2000;

@@ -58,7 +58,7 @@ fn create_workspace_templates(workspace: &std::path::Path) -> Result<()> {
             "PROFILE.md",
             include_str!("../../../../workspace/PROFILE.md"),
         ),
-        ("SOUL.md", include_str!("../../../../workspace/SOUL.md")),
+        ("SOUL.md", include_str!("../../../../workspace/SOUL.md"))
     ];
 
     for (filename, content) in templates {
