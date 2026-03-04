@@ -4,18 +4,16 @@
 //!
 //! The main pipeline in `process_direct_with_callback` is a straight-line sequence:
 //!
-//! ```text
 //! 1. external_hook(pre_request)  → shell script can abort or modify input
 //! 2. load_session                → inline: Option<SessionManager> loads history
 //! 3. save_user_message           → inline: Option<SessionManager> persists user msg
 //! 4. process_history             → pure: truncate history, compute evictions
 //! 5. summarize                   → inline: Option<SummarizationService> compresses evicted msgs
 //! 6. inject_system_prompts       → direct: bootstrap + skills
-//! 7. read_long_term              → inline: Option<MemoryStore> reads MEMORY.md
-//! 8. assemble_prompt             → pure: build Vec<ChatMessage>
-//! 9. run_agent_loop              → LLM iteration (with inline logging)
-//! 10. external_hook(post_response) → shell script for audit/alerting
-//! 11. save_assistant_msg          → inline: Option<SessionManager> persists assistant msg
+//! 7. assemble_prompt             → pure: build Vec<ChatMessage>
+//! 8. run_agent_loop              → LLM iteration (with inline logging)
+//! 9. external_hook(post_response) → shell script for audit/alerting
+//! 10. save_assistant_msg          → inline: Option<SessionManager> persists assistant msg
 //! ```
 //!
 //! All steps are **direct method calls** or pure functions — no hidden hook dispatch.
@@ -139,7 +137,7 @@ fn log_tool_result(tool_name: &str, tool_result: &str, duration_ms: u64) {
 ///
 /// Uses **Option<T>** for storage dependencies (explicit null handling):
 /// - **SessionManager** — session persistence (load/save messages)
-/// - **MemoryStore** — long-term memory (MEMORY.md)
+/// - **MemoryStore** — structured memory
 /// - **SummarizationService** — LLM-based context compression
 ///
 /// Main agents get `Some(real_implementation)`; subagents get `None`.
@@ -159,8 +157,6 @@ pub struct AgentLoop {
     history_config: HistoryConfig,
     /// Session persistence — `None` for subagents.
     session_manager: Option<Arc<SessionManager>>,
-    /// Long-term memory store — `None` for subagents.
-    memory_store: Option<Arc<MemoryStore>>,
     /// Context compression service — `None` for subagents.
     summarization: Option<Arc<SummarizationService>>,
     /// Pre-loaded system prompt (from workspace bootstrap files).
@@ -176,7 +172,7 @@ impl AgentLoop {
     ///
     /// Owns core services via `Option<T>` (explicit null handling):
     /// - **SessionManager** — session load/save
-    /// - **MemoryStore** — long-term memory
+    /// - **MemoryStore** — structured memories
     /// - **SummarizationService** — context compression
     ///
     /// Loads system prompt and skills context **once** at initialization.
@@ -223,7 +219,6 @@ impl AgentLoop {
             workspace,
             history_config: HistoryConfig::default(),
             session_manager: Some(session_manager),
-            memory_store: Some(memory_store),
             summarization: Some(summarization),
             system_prompt,
             skills_context,
@@ -276,7 +271,6 @@ impl AgentLoop {
             workspace,
             history_config: HistoryConfig::default(),
             session_manager: Some(session_manager),
-            memory_store: Some(memory_store),
             summarization: Some(summarization),
             system_prompt,
             skills_context,
@@ -302,7 +296,6 @@ impl AgentLoop {
             workspace,
             history_config: HistoryConfig::default(),
             session_manager: None,
-            memory_store: None,
             summarization: None,
             system_prompt: String::new(),
             skills_context: None,
@@ -428,48 +421,15 @@ impl AgentLoop {
             system_prompts.push(skills.clone());
         }
 
-        // ── 7. Read long-term memory (direct, Option-aware) ────────────
-        //
-        // Defensive truncation: even though the primary MEMORY.md path is the
-        // filesystem (truncated in prompt.rs), this SQLite path may be used in
-        // the future. Apply the same hard limit as a safety net.
-        let memory_content = match &self.memory_store {
-            Some(ms) => match ms.read_long_term().await {
-                Ok(mem) if !mem.is_empty() => {
-                    let tokens = crate::agent::history_processor::count_tokens(&mem);
-                    if tokens > prompt::MEMORY_TOKEN_HARD_LIMIT {
-                        warn!(
-                            "Long-term memory (SQLite) has {} tokens (limit {}). Truncating.",
-                            tokens,
-                            prompt::MEMORY_TOKEN_HARD_LIMIT
-                        );
-                        Some(prompt::truncate_keep_tail(
-                            &mem,
-                            prompt::MEMORY_TOKEN_HARD_LIMIT,
-                        ))
-                    } else {
-                        Some(mem)
-                    }
-                }
-                Ok(_) => None,
-                Err(e) => {
-                    warn!("Failed to read long-term memory: {}", e);
-                    None
-                }
-            },
-            None => None,
-        };
-
-        // ── 8. Assemble prompt (pure, synchronous) ─────────────────
+        // ── 7. Assemble prompt (pure, synchronous) ─────────────────
         let messages = Self::assemble_prompt(
             processed.messages,
             content,
             &system_prompts,
-            memory_content.as_deref(),
             summary.as_deref(),
         );
 
-        // ── 9. Run agent loop ─────────────────────────────────────
+        // ── 8. Run agent loop ─────────────────────────────────────
         let effective_cb = if self.config.streaming {
             callback
         } else {
@@ -477,7 +437,7 @@ impl AgentLoop {
         };
         let result = self.run_agent_loop(messages, effective_cb).await?;
 
-        // ── 10. External hook: post_response (audit / alerting) ────
+        // ── 9. External hook: post_response (audit / alerting) ────
         let tools_used_str = result.tools_used.join(", ");
         if let Err(e) = self
             .external_hooks
@@ -487,7 +447,7 @@ impl AgentLoop {
             warn!("post_response hook failed (ignored): {}", e);
         }
 
-        // ── 11. Save assistant message (direct, Option-aware) ──────────
+        // ── 10. Save assistant message (direct, Option-aware) ──────────
         if let Some(ref sm) = self.session_manager {
             if let Err(e) = sm
                 .append_by_key(
@@ -645,19 +605,12 @@ impl AgentLoop {
         processed_history: Vec<crate::session::SessionMessage>,
         current_message: &str,
         system_prompts: &[String],
-        memory: Option<&str>,
         summary: Option<&str>,
     ) -> Vec<ChatMessage> {
         let mut messages = Vec::new();
 
         // 1. Build the system prompt
-        let mut system_content = system_prompts.join("\n\n");
-        if let Some(mem) = memory {
-            if !mem.is_empty() {
-                system_content.push_str("\n\n## Long-term Memory\n");
-                system_content.push_str(mem);
-            }
-        }
+        let system_content = system_prompts.join("\n\n");
         if !system_content.is_empty() {
             messages.push(ChatMessage::system(system_content));
         }

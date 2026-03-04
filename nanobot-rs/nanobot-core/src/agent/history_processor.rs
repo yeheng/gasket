@@ -81,14 +81,18 @@ pub fn process_history(history: Vec<SessionMessage>, config: &HistoryConfig) -> 
 
     // Add older messages from most recent to oldest, respecting budget
     // Use into_iter() to take ownership instead of cloning
+    let mut budget_exceeded = false;
     for msg in older.into_iter().rev() {
         let msg_tokens = count_tokens(&msg.content);
 
-        if config.token_budget == 0 || current_tokens + msg_tokens <= config.token_budget {
+        if !budget_exceeded
+            && (config.token_budget == 0 || current_tokens + msg_tokens <= config.token_budget)
+        {
             current_tokens += msg_tokens;
             included_older.push(msg);
         } else {
-            // Budget exceeded - this message is evicted and should be summarized
+            // Budget exceeded - this message and all older messages are evicted
+            budget_exceeded = true;
             evicted.push(msg);
         }
     }
@@ -249,6 +253,38 @@ mod tests {
         assert!(contents.iter().any(|c| c.starts_with("Message 2")));
         assert!(contents.iter().any(|c| c.starts_with("Message 3")));
         assert!(contents.iter().any(|c| c.starts_with("Message 4")));
+    }
+
+    #[test]
+    fn test_contiguous_eviction() {
+        let config = HistoryConfig {
+            max_messages: 50,
+            token_budget: 15,
+            recent_keep: 1,
+        };
+
+        // Middle message is large and exceeds budget.
+        // Even though the first message is small, it must be evicted to maintain continuity.
+        let history = vec![
+            make_message(MessageRole::User, "Short 1"),
+            make_message(
+                MessageRole::User,
+                "Very long message 2 that exceeds the remaining budget significantly..........",
+            ),
+            make_message(MessageRole::User, "Short 3"),
+        ];
+
+        let result = process_history(history, &config);
+
+        // Only "Short 3" is included.
+        // "Very long message 2..." and "Short 1" are evicted.
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].content, "Short 3");
+
+        // Evicted order should be chronological
+        assert_eq!(result.evicted.len(), 2);
+        assert_eq!(result.evicted[0].content, "Short 1");
+        assert!(result.evicted[1].content.starts_with("Very long"));
     }
 
     #[test]

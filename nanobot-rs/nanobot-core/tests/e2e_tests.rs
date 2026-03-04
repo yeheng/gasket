@@ -395,27 +395,6 @@ async fn test_cron_job_fields() {
 }
 
 // =============================================================================
-// Memory Tests
-// =============================================================================
-
-#[tokio::test]
-async fn test_memory_store() {
-    use nanobot_core::agent::MemoryStore;
-    use nanobot_core::memory::SqliteStore;
-
-    let dir = tempfile::tempdir().unwrap();
-    let store = SqliteStore::with_path(dir.path().join("mem.db"))
-        .await
-        .unwrap();
-    let memory = MemoryStore::with_store(store);
-
-    let _ = memory.write_long_term("User likes pizza.").await;
-
-    let content = memory.read_long_term().await.unwrap_or_default();
-    assert!(content.contains("pizza"));
-}
-
-// =============================================================================
 // Web Tool Tests
 // =============================================================================
 

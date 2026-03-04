@@ -12,7 +12,6 @@ use crate::memory::{MemoryEntry, MemoryQuery, MemoryStore as MemoryStoreTrait, S
 ///
 /// Backed by `SqliteStore` for all operations:
 /// - Structured memories (save/get/delete/search)
-/// - Long-term memory (MEMORY.md equivalent via kv_store)
 pub struct MemoryStore {
     store: SqliteStore,
 }
@@ -63,19 +62,5 @@ impl MemoryStore {
     #[instrument(name = "memory.search", skip_all)]
     pub async fn search(&self, query: &MemoryQuery) -> Result<Vec<MemoryEntry>> {
         self.store.search(query).await
-    }
-
-    // ── Long-term memory API ──
-
-    /// Read long-term memory (MEMORY.md equivalent).
-    #[instrument(name = "memory.read_long_term", skip_all)]
-    pub async fn read_long_term(&self) -> Result<String> {
-        Ok(self.store.read_raw("MEMORY.md").await?.unwrap_or_default())
-    }
-
-    /// Write long-term memory (MEMORY.md equivalent).
-    #[instrument(name = "memory.write_long_term", skip_all)]
-    pub async fn write_long_term(&self, content: &str) -> Result<()> {
-        self.store.write_raw("MEMORY.md", content).await
     }
 }
