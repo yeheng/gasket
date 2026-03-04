@@ -74,3 +74,6 @@ rustls = { version = "0.23", features = ["ring"] }
 
 # HTTP server
 axum = { workspace = true, features = ["ws"] }
+
+# Archive extraction (for workspace template downloads)
+tempfile = "3"

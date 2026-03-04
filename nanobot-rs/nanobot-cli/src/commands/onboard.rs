@@ -3,6 +3,7 @@
 use anyhow::Result;
 
 use nanobot_core::config::ConfigLoader;
+use nanobot_core::workspace::WorkspaceDownloader;
 
 /// Initialize nanobot configuration
 pub async fn cmd_onboard() -> Result<()> {
@@ -25,51 +26,40 @@ pub async fn cmd_onboard() -> Result<()> {
         println!("      apiKey: sk-or-v1-xxx");
     }
 
-    // Create workspace template files (skip if already exist)
-    create_workspace_templates(&workspace)?;
+    // Download workspace templates from GitHub
+    println!("\n📥 Downloading workspace templates from GitHub...");
+    let downloader = WorkspaceDownloader::new();
+    match downloader.download().await {
+        Ok(result) => {
+            // Display created files
+            for file in &result.created_files {
+                println!("  {} ✓", file);
+            }
+            // Display created directories
+            for dir in &result.created_dirs {
+                println!("  {}/ ✓", dir);
+            }
+            // Display skipped files
+            for file in &result.skipped_files {
+                println!("  {} (already exists, skipped)", file);
+            }
+
+            if result.created_files.is_empty()
+                && result.created_dirs.is_empty()
+                && result.skipped_files.is_empty()
+            {
+                println!("  (no files to update)");
+            }
+        }
+        Err(e) => {
+            println!("⚠️  Download failed: {}", e);
+            println!("You may need to manually create workspace files.");
+            println!("Templates are available at: https://github.com/yeheng/nanobot-rs/tree/main/workspace");
+        }
+    }
 
     println!("\n🐈 Initialization complete!");
     println!("Workspace: {:?}", workspace);
-
-    Ok(())
-}
-
-/// Create workspace template files under ~/.nanobot/
-/// Only creates files that don't already exist (preserves user customizations).
-fn create_workspace_templates(workspace: &std::path::Path) -> Result<()> {
-    use std::fs;
-
-    // Ensure directories exist
-    fs::create_dir_all(workspace.join("memory"))?;
-    fs::create_dir_all(workspace.join("skills"))?;
-
-    let templates: &[(&str, &str)] = &[
-        ("AGENTS.md", include_str!("../../../../workspace/AGENTS.md")),
-        (
-            "BOOTSTRAP.md",
-            include_str!("../../../../workspace/BOOTSTRAP.md"),
-        ),
-        (
-            "HEARTBEAT.md",
-            include_str!("../../../../workspace/HEARTBEAT.md"),
-        ),
-        ("MEMORY.md", include_str!("../../../../workspace/MEMORY.md")),
-        (
-            "PROFILE.md",
-            include_str!("../../../../workspace/PROFILE.md"),
-        ),
-        ("SOUL.md", include_str!("../../../../workspace/SOUL.md"))
-    ];
-
-    for (filename, content) in templates {
-        let path = workspace.join(filename);
-        if path.exists() {
-            println!("  {} (already exists, skipped)", filename);
-        } else {
-            fs::write(&path, content)?;
-            println!("  {} ✓", filename);
-        }
-    }
 
     Ok(())
 }

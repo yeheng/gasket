@@ -11,6 +11,7 @@
 //! - MCP (Model Context Protocol) support
 //! - Skills system for dynamic skill loading
 //! - Webhook server for receiving callbacks
+//! - Workspace template management
 
 pub mod agent;
 pub mod bus;
@@ -27,6 +28,7 @@ pub mod providers;
 pub mod session;
 pub mod skills;
 pub mod tools;
+pub mod workspace;
 #[cfg(feature = "webhook")]
 pub mod webhook;
 
