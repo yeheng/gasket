@@ -305,7 +305,15 @@ fn build_tool_registry(
         },
     );
     tools.register_with_metadata(
-        Box::new(WebFetchTool::new()),
+        Box::new(
+            WebFetchTool::with_config(Some(config.tools.web.clone())).unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Failed to create WebFetchTool with proxy config: {}. Using default.",
+                    e
+                );
+                WebFetchTool::new()
+            }),
+        ),
         ToolMetadata {
             display_name: "Web Fetch".to_string(),
             category: "web".to_string(),

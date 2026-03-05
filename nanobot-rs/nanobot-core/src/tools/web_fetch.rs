@@ -1,13 +1,64 @@
 //! Web fetch tool for downloading web content
 
 use async_trait::async_trait;
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 use super::base::simple_schema;
 use super::{Tool, ToolError, ToolResult};
+
+/// Build a reqwest client with proxy configuration.
+///
+/// Priority order for proxy configuration:
+/// 1. Explicit proxy URLs in config (http_proxy, https_proxy, socks5_proxy)
+/// 2. System environment variables (if use_env_proxy is true)
+fn build_client_with_proxy(
+    config: Option<&crate::config::WebToolsConfig>,
+) -> Result<Client, ToolError> {
+    let mut builder = Client::builder();
+
+    if let Some(cfg) = config {
+        // Check for explicit proxy configuration
+        let has_explicit_proxy =
+            cfg.http_proxy.is_some() || cfg.https_proxy.is_some() || cfg.socks5_proxy.is_some();
+
+        if has_explicit_proxy {
+            // Add HTTP proxy for HTTP requests
+            if let Some(ref proxy_url) = cfg.http_proxy {
+                match Proxy::http(proxy_url) {
+                    Ok(proxy) => builder = builder.proxy(proxy),
+                    Err(e) => warn!("Invalid HTTP proxy URL '{}': {}", proxy_url, e),
+                }
+            }
+
+            // Add HTTPS proxy for HTTPS requests
+            if let Some(ref proxy_url) = cfg.https_proxy {
+                match Proxy::https(proxy_url) {
+                    Ok(proxy) => builder = builder.proxy(proxy),
+                    Err(e) => warn!("Invalid HTTPS proxy URL '{}': {}", proxy_url, e),
+                }
+            }
+
+            // Add SOCKS5 proxy (applies to all requests)
+            if let Some(ref proxy_url) = cfg.socks5_proxy {
+                match Proxy::all(proxy_url) {
+                    Ok(proxy) => builder = builder.proxy(proxy),
+                    Err(e) => warn!("Invalid SOCKS5 proxy URL '{}': {}", proxy_url, e),
+                }
+            }
+        } else if cfg.use_env_proxy {
+            // Use system proxy from environment variables (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY)
+            // This is the default behavior when no explicit proxy is configured
+            builder = builder.use_rustls_tls();
+        }
+    }
+
+    builder
+        .build()
+        .map_err(|e| ToolError::ExecutionError(format!("Failed to create HTTP client: {}", e)))
+}
 
 /// Web fetch tool for downloading web content
 pub struct WebFetchTool {
@@ -17,13 +68,23 @@ pub struct WebFetchTool {
 }
 
 impl WebFetchTool {
-    /// Create a new web fetch tool
+    /// Create a new web fetch tool with default settings
     pub fn new() -> Self {
         Self {
             client: Client::new(),
             timeout_secs: 120,
             max_size: 10_000_000, // 10 MB
         }
+    }
+
+    /// Create a new web fetch tool with proxy configuration
+    pub fn with_config(config: Option<crate::config::WebToolsConfig>) -> Result<Self, ToolError> {
+        let client = build_client_with_proxy(config.as_ref())?;
+        Ok(Self {
+            client,
+            timeout_secs: 120,
+            max_size: 10_000_000, // 10 MB
+        })
     }
 
     /// Set timeout in seconds

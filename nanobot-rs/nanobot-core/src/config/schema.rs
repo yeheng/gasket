@@ -332,6 +332,23 @@ pub struct WebToolsConfig {
     /// Firecrawl API key
     #[serde(default, alias = "firecrawlApiKey")]
     pub firecrawl_api_key: Option<String>,
+
+    /// HTTP proxy URL (e.g., "http://127.0.0.1:7890")
+    #[serde(default, alias = "httpProxy")]
+    pub http_proxy: Option<String>,
+
+    /// HTTPS proxy URL (e.g., "http://127.0.0.1:7890")
+    #[serde(default, alias = "httpsProxy")]
+    pub https_proxy: Option<String>,
+
+    /// SOCKS5 proxy URL (e.g., "socks5://127.0.0.1:1080")
+    #[serde(default, alias = "socks5Proxy")]
+    pub socks5_proxy: Option<String>,
+
+    /// Whether to use system proxy settings from environment variables
+    /// (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY). Default: true
+    #[serde(default = "default_true", alias = "useEnvProxy")]
+    pub use_env_proxy: bool,
 }
 
 /// MCP server configuration
@@ -543,5 +560,54 @@ tools:
         assert_eq!(config.tools.exec.limits.max_memory_mb, 1024);
         assert_eq!(config.tools.exec.limits.max_cpu_secs, 30);
         assert_eq!(config.tools.exec.limits.max_output_bytes, 2097152);
+    }
+
+    #[test]
+    fn test_web_tools_config_with_proxy() {
+        let yaml = r#"
+tools:
+  web:
+    searchProvider: brave
+    braveApiKey: test-brave-key
+    httpProxy: http://127.0.0.1:7890
+    httpsProxy: http://127.0.0.1:7890
+    socks5Proxy: socks5://127.0.0.1:1080
+    useEnvProxy: false
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.tools.web.search_provider, Some("brave".to_string()));
+        assert_eq!(
+            config.tools.web.brave_api_key,
+            Some("test-brave-key".to_string())
+        );
+        assert_eq!(
+            config.tools.web.http_proxy,
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            config.tools.web.https_proxy,
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            config.tools.web.socks5_proxy,
+            Some("socks5://127.0.0.1:1080".to_string())
+        );
+        assert!(!config.tools.web.use_env_proxy);
+    }
+
+    #[test]
+    fn test_web_tools_config_defaults() {
+        let yaml = r#"
+tools:
+  web:
+    braveApiKey: test-key
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        // use_env_proxy defaults to true
+        assert!(config.tools.web.use_env_proxy);
+        // Proxy fields should be None when not specified
+        assert!(config.tools.web.http_proxy.is_none());
+        assert!(config.tools.web.https_proxy.is_none());
+        assert!(config.tools.web.socks5_proxy.is_none());
     }
 }
