@@ -101,19 +101,13 @@ impl BwrapSandbox {
 #[cfg(target_os = "macos")]
 pub struct MacOsSandbox {
     workspace: PathBuf,
-    base_profile: String,
 }
 
 #[cfg(target_os = "macos")]
 impl MacOsSandbox {
     /// Create a new macOS sandbox executor.
-    /// Loads the base Seatbelt profile and adds workspace-specific rules.
     pub fn new(workspace: PathBuf) -> Self {
-        let base_profile = load_base_profile();
-        Self {
-            workspace,
-            base_profile,
-        }
+        Self { workspace }
     }
 
     /// Generate a Seatbelt sandbox profile string.
@@ -125,28 +119,21 @@ impl MacOsSandbox {
     fn generate_profile(&self) -> String {
         let workspace = self.workspace.display();
         format!(
-            r#"{}
-
-; Workspace-specific write permissions
+            r#"(version 1)
+(deny default)
+(allow file-read*)
 (allow file-write*
-  (subpath "{}")
+  (subpath "{workspace}")
+  (subpath "/tmp")
+  (subpath "/private/tmp")
+  (literal "/dev/null")
+  (literal "/dev/zero")
 )
-
-; Additional tmp paths
-(allow file-write-data
-  (require-all
-    (path "/tmp")
-    (vnode-type DIRECTORY)
-  )
-)
-(allow file-write-data
-  (require-all
-    (path "/private/tmp")
-    (vnode-type DIRECTORY)
-  )
-)
-"#,
-            self.base_profile, workspace
+(allow process-exec)
+(allow network-outbound)
+(allow signal (target same))
+(allow file-read-metadata)
+"#
         )
     }
 
@@ -168,46 +155,6 @@ impl MacOsSandbox {
         debug!("sandbox-exec command: {:?}", command);
         command
     }
-}
-
-/// Load the base Seatbelt profile from the embedded file.
-#[cfg(target_os = "macos")]
-fn load_base_profile() -> String {
-    // Try to load from the same directory as the executable
-    let mut path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    path.push("seatbelt_base_policy.sbpl");
-
-    if path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            return content;
-        }
-    }
-
-    // Fallback: try relative to current working directory
-    let cwd_path = PathBuf::from("seatbelt_base_policy.sbpl");
-    if cwd_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&cwd_path) {
-            return content;
-        }
-    }
-
-    // Fallback to hardcoded minimal profile if file not found
-    String::from(
-        r#"(version 1)
-(deny default)
-(allow file-read*)
-(allow process-exec)
-(allow process-fork)
-(allow signal (target same-sandbox))
-(allow file-write-data
-  (require-all
-    (path "/dev/null")
-    (vnode-type CHARACTER-DEVICE)))
-"#,
-    )
 }
 
 /// Fallback executor — direct `bash -c` with ulimit-based resource limits.
@@ -415,10 +362,10 @@ mod tests {
         assert!(profile.contains("(deny default)"));
         assert!(profile.contains("(allow file-read*)"));
         assert!(profile.contains("(subpath \"/Users/test/.nanobot\")"));
-        assert!(profile.contains("/tmp"));
-        assert!(profile.contains("/private/tmp"));
-        // Base profile should contain /dev/null permission
-        assert!(profile.contains("/dev/null"));
+        assert!(profile.contains("(subpath \"/tmp\")"));
+        assert!(profile.contains("(subpath \"/private/tmp\")"));
+        assert!(profile.contains("(literal \"/dev/null\")"));
+        assert!(profile.contains("(literal \"/dev/zero\")"));
     }
 
     #[cfg(target_os = "macos")]
