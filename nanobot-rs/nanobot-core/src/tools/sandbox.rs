@@ -1,6 +1,7 @@
 //! Sandbox execution providers for shell commands.
 //!
 //! - `BwrapSandbox`: Uses bubblewrap for namespace-isolated execution (Linux only)
+//! - `MacOsSandbox`: Uses sandbox-exec (Seatbelt) for filesystem isolation (macOS only)
 //! - `FallbackExecutor`: Direct `bash -c` with ulimit prefix (all platforms)
 
 use std::path::{Path, PathBuf};
@@ -85,6 +86,77 @@ impl BwrapSandbox {
     }
 }
 
+/// macOS sandbox-exec (Seatbelt) based sandbox.
+///
+/// Uses Apple's built-in `sandbox-exec` tool with a custom Seatbelt profile.
+/// Profile policy:
+/// - Allow all read operations (to let system binaries work)
+/// - Deny all file writes except:
+///   - Workspace directory (configured)
+///   - /tmp and /private/tmp
+///   - /dev/null and /dev/zero
+///
+/// Note: sandbox-exec is deprecated by Apple for App Store apps, but remains
+/// the most practical solution for CLI tools requiring filesystem isolation.
+#[cfg(target_os = "macos")]
+pub struct MacOsSandbox {
+    workspace: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl MacOsSandbox {
+    /// Create a new macOS sandbox executor.
+    pub fn new(workspace: PathBuf) -> Self {
+        Self { workspace }
+    }
+
+    /// Generate a Seatbelt sandbox profile string.
+    ///
+    /// The profile allows all reads but restricts writes to:
+    /// - The workspace directory
+    /// - /tmp and /private/tmp
+    /// - /dev/null and /dev/zero
+    fn generate_profile(&self) -> String {
+        let workspace = self.workspace.display();
+        format!(
+            r#"(version 1)
+(deny default)
+(allow file-read*)
+(allow file-write*
+  (subpath "{workspace}")
+  (subpath "/tmp")
+  (subpath "/private/tmp")
+  (literal "/dev/null")
+  (literal "/dev/zero")
+)
+(allow process-exec)
+(allow network-outbound)
+(allow signal (target same))
+(allow file-read-metadata)
+"#
+        )
+    }
+
+    fn build_command(&self, cmd: &str, _working_dir: &Path, limits: &ResourceLimits) -> Command {
+        let profile = self.generate_profile();
+
+        // Resource limits via ulimit (sandbox-exec doesn't handle this)
+        let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
+
+        let mut command = Command::new("sandbox-exec");
+        command
+            .arg("-p")
+            .arg(profile)
+            .arg("bash")
+            .arg("-c")
+            .arg(prefixed_cmd)
+            .current_dir(&self.workspace);
+
+        debug!("sandbox-exec command: {:?}", command);
+        command
+    }
+}
+
 /// Fallback executor — direct `bash -c` with ulimit-based resource limits.
 ///
 /// Used when bwrap is unavailable or sandbox is disabled.
@@ -108,6 +180,8 @@ impl FallbackExecutor {
 /// eliminates the unnecessary heap allocation and vtable indirection.
 pub enum SandboxExecutor {
     Bwrap(BwrapSandbox),
+    #[cfg(target_os = "macos")]
+    MacOs(MacOsSandbox),
     Fallback(FallbackExecutor),
 }
 
@@ -117,6 +191,8 @@ impl SandboxExecutor {
     pub fn build_command(&self, cmd: &str, working_dir: &Path, limits: &ResourceLimits) -> Command {
         match self {
             Self::Bwrap(s) => s.build_command(cmd, working_dir, limits),
+            #[cfg(target_os = "macos")]
+            Self::MacOs(s) => s.build_command(cmd, working_dir, limits),
             Self::Fallback(s) => s.build_command(cmd, working_dir, limits),
         }
     }
@@ -125,6 +201,8 @@ impl SandboxExecutor {
     pub fn name(&self) -> &str {
         match self {
             Self::Bwrap(_) => "bwrap",
+            #[cfg(target_os = "macos")]
+            Self::MacOs(_) => "sandbox-exec",
             Self::Fallback(_) => "fallback",
         }
     }
@@ -154,6 +232,30 @@ fn which_bwrap() -> Option<PathBuf> {
     None
 }
 
+/// Detect sandbox-exec binary on macOS.
+#[cfg(target_os = "macos")]
+fn which_sandbox_exec() -> Option<PathBuf> {
+    // sandbox-exec is typically at /usr/bin/sandbox-exec on macOS
+    let path = PathBuf::from("/usr/bin/sandbox-exec");
+    if path.exists() {
+        info!("sandbox-exec detected at {:?}", path);
+        Some(path)
+    } else {
+        // Try `which` command as fallback
+        let output = Command::new("which").arg("sandbox-exec").output().ok()?;
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                let path = PathBuf::from(path_str);
+                info!("sandbox-exec detected at {:?}", path);
+                return Some(path);
+            }
+        }
+        warn!("sandbox-exec not found — falling back to ulimit-based limits");
+        None
+    }
+}
+
 /// Create the appropriate sandbox executor based on configuration.
 pub fn create_provider(workspace: &Path, config: &SandboxConfig) -> SandboxExecutor {
     if !config.enabled {
@@ -161,29 +263,38 @@ pub fn create_provider(workspace: &Path, config: &SandboxConfig) -> SandboxExecu
         return SandboxExecutor::Fallback(FallbackExecutor);
     }
 
-    // Only bwrap backend is supported
-    if config.backend != "bwrap" {
-        warn!(
-            "Unknown sandbox backend '{}', falling back to unsandboxed",
-            config.backend
-        );
-        return SandboxExecutor::Fallback(FallbackExecutor);
-    }
-
-    // macOS: bwrap is Linux-only
-    if cfg!(target_os = "macos") {
-        warn!("bwrap sandbox is Linux-only. macOS falls back to ulimit-based resource limits.");
-        return SandboxExecutor::Fallback(FallbackExecutor);
-    }
-
-    match BwrapSandbox::detect(workspace, config) {
-        Some(sandbox) => {
-            info!("Sandbox enabled: bwrap at {:?}", sandbox.bwrap_path);
-            SandboxExecutor::Bwrap(sandbox)
+    // macOS: use sandbox-exec (Seatbelt)
+    #[cfg(target_os = "macos")]
+    {
+        if which_sandbox_exec().is_some() {
+            info!("Sandbox enabled: macOS sandbox-exec");
+            return SandboxExecutor::MacOs(MacOsSandbox::new(workspace.to_path_buf()));
         }
-        None => {
-            warn!("bwrap not available — running without sandbox (ulimit-based limits only)");
-            SandboxExecutor::Fallback(FallbackExecutor)
+        warn!("sandbox-exec not available — falling back to ulimit-based limits");
+        SandboxExecutor::Fallback(FallbackExecutor)
+    }
+
+    // Linux: use bwrap
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Only bwrap backend is supported
+        if config.backend != "bwrap" {
+            warn!(
+                "Unknown sandbox backend '{}', falling back to unsandboxed",
+                config.backend
+            );
+            return SandboxExecutor::Fallback(FallbackExecutor);
+        }
+
+        match BwrapSandbox::detect(workspace, config) {
+            Some(sandbox) => {
+                info!("Sandbox enabled: bwrap at {:?}", sandbox.bwrap_path);
+                SandboxExecutor::Bwrap(sandbox)
+            }
+            None => {
+                warn!("bwrap not available — running without sandbox (ulimit-based limits only)");
+                SandboxExecutor::Fallback(FallbackExecutor)
+            }
         }
     }
 }
@@ -215,7 +326,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn test_create_provider_unknown_backend() {
+        // On macOS, backend config is ignored and sandbox-exec is always used
         let config = SandboxConfig {
             enabled: true,
             backend: "docker".to_string(),
@@ -223,5 +336,53 @@ mod tests {
         };
         let provider = create_provider(Path::new("/tmp"), &config);
         assert_eq!(provider.name(), "fallback");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_create_provider_macos_ignores_backend() {
+        // On macOS, sandbox-exec is used regardless of backend config
+        let config = SandboxConfig {
+            enabled: true,
+            backend: "docker".to_string(),
+            tmp_size_mb: 64,
+        };
+        let provider = create_provider(Path::new("/tmp"), &config);
+        assert_eq!(provider.name(), "sandbox-exec");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_sandbox_profile_generation() {
+        let workspace = PathBuf::from("/Users/test/.nanobot");
+        let sandbox = MacOsSandbox::new(workspace);
+        let profile = sandbox.generate_profile();
+
+        assert!(profile.contains("(version 1)"));
+        assert!(profile.contains("(deny default)"));
+        assert!(profile.contains("(allow file-read*)"));
+        assert!(profile.contains("(subpath \"/Users/test/.nanobot\")"));
+        assert!(profile.contains("(subpath \"/tmp\")"));
+        assert!(profile.contains("(subpath \"/private/tmp\")"));
+        assert!(profile.contains("(literal \"/dev/null\")"));
+        assert!(profile.contains("(literal \"/dev/zero\")"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_macos_sandbox_builds_command() {
+        let workspace = PathBuf::from("/Users/test/.nanobot");
+        let sandbox = MacOsSandbox::new(workspace);
+        let limits = ResourceLimits::default();
+        let cmd = sandbox.build_command("echo hello", Path::new("/tmp"), &limits);
+
+        assert_eq!(cmd.get_program(), "sandbox-exec");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args[0], "-p");
+        // Second arg should be the profile (starts with "(version 1)")
+        let profile = args[1].to_string_lossy();
+        assert!(profile.starts_with("(version 1)"));
+        assert_eq!(args[2], "bash");
+        assert_eq!(args[3], "-c");
     }
 }
