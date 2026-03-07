@@ -40,4 +40,4 @@ pub use error::{AgentError, ChannelError, McpError, ProviderError};
 pub use providers::{GeminiProvider, LlmProvider, OpenAICompatibleProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};
-pub use vault::{VaultStore, VaultInjector, VaultError, InjectionReport};
+pub use vault::{InjectionReport, VaultError, VaultInjector, VaultStore};

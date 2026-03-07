@@ -40,7 +40,7 @@ use crate::error::AgentError;
 use crate::hooks::ExternalHookRunner;
 use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
 use crate::tools::ToolRegistry;
-use crate::vault::{VaultInjector, VaultStore, redact_secrets};
+use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 
 use crate::agent::memory::MemoryStore;
 use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
@@ -516,8 +516,11 @@ impl AgentLoop {
                 warn!("[Vault] Missing keys: {:?}", report.missing_keys);
             }
             if !report.keys_used.is_empty() {
-                debug!("[Vault] Injected {} keys: {:?}",
-                       report.keys_used.len(), report.keys_used);
+                debug!(
+                    "[Vault] Injected {} keys: {:?}",
+                    report.keys_used.len(),
+                    report.keys_used
+                );
             }
 
             Some(report)
@@ -537,7 +540,7 @@ impl AgentLoop {
         let tools_used_str = result.tools_used.join(", ");
 
         // Redact secrets from post_response hook
-        let safe_content = if let Ok(ref values) = self.vault_values.lock().as_ref() {
+        let safe_content = if let Ok(values) = self.vault_values.lock().as_ref() {
             redact_secrets(&result.content, values)
         } else {
             result.content.clone()
@@ -554,7 +557,7 @@ impl AgentLoop {
         // ── 10. Save assistant message (direct, Option-aware) ──────────
         // Redact secrets before saving to history
         if let Some(ref sm) = self.session_manager {
-            let history_content = if let Ok(ref values) = self.vault_values.lock().as_ref() {
+            let history_content = if let Ok(values) = self.vault_values.lock().as_ref() {
                 redact_secrets(&result.content, values)
             } else {
                 result.content.clone()
@@ -597,7 +600,9 @@ impl AgentLoop {
         let cb: &StreamCallback = callback.unwrap_or(&noop);
 
         // Get vault values for log redaction
-        let vault_values: Vec<String> = self.vault_values.lock()
+        let vault_values: Vec<String> = self
+            .vault_values
+            .lock()
             .map(|v| v.clone())
             .unwrap_or_default();
 

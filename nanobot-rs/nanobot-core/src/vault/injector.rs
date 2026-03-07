@@ -2,13 +2,13 @@
 //!
 //! Injects secrets at the last moment before sending to LLM.
 
-use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use tracing::{debug, warn};
 
+use super::{replace_placeholders, scan_placeholders, VaultStore};
 use crate::providers::ChatMessage;
-use super::{VaultStore, scan_placeholders, replace_placeholders};
 
 /// Report of an injection operation
 #[derive(Debug, Default)]
@@ -57,7 +57,10 @@ impl VaultInjector {
             return report;
         }
 
-        debug!("[VaultInjector] Found {} unique keys to inject", all_keys.len());
+        debug!(
+            "[VaultInjector] Found {} unique keys to inject",
+            all_keys.len()
+        );
 
         // 2. Build replacement map
         let mut replacements = HashMap::new();
@@ -125,9 +128,17 @@ mod tests {
 
     fn create_test_store() -> Arc<VaultStore> {
         let store = VaultStore::new_in_memory();
-        store.set("api_key", "sk-12345", Some("Test API key")).unwrap();
+        store
+            .set("api_key", "sk-12345", Some("Test API key"))
+            .unwrap();
         store.set("password", "secret123", None).unwrap();
-        store.set("db_conn", "postgresql://user:pass@localhost/db", Some("Database connection")).unwrap();
+        store
+            .set(
+                "db_conn",
+                "postgresql://user:pass@localhost/db",
+                Some("Database connection"),
+            )
+            .unwrap();
         Arc::new(store)
     }
 
@@ -136,16 +147,17 @@ mod tests {
         let store = create_test_store();
         let injector = VaultInjector::new(store);
 
-        let mut messages = vec![
-            ChatMessage::user("使用 {{vault:api_key}} 调用API"),
-        ];
+        let mut messages = vec![ChatMessage::user("使用 {{vault:api_key}} 调用API")];
 
         let report = injector.inject(&mut messages);
 
         assert_eq!(report.messages_modified, 1);
         assert_eq!(report.keys_used, vec!["api_key"]);
         assert!(report.missing_keys.is_empty());
-        assert_eq!(messages[0].content, Some("使用 sk-12345 调用API".to_string()));
+        assert_eq!(
+            messages[0].content,
+            Some("使用 sk-12345 调用API".to_string())
+        );
     }
 
     #[test]
@@ -153,9 +165,9 @@ mod tests {
         let store = create_test_store();
         let injector = VaultInjector::new(store);
 
-        let mut messages = vec![
-            ChatMessage::user("用 {{vault:api_key}} 和 {{vault:password}}"),
-        ];
+        let mut messages = vec![ChatMessage::user(
+            "用 {{vault:api_key}} 和 {{vault:password}}",
+        )];
 
         let report = injector.inject(&mut messages);
 
@@ -188,15 +200,16 @@ mod tests {
         let store = create_test_store();
         let injector = VaultInjector::new(store);
 
-        let mut messages = vec![
-            ChatMessage::user("使用 {{vault:unknown_key}}"),
-        ];
+        let mut messages = vec![ChatMessage::user("使用 {{vault:unknown_key}}")];
 
         let report = injector.inject(&mut messages);
 
         assert_eq!(report.missing_keys, vec!["unknown_key"]);
         // Unknown key should remain unchanged
-        assert_eq!(messages[0].content, Some("使用 {{vault:unknown_key}}".to_string()));
+        assert_eq!(
+            messages[0].content,
+            Some("使用 {{vault:unknown_key}}".to_string())
+        );
     }
 
     #[test]
@@ -204,15 +217,16 @@ mod tests {
         let store = create_test_store();
         let injector = VaultInjector::new(store);
 
-        let mut messages = vec![
-            ChatMessage::user("{{vault:api_key}} 和 {{vault:missing}}"),
-        ];
+        let mut messages = vec![ChatMessage::user("{{vault:api_key}} 和 {{vault:missing}}")];
 
         let report = injector.inject(&mut messages);
 
         assert_eq!(report.keys_used, vec!["api_key"]);
         assert_eq!(report.missing_keys, vec!["missing"]);
-        assert_eq!(messages[0].content, Some("sk-12345 和 {{vault:missing}}".to_string()));
+        assert_eq!(
+            messages[0].content,
+            Some("sk-12345 和 {{vault:missing}}".to_string())
+        );
     }
 
     #[test]
@@ -220,9 +234,7 @@ mod tests {
         let store = create_test_store();
         let injector = VaultInjector::new(store);
 
-        let mut messages = vec![
-            ChatMessage::user("没有placeholder"),
-        ];
+        let mut messages = vec![ChatMessage::user("没有placeholder")];
 
         let report = injector.inject(&mut messages);
 
@@ -266,9 +278,7 @@ mod tests {
         let store = create_test_store();
         let injector = VaultInjector::new(store);
 
-        let mut messages = vec![
-            ChatMessage::user("使用 {{vault:api_key}}"),
-        ];
+        let mut messages = vec![ChatMessage::user("使用 {{vault:api_key}}")];
 
         let report = injector.inject(&mut messages);
 
@@ -278,12 +288,16 @@ mod tests {
     #[test]
     fn test_complex_value_with_special_chars() {
         let store = VaultStore::new_in_memory();
-        store.set("conn", "postgresql://user:p@ss!word@localhost:5432/db", None).unwrap();
+        store
+            .set(
+                "conn",
+                "postgresql://user:p@ss!word@localhost:5432/db",
+                None,
+            )
+            .unwrap();
         let injector = VaultInjector::new(Arc::new(store));
 
-        let mut messages = vec![
-            ChatMessage::user("连接: {{vault:conn}}"),
-        ];
+        let mut messages = vec![ChatMessage::user("连接: {{vault:conn}}")];
 
         let report = injector.inject(&mut messages);
 

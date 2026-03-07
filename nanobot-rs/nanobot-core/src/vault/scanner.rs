@@ -41,24 +41,26 @@ pub fn scan_placeholders(text: &str) -> Vec<Placeholder> {
 
 /// Extract all unique keys from text
 pub fn extract_keys(text: &str) -> HashSet<String> {
-    scan_placeholders(text)
-        .into_iter()
-        .map(|p| p.key)
-        .collect()
+    scan_placeholders(text).into_iter().map(|p| p.key).collect()
 }
 
 /// Replace placeholders in text with their values
 ///
 /// Placeholders with missing keys are left unchanged.
-pub fn replace_placeholders(text: &str, replacements: &std::collections::HashMap<String, String>) -> String {
+pub fn replace_placeholders(
+    text: &str,
+    replacements: &std::collections::HashMap<String, String>,
+) -> String {
     let re = Regex::new(PLACEHOLDER_PATTERN).unwrap();
 
     re.replace_all(text, |cap: &regex::Captures| -> String {
         let key = &cap[1];
-        replacements.get(key)
+        replacements
+            .get(key)
             .cloned()
             .unwrap_or_else(|| cap.get(0).unwrap().as_str().to_string())
-    }).to_string()
+    })
+    .to_string()
 }
 
 /// Check if text contains any placeholders
