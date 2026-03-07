@@ -139,6 +139,7 @@ async fn test_outbound_message() {
         content: "Response".to_string(),
         metadata: Some(serde_json::json!({"thread_ts": "12345"})),
         trace_id: None,
+        ws_message: None,
     };
 
     assert_eq!(outbound.channel, ChannelType::Discord);
@@ -1236,6 +1237,7 @@ async fn test_outbound_message_for_all_channels() {
             content: "Response message".to_string(),
             metadata: Some(serde_json::json!({"thread_ts": "123456"})),
             trace_id: None,
+            ws_message: None,
         };
 
         assert_eq!(msg.channel, channel);

@@ -119,7 +119,17 @@ impl WebSocketManager {
         };
 
         if let Some(sender) = connections.get(&connection_id) {
-            let text = msg.content;
+            // Check if we have a structured WebSocket message
+            let text = if let Some(ref ws_msg) = msg.ws_message {
+                ws_msg.to_json()
+            } else if !msg.content.is_empty() {
+                // Legacy: send plain text (wrapped in JSON for consistency)
+                msg.content
+            } else {
+                // Empty message, skip
+                return;
+            };
+
             if let Err(e) = sender.send(Message::Text(text.into())).await {
                 warn!(
                     "Failed to send message to connection {}: {}",

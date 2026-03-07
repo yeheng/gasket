@@ -22,7 +22,11 @@ pub enum StreamEvent {
     /// Incremental reasoning/thinking content
     Reasoning(String),
     /// A tool is being called
-    ToolStart { name: String },
+    ToolStart {
+        name: String,
+        /// Tool arguments as JSON string (optional)
+        arguments: Option<String>,
+    },
     /// Tool execution finished
     ToolEnd { name: String, output: String },
     /// Stream completed

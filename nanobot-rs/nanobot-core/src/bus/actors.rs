@@ -23,8 +23,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
-use crate::agent::AgentLoop;
-use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey};
+use crate::agent::{AgentLoop, StreamCallback, StreamEvent};
+use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey, WebSocketMessage};
 use crate::config::ChannelsConfig;
 
 // ── Outbound Actor ──────────────────────────────────────────
@@ -73,6 +73,15 @@ pub async fn run_outbound_actor(
 /// SummarizationService across sessions.
 ///
 /// Self-destructs after `idle_timeout` of inactivity, freeing memory.
+///
+/// ## WebSocket Streaming
+///
+/// For WebSocket channels, this actor sends real-time streaming events:
+/// - `thinking`: LLM reasoning content
+/// - `tool_start`: Tool call initiated
+/// - `tool_end`: Tool execution completed
+/// - `content`: Streaming text content
+/// - `done`: Stream completed
 pub async fn run_session_actor(
     session_key: SessionKey,
     mut rx: mpsc::Receiver<InboundMessage>,
@@ -86,16 +95,81 @@ pub async fn run_session_actor(
     loop {
         match timeout(idle_timeout, rx.recv()).await {
             Ok(Some(msg)) => {
+                let channel = msg.channel.clone();
+                let chat_id = msg.chat_id.clone();
+                let trace_id = msg.trace_id.clone();
+
+                // Check if this is a WebSocket channel for streaming
+                #[cfg(feature = "webhook")]
+                let is_websocket = matches!(channel, crate::bus::events::ChannelType::WebSocket);
+                #[cfg(not(feature = "webhook"))]
+                let is_websocket = false;
+
+                // Create streaming callback for WebSocket channels
+                let callback: Option<StreamCallback> = if is_websocket {
+                    let ob_tx = outbound_tx.clone();
+                    let ch = channel.clone();
+                    let cid = chat_id.clone();
+                    Some(Box::new(move |event: &StreamEvent| {
+                        let ws_msg = match event {
+                            StreamEvent::Content(content) => {
+                                Some(WebSocketMessage::content(content.clone()))
+                            }
+                            StreamEvent::Reasoning(content) => {
+                                Some(WebSocketMessage::thinking(content.clone()))
+                            }
+                            StreamEvent::ToolStart { name, arguments } => Some(
+                                WebSocketMessage::tool_start(name.clone(), arguments.clone()),
+                            ),
+                            StreamEvent::ToolEnd { name, output } => Some(
+                                WebSocketMessage::tool_end(name.clone(), Some(output.clone())),
+                            ),
+                            StreamEvent::Done => Some(WebSocketMessage::done()),
+                        };
+
+                        if let Some(ws_msg) = ws_msg {
+                            let outbound =
+                                OutboundMessage::with_ws_message(ch.clone(), cid.clone(), ws_msg);
+                            // Fire-and-forget: don't block on send
+                            let tx = ob_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = tx.send(outbound).await {
+                                    tracing::error!("Failed to send streaming event: {}", e);
+                                }
+                            });
+                        }
+                    }))
+                } else {
+                    None
+                };
+
                 // Serial processing: no locks needed, only one message at a time.
-                match agent.process_direct(&msg.content, &session_key).await {
+                let result = match callback {
+                    Some(ref cb) => {
+                        agent
+                            .process_direct_with_callback(&msg.content, &session_key, Some(cb))
+                            .await
+                    }
+                    None => agent.process_direct(&msg.content, &session_key).await,
+                };
+
+                match result {
                     Ok(response) => {
+                        // For WebSocket channels, content was already streamed via callback
+                        // Skip sending the final response to avoid duplication
+                        #[cfg(feature = "webhook")]
+                        if is_websocket {
+                            continue;
+                        }
+
                         // Forward to Outbound Actor — returns immediately, no network wait.
                         let outbound_msg = OutboundMessage {
-                            channel: msg.channel,
-                            chat_id: msg.chat_id,
+                            channel,
+                            chat_id,
                             content: response.content,
                             metadata: None,
-                            trace_id: msg.trace_id,
+                            trace_id,
+                            ws_message: None,
                         };
                         if let Err(e) = outbound_tx.send(outbound_msg).await {
                             tracing::error!(

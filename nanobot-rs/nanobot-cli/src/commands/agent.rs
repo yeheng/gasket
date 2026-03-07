@@ -101,7 +101,10 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                 eprint!("{}", text.dimmed().italic());
                 std::io::stderr().flush().ok();
             }
-            StreamEvent::ToolStart { name: _ } => {}
+            StreamEvent::ToolStart {
+                name: _,
+                arguments: _,
+            } => {}
             StreamEvent::ToolEnd { name: _, output: _ } => {}
             StreamEvent::Done => {
                 // Ensure stdout ends with newline for clean separation

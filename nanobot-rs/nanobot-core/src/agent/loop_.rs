@@ -685,6 +685,7 @@ impl AgentLoop {
         for tool_call in &response.tool_calls {
             cb(&StreamEvent::ToolStart {
                 name: tool_call.function.name.clone(),
+                arguments: Some(tool_call.function.arguments.to_string()),
             });
         }
 

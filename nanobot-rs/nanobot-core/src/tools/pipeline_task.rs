@@ -71,7 +71,12 @@ impl Tool for PipelineTaskTool {
     fn parameters(&self) -> Value {
         // Dynamically get valid states from the graph
         let valid_states: Vec<&str> = self.graph.transitions.keys().map(|s| s.as_str()).collect();
-        let valid_roles: Vec<&str> = self.graph.state_roles.values().map(|s| s.as_str()).collect();
+        let valid_roles: Vec<&str> = self
+            .graph
+            .state_roles
+            .values()
+            .map(|s| s.as_str())
+            .collect();
         let unique_roles: Vec<&str> = valid_roles.into_iter().collect();
 
         serde_json::json!({
@@ -220,7 +225,8 @@ impl PipelineTaskTool {
     async fn do_list(&self, args: TaskArgs) -> ToolResult {
         let tasks = if let Some(state_str) = &args.state {
             if !self.graph.is_valid_state(state_str) {
-                let valid_states: Vec<&str> = self.graph.transitions.keys().map(|s| s.as_str()).collect();
+                let valid_states: Vec<&str> =
+                    self.graph.transitions.keys().map(|s| s.as_str()).collect();
                 return Err(ToolError::InvalidArguments(format!(
                     "Unknown state: '{}'. Valid states: {:?}",
                     state_str, valid_states
@@ -238,7 +244,16 @@ impl PipelineTaskTool {
         } else {
             // Default: list all tasks in common active states
             let mut all_tasks = Vec::new();
-            for state in ["pending", "triage", "planning", "reviewing", "assigned", "executing", "review", "blocked"] {
+            for state in [
+                "pending",
+                "triage",
+                "planning",
+                "reviewing",
+                "assigned",
+                "executing",
+                "review",
+                "blocked",
+            ] {
                 if self.graph.is_valid_state(state) {
                     if let Ok(tasks) = self.store.list_tasks_by_state(state).await {
                         all_tasks.extend(tasks);
@@ -263,7 +278,8 @@ impl PipelineTaskTool {
             .ok_or_else(|| ToolError::InvalidArguments("agent_role is required".into()))?;
 
         if !self.graph.is_valid_state(&to_state) {
-            let valid_states: Vec<&str> = self.graph.transitions.keys().map(|s| s.as_str()).collect();
+            let valid_states: Vec<&str> =
+                self.graph.transitions.keys().map(|s| s.as_str()).collect();
             return Err(ToolError::InvalidArguments(format!(
                 "Unknown state: '{}'. Valid states: {:?}",
                 to_state, valid_states

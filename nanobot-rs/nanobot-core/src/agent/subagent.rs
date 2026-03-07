@@ -109,6 +109,7 @@ impl SubagentManager {
                 content,
                 metadata: None,
                 trace_id: None,
+                ws_message: None,
             };
 
             // Route through the Outbound Actor — no direct HTTP call

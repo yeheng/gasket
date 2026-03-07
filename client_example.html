@@ -19,6 +19,12 @@
             --bot-msg: #334155;
             --border-color: #334155;
             --sys-msg: #64748b;
+            --thinking-bg: rgba(139, 92, 246, 0.1);
+            --thinking-border: rgba(139, 92, 246, 0.3);
+            --tool-bg: rgba(16, 185, 129, 0.1);
+            --tool-border: rgba(16, 185, 129, 0.3);
+            --tool-request-bg: rgba(59, 130, 246, 0.1);
+            --tool-response-bg: rgba(245, 158, 11, 0.1);
         }
 
         body {
@@ -103,6 +109,17 @@
             box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
         }
 
+        .status-dot.thinking {
+            background-color: #8b5cf6; /* purple for thinking */
+            box-shadow: 0 0 8px rgba(139, 92, 246, 0.6);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.2); }
+        }
+
         .chat-box {
             flex: 1;
             padding: 24px;
@@ -148,8 +165,8 @@
         .message-wrapper.system {
             align-self: center;
             max-width: 95%;
-            font-size: 0.8rem;
-            color: var(--sys-msg);
+            font-size: 0.85rem;
+            color: #a1a1aa;
             text-align: center;
             background: rgba(0,0,0,0.15);
             padding: 4px 12px;
@@ -192,6 +209,236 @@
             color: var(--text-main);
             border-bottom-left-radius: 4px;
             border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        /* Thinking Section Styles */
+        .thinking-section {
+            background: var(--thinking-bg);
+            border: 1px solid var(--thinking-border);
+            border-radius: 12px;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+
+        .thinking-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s;
+        }
+
+        .thinking-header:hover {
+            background: rgba(139, 92, 246, 0.1);
+        }
+
+        .thinking-header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .thinking-icon {
+            width: 18px;
+            height: 18px;
+            color: #a78bfa;
+            animation: spin 2s linear infinite;
+        }
+
+        .thinking-icon.complete {
+            animation: none;
+            color: #8b5cf6;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .thinking-label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #a78bfa;
+        }
+
+        .thinking-toggle {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            transition: transform 0.2s;
+        }
+
+        .thinking-toggle.expanded {
+            transform: rotate(180deg);
+        }
+
+        .thinking-content {
+            padding: 0 14px 14px 14px;
+            display: none;
+        }
+
+        .thinking-content.visible {
+            display: block;
+        }
+
+        .thinking-text {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.6;
+            font-style: italic;
+            white-space: pre-wrap;
+        }
+
+        /* Tool Call Section Styles */
+        .tool-section {
+            background: var(--tool-bg);
+            border: 1px solid var(--tool-border);
+            border-radius: 12px;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+
+        .tool-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s;
+        }
+
+        .tool-header:hover {
+            background: rgba(16, 185, 129, 0.1);
+        }
+
+        .tool-header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tool-icon {
+            width: 18px;
+            height: 18px;
+        }
+
+        .tool-icon.running {
+            color: #fbbf24;
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        .tool-icon.complete {
+            color: #10b981;
+        }
+
+        .tool-label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #34d399;
+        }
+
+        .tool-name {
+            font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+            background: rgba(16, 185, 129, 0.2);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            color: #6ee7b7;
+        }
+
+        .tool-toggle {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            transition: transform 0.2s;
+        }
+
+        .tool-toggle.expanded {
+            transform: rotate(180deg);
+        }
+
+        .tool-details {
+            padding: 0 14px 14px 14px;
+            display: none;
+        }
+
+        .tool-details.visible {
+            display: block;
+        }
+
+        .tool-request, .tool-response {
+            margin-top: 10px;
+        }
+
+        .tool-request-label, .tool-response-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .tool-request-box, .tool-response-box {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+            font-size: 0.8rem;
+            color: #e2e8f0;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .tool-request-box {
+            border-left: 3px solid #3b82f6;
+        }
+
+        .tool-response-box {
+            border-left: 3px solid #f59e0b;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        /* Progress indicator */
+        .progress-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(59, 130, 246, 0.1);
+            border-radius: 8px;
+            margin-bottom: 12px;
+        }
+
+        .progress-dots {
+            display: flex;
+            gap: 4px;
+        }
+
+        .progress-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #3b82f6;
+            animation: bounce 1.4s ease-in-out infinite;
+        }
+
+        .progress-dot:nth-child(1) { animation-delay: 0s; }
+        .progress-dot:nth-child(2) { animation-delay: 0.2s; }
+        .progress-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+            40% { transform: scale(1); opacity: 1; }
+        }
+
+        .progress-text {
+            font-size: 0.85rem;
+            color: var(--text-muted);
         }
 
         /* Markdown Styles inside bot messages */
@@ -286,9 +533,14 @@
             box-shadow: inset 0 2px 4px rgba(0,0,0,0.1), 0 0 0 2px rgba(59, 130, 246, 0.2);
             background-color: rgba(15, 23, 42, 0.8);
         }
+
+        .input-area input:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
         
         .input-area input::placeholder {
-            color: #64748b;
+            color: #7c8ca1;
         }
 
         .input-area button {
@@ -328,6 +580,16 @@
             transform: translateY(1px);
             box-shadow: 0 2px 4px -1px rgba(59, 130, 246, 0.3);
         }
+
+        .input-area button:focus-visible {
+            outline: 2px solid var(--accent-hover);
+            outline-offset: 2px;
+        }
+
+        .input-area button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
         
         @media (max-width: 768px) {
             .chat-container {
@@ -349,13 +611,13 @@
         </div>
     </div>
     
-    <div class="chat-box" id="chat">
+    <div class="chat-box" id="chat" aria-live="polite" aria-label="Chat messages">
         <!-- Messages will appear here -->
     </div>
     
     <div class="input-area">
         <input type="text" id="input" placeholder="Type a message..." autocomplete="off">
-        <button onclick="sendMessage()">Send</button>
+        <button onclick="sendMessage()" id="send-btn">Send</button>
     </div>
 </div>
 
@@ -364,6 +626,7 @@
     const statusText = document.getElementById('status-text');
     const statusDot = document.getElementById('status-dot');
     const input = document.getElementById('input');
+    const sendBtn = document.getElementById('send-btn');
     let ws;
 
     // Configure marked to use standard options with GFM
@@ -372,11 +635,17 @@
         gfm: true
     });
 
+    // Current streaming state
+    let currentBotMessage = null;
+    let currentThinkingSection = null;
+    let currentToolSections = {};
+    let thinkingContent = '';
+    let isProcessing = false;
+
     // Get or create a persistent user ID for session continuity
     function getUserId() {
         let userId = localStorage.getItem('nanobot_user_id');
         if (!userId) {
-            // Generate a stable ID: user_<timestamp>_<random>
             userId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             localStorage.setItem('nanobot_user_id', userId);
             console.log('Generated new user ID:', userId);
@@ -384,19 +653,23 @@
         return userId;
     }
 
-    function updateStatus(connected) {
+    function updateStatus(connected, thinking = false) {
         if (connected) {
-            statusText.innerText = 'Connected';
+            statusText.innerText = thinking ? 'Thinking...' : 'Connected';
             statusDot.classList.add('connected');
+            if (thinking) {
+                statusDot.classList.add('thinking');
+            } else {
+                statusDot.classList.remove('thinking');
+            }
         } else {
             statusText.innerText = 'Disconnected';
-            statusDot.classList.remove('connected');
+            statusDot.classList.remove('connected', 'thinking');
         }
     }
 
     function connect() {
         const userId = getUserId();
-        // Pass user_id as query parameter for session persistence
         const wsUrl = 'ws://localhost:3000/ws?user_id=' + encodeURIComponent(userId);
         ws = new WebSocket(wsUrl);
 
@@ -406,14 +679,7 @@
         };
 
         ws.onmessage = (event) => {
-            // Render markdown to HTML for bot messages
-            try {
-                const htmlContent = marked.parse(event.data);
-                appendMessage(htmlContent, 'bot', 'Nanobot');
-            } catch (e) {
-                console.error("Markdown parsing error:", e);
-                appendMessage(event.data, 'bot', 'Nanobot', false);
-            }
+            handleMessage(event.data);
         };
 
         ws.onclose = () => {
@@ -428,14 +694,258 @@
         };
     }
 
+    /**
+     * Handle incoming WebSocket messages.
+     * Supports both structured JSON and plain text (backward compatible).
+     * 
+     * JSON Message Types:
+     * - { type: "thinking", content: "..." } - Thinking/reasoning content
+     * - { type: "tool_start", name: "tool_name", arguments: "..." } - Tool call started
+     * - { type: "tool_end", name: "tool_name", output: "..." } - Tool call completed
+     * - { type: "content", content: "..." } - Streaming content chunk
+     * - { type: "done" } - Stream completed
+     * - { type: "text", content: "..." } - Plain text message (legacy)
+     */
+    function handleMessage(data) {
+        // Try to parse as JSON first
+        try {
+            const msg = JSON.parse(data);
+            handleStructuredMessage(msg);
+        } catch (e) {
+            // Fall back to plain text (backward compatibility)
+            handlePlainTextMessage(data);
+        }
+    }
+
+    function handleStructuredMessage(msg) {
+        switch (msg.type) {
+            case 'thinking':
+                handleThinking(msg.content);
+                break;
+            case 'tool_start':
+                handleToolStart(msg.name, msg.arguments);
+                break;
+            case 'tool_end':
+                handleToolEnd(msg.name, msg.output);
+                break;
+            case 'content':
+                handleContent(msg.content);
+                break;
+            case 'done':
+                handleDone();
+                break;
+            case 'text':
+                // Legacy text message - render as markdown
+                handlePlainTextMessage(msg.content);
+                break;
+            default:
+                console.warn('Unknown message type:', msg.type);
+                handlePlainTextMessage(JSON.stringify(msg));
+        }
+    }
+
+    function handleThinking(content) {
+        updateStatus(true, true);
+        thinkingContent += content;
+        
+        if (!currentThinkingSection) {
+            createThinkingSection();
+        }
+        
+        if (currentThinkingSection) {
+            const textEl = currentThinkingSection.querySelector('.thinking-text');
+            if (textEl) {
+                textEl.textContent = thinkingContent;
+            }
+        }
+        scrollToBottom();
+    }
+
+    function createThinkingSection() {
+        // Ensure we have a bot message container
+        if (!currentBotMessage) {
+            currentBotMessage = createBotMessageWrapper();
+        }
+        
+        const section = document.createElement('div');
+        section.className = 'thinking-section';
+        section.innerHTML = `
+            <div class="thinking-header" onclick="toggleThinking(this)">
+                <div class="thinking-header-left">
+                    <svg class="thinking-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 6v6l4 2"/>
+                    </svg>
+                    <span class="thinking-label">Thinking...</span>
+                </div>
+                <span class="thinking-toggle">▼</span>
+            </div>
+            <div class="thinking-content">
+                <div class="thinking-text"></div>
+            </div>
+        `;
+        
+        const messageEl = currentBotMessage.querySelector('.message');
+        messageEl.insertBefore(section, messageEl.firstChild);
+        currentThinkingSection = section;
+    }
+
+    function handleToolStart(name, arguments) {
+        updateStatus(true, true);
+        
+        if (!currentBotMessage) {
+            currentBotMessage = createBotMessageWrapper();
+        }
+        
+        // Create tool section if it doesn't exist
+        if (currentToolSections[name]) {
+            return; // Already exists
+        }
+        
+        const section = document.createElement('div');
+        section.className = 'tool-section';
+        section.innerHTML = `
+            <div class="tool-header" onclick="toggleTool(this)">
+                <div class="tool-header-left">
+                    <svg class="tool-icon running" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                    </svg>
+                    <span class="tool-label">Tool:</span>
+                    <span class="tool-name">${escapeHtml(name)}</span>
+                </div>
+                <span class="tool-toggle">▼</span>
+            </div>
+            <div class="tool-details">
+                <div class="tool-request">
+                    <div class="tool-request-label">📤 Request</div>
+                    <div class="tool-request-box">${arguments ? escapeHtml(formatJson(arguments)) : '(no arguments)'}</div>
+                </div>
+                <div class="tool-response" style="display: none;">
+                    <div class="tool-response-label">📥 Response</div>
+                    <div class="tool-response-box"></div>
+                </div>
+            </div>
+        `;
+        
+        const messageEl = currentBotMessage.querySelector('.message');
+        messageEl.appendChild(section);
+        currentToolSections[name] = section;
+        scrollToBottom();
+    }
+
+    function handleToolEnd(name, output) {
+        const section = currentToolSections[name];
+        if (!section) return;
+        
+        // Update icon to complete state
+        const icon = section.querySelector('.tool-icon');
+        if (icon) {
+            icon.classList.remove('running');
+            icon.classList.add('complete');
+        }
+        
+        // Show and populate response
+        const responseSection = section.querySelector('.tool-response');
+        if (responseSection) {
+            responseSection.style.display = 'block';
+        }
+        
+        const responseBox = section.querySelector('.tool-response-box');
+        if (responseBox) {
+            responseBox.textContent = output ? formatOutput(output) : '(no output)';
+        }
+        
+        scrollToBottom();
+    }
+
+    function handleContent(content) {
+        if (!currentBotMessage) {
+            currentBotMessage = createBotMessageWrapper();
+        }
+        
+        // Find or create the content div
+        let contentDiv = currentBotMessage.querySelector('.markdown-body');
+        if (!contentDiv) {
+            contentDiv = currentBotMessage.querySelector('.message');
+            contentDiv.classList.add('markdown-body');
+        }
+        
+        // Append content (we'll render markdown on done)
+        const existingContent = contentDiv.getAttribute('data-raw') || '';
+        const newContent = existingContent + content;
+        contentDiv.setAttribute('data-raw', newContent);
+        
+        // Render partial markdown
+        contentDiv.innerHTML = marked.parse(newContent);
+        scrollToBottom();
+    }
+
+    function handleDone() {
+        updateStatus(true, false);
+        isProcessing = false;
+        sendBtn.disabled = false;
+        
+        // Mark thinking as complete
+        if (currentThinkingSection) {
+            const icon = currentThinkingSection.querySelector('.thinking-icon');
+            icon.classList.add('complete');
+            
+            const label = currentThinkingSection.querySelector('.thinking-label');
+            label.textContent = 'Thought process';
+        }
+        
+        // Reset state for next message
+        currentBotMessage = null;
+        currentThinkingSection = null;
+        currentToolSections = {};
+        thinkingContent = '';
+    }
+
+    function handlePlainTextMessage(text) {
+        try {
+            const htmlContent = marked.parse(text);
+            appendMessage(htmlContent, 'bot', 'Nanobot');
+        } catch (e) {
+            console.error("Markdown parsing error:", e);
+            appendMessage(text, 'bot', 'Nanobot', false);
+        }
+    }
+
+    function createBotMessageWrapper() {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message-wrapper bot';
+        
+        const label = document.createElement('div');
+        label.className = 'message-label';
+        label.innerText = 'Nanobot';
+        wrapper.appendChild(label);
+        
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot markdown-body';
+        wrapper.appendChild(messageDiv);
+        
+        chat.appendChild(wrapper);
+        return wrapper;
+    }
+
     function sendMessage() {
         const text = input.value.trim();
         if (text && ws && ws.readyState === WebSocket.OPEN) {
+            isProcessing = true;
+            sendBtn.disabled = true;
+            
             ws.send(text);
-            // Escape user input to prevent XSS in user bubble
+            
+            // Escape user input to prevent XSS
             const escapedText = text.replace(/</g, "&lt;").replace(/>/g, "&gt;");
             appendMessage(escapedText, 'user', 'You', false);
             input.value = '';
+            
+            // Reset streaming state
+            currentBotMessage = null;
+            currentThinkingSection = null;
+            currentToolSections = {};
+            thinkingContent = '';
         }
     }
 
@@ -451,13 +961,11 @@
         const wrapper = document.createElement('div');
         wrapper.className = `message-wrapper ${type}`;
         
-        // Add sender label
         const label = document.createElement('div');
         label.className = 'message-label';
         label.innerText = senderName;
         wrapper.appendChild(label);
         
-        // Add message content
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${type} ${type === 'bot' ? 'markdown-body' : ''}`;
         
@@ -472,8 +980,45 @@
         scrollToBottom();
     }
 
+    function toggleThinking(header) {
+        const content = header.parentElement.querySelector('.thinking-content');
+        const toggle = header.querySelector('.thinking-toggle');
+        content.classList.toggle('visible');
+        toggle.classList.toggle('expanded');
+    }
+
+    function toggleTool(header) {
+        const details = header.parentElement.querySelector('.tool-details');
+        const toggle = header.querySelector('.tool-toggle');
+        details.classList.toggle('visible');
+        toggle.classList.toggle('expanded');
+    }
+
     function scrollToBottom() {
         chat.scrollTop = chat.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function formatJson(str) {
+        try {
+            const obj = JSON.parse(str);
+            return JSON.stringify(obj, null, 2);
+        } catch (e) {
+            return str;
+        }
+    }
+
+    function formatOutput(output) {
+        // Truncate very long outputs
+        if (output.length > 500) {
+            return output.substring(0, 500) + '\n\n... (truncated)';
+        }
+        return output;
     }
 
     input.addEventListener('keypress', (e) => {
