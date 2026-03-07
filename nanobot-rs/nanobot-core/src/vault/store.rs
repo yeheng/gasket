@@ -131,9 +131,13 @@ impl VaultStore {
     pub fn get(&self, key: &str) -> Option<String> {
         // First read to check existence and get value
         let value = {
-            let entries = self.entries.read().map_err(|_| {
-                warn!("[Vault] Failed to acquire read lock");
-            }).ok()?;
+            let entries = self
+                .entries
+                .read()
+                .map_err(|_| {
+                    warn!("[Vault] Failed to acquire read lock");
+                })
+                .ok()?;
             entries.get(key).map(|e| e.value.clone())
         };
 
@@ -153,19 +157,17 @@ impl VaultStore {
     ///
     /// Creates a new entry or updates an existing one.
     /// Preserves created_at for existing entries.
-    pub fn set(
-        &self,
-        key: &str,
-        value: &str,
-        description: Option<&str>,
-    ) -> Result<(), VaultError> {
+    pub fn set(&self, key: &str, value: &str, description: Option<&str>) -> Result<(), VaultError> {
         // Validate key format
         Self::validate_key(key)?;
 
-        let mut entries = self.entries.write()
+        let mut entries = self
+            .entries
+            .write()
             .map_err(|e| VaultError::Lock(format!("Failed to acquire write lock: {}", e)))?;
 
-        let created_at = entries.get(key)
+        let created_at = entries
+            .get(key)
             .map(|e| e.created_at)
             .unwrap_or_else(Utc::now);
 
@@ -199,7 +201,9 @@ impl VaultStore {
     ///
     /// Returns true if the entry existed and was deleted.
     pub fn delete(&self, key: &str) -> Result<bool, VaultError> {
-        let mut entries = self.entries.write()
+        let mut entries = self
+            .entries
+            .write()
             .map_err(|e| VaultError::Lock(format!("Failed to acquire write lock: {}", e)))?;
 
         if entries.remove(key).is_some() {
@@ -252,7 +256,7 @@ impl VaultStore {
         }
         if !key.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return Err(VaultError::InvalidKey(
-                "Key must contain only alphanumeric characters and underscores".to_string()
+                "Key must contain only alphanumeric characters and underscores".to_string(),
             ));
         }
         Ok(())
@@ -266,7 +270,9 @@ mod tests {
     #[test]
     fn test_set_and_get() {
         let store = VaultStore::new_in_memory();
-        store.set("api_key", "secret123", Some("Test API key")).unwrap();
+        store
+            .set("api_key", "secret123", Some("Test API key"))
+            .unwrap();
 
         let value = store.get("api_key");
         assert_eq!(value, Some("secret123".to_string()));
@@ -334,14 +340,22 @@ mod tests {
         let store = VaultStore::new_in_memory();
         store.set("key", "value1", None).unwrap();
 
-        let original_meta = store.list_keys().into_iter().find(|m| m.key == "key").unwrap();
+        let original_meta = store
+            .list_keys()
+            .into_iter()
+            .find(|m| m.key == "key")
+            .unwrap();
 
         // Small delay to ensure timestamp difference
         std::thread::sleep(std::time::Duration::from_millis(10));
 
         store.set("key", "value2", Some("Updated")).unwrap();
 
-        let updated_meta = store.list_keys().into_iter().find(|m| m.key == "key").unwrap();
+        let updated_meta = store
+            .list_keys()
+            .into_iter()
+            .find(|m| m.key == "key")
+            .unwrap();
 
         // created_at should be preserved
         assert_eq!(original_meta.created_at, updated_meta.created_at);

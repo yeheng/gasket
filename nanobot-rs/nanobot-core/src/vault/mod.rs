@@ -38,13 +38,16 @@
 //! ```
 
 mod error;
-mod store;
-mod scanner;
 mod injector;
 mod redaction;
+mod scanner;
+mod store;
 
 pub use error::VaultError;
-pub use store::{VaultStore, VaultEntry, VaultMetadata};
-pub use scanner::{Placeholder, scan_placeholders, extract_keys, replace_placeholders, contains_placeholders, PLACEHOLDER_PATTERN};
-pub use injector::{VaultInjector, InjectionReport};
-pub use redaction::{redact_secrets, contains_secrets, redact_message_secrets};
+pub use injector::{InjectionReport, VaultInjector};
+pub use redaction::{contains_secrets, redact_message_secrets, redact_secrets};
+pub use scanner::{
+    contains_placeholders, extract_keys, replace_placeholders, scan_placeholders, Placeholder,
+    PLACEHOLDER_PATTERN,
+};
+pub use store::{VaultEntry, VaultMetadata, VaultStore};
