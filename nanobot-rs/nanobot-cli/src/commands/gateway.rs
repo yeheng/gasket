@@ -11,6 +11,7 @@ use nanobot_core::agent::{AgentLoop, SubagentManager};
 use nanobot_core::channels::Channel;
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
+use nanobot_core::pipeline::{self, PipelineHandle};
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
 
 /// Run the gateway command
@@ -121,7 +122,7 @@ pub async fn cmd_gateway() -> Result<()> {
     );
 
     // Build tool registry externally with gateway-specific tools
-    let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
+    let mut tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config: config.clone(),
         workspace: workspace.clone(),
         mcp_tools,
@@ -148,8 +149,38 @@ pub async fn cmd_gateway() -> Result<()> {
                 },
             ),
         ],
-        enable_tantivy_search: true, // Gateway mode disables Tantivy search tools
+        enable_tantivy_search: true, // Gateway mode enables Tantivy search tools
     });
+
+    // Initialize pipeline subsystem if enabled
+    let _pipeline_handle: Option<PipelineHandle> = if let Some(ref pipeline_config) =
+        config.pipeline
+    {
+        // Load soul templates from workspace
+        let soul_templates = pipeline::load_soul_templates(&workspace.join("pipeline_templates"));
+
+        match pipeline::bootstrap(
+            pipeline_config,
+            memory_store.pool(),
+            subagent_manager.clone(),
+            &mut tools,
+            soul_templates,
+        )
+        .await
+        {
+            Ok(Some(handle)) => {
+                println!("{} Pipeline subsystem enabled", "✓".green());
+                Some(handle)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::error!("Failed to initialize pipeline: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let agent = Arc::new(
         AgentLoop::with_memory_store(

@@ -372,6 +372,18 @@
         gfm: true
     });
 
+    // Get or create a persistent user ID for session continuity
+    function getUserId() {
+        let userId = localStorage.getItem('nanobot_user_id');
+        if (!userId) {
+            // Generate a stable ID: user_<timestamp>_<random>
+            userId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('nanobot_user_id', userId);
+            console.log('Generated new user ID:', userId);
+        }
+        return userId;
+    }
+
     function updateStatus(connected) {
         if (connected) {
             statusText.innerText = 'Connected';
@@ -383,11 +395,14 @@
     }
 
     function connect() {
-        ws = new WebSocket('ws://localhost:3000/ws');
+        const userId = getUserId();
+        // Pass user_id as query parameter for session persistence
+        const wsUrl = 'ws://localhost:3000/ws?user_id=' + encodeURIComponent(userId);
+        ws = new WebSocket(wsUrl);
 
         ws.onopen = () => {
             updateStatus(true);
-            appendSystemMessage('Connected to Nanobot Gateway');
+            appendSystemMessage('Connected to Nanobot Gateway (user: ' + userId + ')');
         };
 
         ws.onmessage = (event) => {

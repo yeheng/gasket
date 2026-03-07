@@ -21,6 +21,12 @@ pub struct PermissionMatrix {
     allowed: HashMap<String, HashSet<String>>,
 }
 
+impl Default for PermissionMatrix {
+    fn default() -> Self {
+        Self::default_sangsheng()
+    }
+}
+
 impl PermissionMatrix {
     /// Build a matrix from an explicit map.
     pub fn new(allowed: HashMap<String, HashSet<String>>) -> Self {

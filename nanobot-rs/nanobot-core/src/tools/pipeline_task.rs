@@ -69,6 +69,11 @@ impl Tool for PipelineTaskTool {
     }
 
     fn parameters(&self) -> Value {
+        // Dynamically get valid states from the graph
+        let valid_states: Vec<&str> = self.graph.transitions.keys().map(|s| s.as_str()).collect();
+        let valid_roles: Vec<&str> = self.graph.state_roles.values().map(|s| s.as_str()).collect();
+        let unique_roles: Vec<&str> = valid_roles.into_iter().collect();
+
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -104,15 +109,18 @@ impl Tool for PipelineTaskTool {
                 },
                 "state": {
                     "type": "string",
-                    "description": "Filter by state (for list)"
+                    "enum": valid_states,
+                    "description": "Filter by state (for list). Valid states are defined by the pipeline graph."
                 },
                 "role": {
                     "type": "string",
+                    "enum": unique_roles,
                     "description": "Filter by assigned role (for list)"
                 },
                 "to_state": {
                     "type": "string",
-                    "description": "Target state (for transition)"
+                    "enum": valid_states,
+                    "description": "Target state (for transition). Must be a valid transition from current state."
                 },
                 "agent_role": {
                     "type": "string",
@@ -212,8 +220,10 @@ impl PipelineTaskTool {
     async fn do_list(&self, args: TaskArgs) -> ToolResult {
         let tasks = if let Some(state_str) = &args.state {
             if !self.graph.is_valid_state(state_str) {
+                let valid_states: Vec<&str> = self.graph.transitions.keys().map(|s| s.as_str()).collect();
                 return Err(ToolError::InvalidArguments(format!(
-                    "Unknown state: {state_str}"
+                    "Unknown state: '{}'. Valid states: {:?}",
+                    state_str, valid_states
                 )));
             }
             self.store
@@ -226,11 +236,16 @@ impl PipelineTaskTool {
                 .await
                 .map_err(|e| ToolError::ExecutionError(e.to_string()))?
         } else {
-            // Default: list all pending
-            self.store
-                .list_tasks_by_state("pending")
-                .await
-                .map_err(|e| ToolError::ExecutionError(e.to_string()))?
+            // Default: list all tasks in common active states
+            let mut all_tasks = Vec::new();
+            for state in ["pending", "triage", "planning", "reviewing", "assigned", "executing", "review", "blocked"] {
+                if self.graph.is_valid_state(state) {
+                    if let Ok(tasks) = self.store.list_tasks_by_state(state).await {
+                        all_tasks.extend(tasks);
+                    }
+                }
+            }
+            all_tasks
         };
 
         Ok(serde_json::to_string_pretty(&tasks).unwrap())
@@ -248,8 +263,10 @@ impl PipelineTaskTool {
             .ok_or_else(|| ToolError::InvalidArguments("agent_role is required".into()))?;
 
         if !self.graph.is_valid_state(&to_state) {
+            let valid_states: Vec<&str> = self.graph.transitions.keys().map(|s| s.as_str()).collect();
             return Err(ToolError::InvalidArguments(format!(
-                "Unknown state: {to_state}"
+                "Unknown state: '{}'. Valid states: {:?}",
+                to_state, valid_states
             )));
         }
 
@@ -262,9 +279,10 @@ impl PipelineTaskTool {
             .ok_or_else(|| ToolError::NotFound(format!("Task {id} not found")))?;
 
         if !self.graph.can_transition(&task.state, &to_state) {
+            let allowed = self.graph.allowed_transitions(&task.state);
             return Err(ToolError::ExecutionError(format!(
-                "Invalid transition: {} → {}",
-                task.state, to_state
+                "Invalid transition: '{}' → '{}'. Allowed transitions from '{}': {:?}",
+                task.state, to_state, task.state, allowed
             )));
         }
 

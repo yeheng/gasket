@@ -15,7 +15,32 @@
 //!
 //! The entire subsystem is **opt-in**: when `config.pipeline.enabled` is false
 //! (or absent), zero code is executed and no tables are created.
+//!
+//! # Quick Start
+//!
+//! Add to your `config.yaml`:
+//!
+//! ```yaml
+//! pipeline:
+//!   enabled: true
+//!   useDefaultTemplate: true
+//!   maxReviews: 3
+//!   stallTimeoutSecs: 60
+//! ```
+//!
+//! Then call [`bootstrap`] during initialization:
+//!
+//! ```ignore
+//! let handle = pipeline::bootstrap(
+//!     &config.pipeline.unwrap_or_default(),
+//!     memory_store.pool().clone(),
+//!     subagent_manager,
+//!     &mut tool_registry,
+//!     soul_templates,
+//! ).await?;
+//! ```
 
+pub mod bootstrap;
 pub mod config;
 pub mod graph;
 pub mod models;
@@ -25,6 +50,7 @@ pub mod stall_detector;
 pub mod store;
 
 // Re-exports for convenience
+pub use bootstrap::{bootstrap, load_soul_templates, PipelineHandle};
 pub use config::PipelineConfig;
 pub use graph::{GateConfig, PipelineGraph};
 pub use models::{FlowLogEntry, PipelineTask, ProgressEntry, TaskPriority};
