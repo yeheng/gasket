@@ -30,10 +30,7 @@ pub enum PipelineEvent {
     },
 
     /// An agent reported progress.
-    ProgressReported {
-        task_id: String,
-        agent_role: String,
-    },
+    ProgressReported { task_id: String, agent_role: String },
 
     /// Stall detector found a stalled task.
     StallDetected { task_id: String },
@@ -101,10 +98,7 @@ impl OrchestratorActor {
                 task_id,
                 agent_role,
             } => {
-                debug!(
-                    "Progress from {} on task {}",
-                    agent_role, task_id
-                );
+                debug!("Progress from {} on task {}", agent_role, task_id);
             }
             PipelineEvent::StallDetected { task_id } => {
                 self.handle_stall(&task_id).await?;
@@ -117,7 +111,12 @@ impl OrchestratorActor {
     async fn handle_task_created(&self, task_id: &str) -> anyhow::Result<()> {
         let ok = self
             .store
-            .update_task_state(task_id, TaskState::Pending, TaskState::Triage, Some("taizi"))
+            .update_task_state(
+                task_id,
+                TaskState::Pending,
+                TaskState::Triage,
+                Some("taizi"),
+            )
             .await?;
 
         if !ok {
@@ -126,7 +125,13 @@ impl OrchestratorActor {
         }
 
         self.store
-            .append_flow_log(task_id, "pending", "triage", "system", Some("auto dispatch"))
+            .append_flow_log(
+                task_id,
+                "pending",
+                "triage",
+                "system",
+                Some("auto dispatch"),
+            )
             .await?;
 
         self.dispatch_agent(task_id, "taizi").await
@@ -254,7 +259,10 @@ impl OrchestratorActor {
 
         if GOVERNANCE_ROLES.contains(&role) {
             // Synchronous dispatch for governance agents
-            info!("Dispatching governance agent '{}' for task {}", role, task_id);
+            info!(
+                "Dispatching governance agent '{}' for task {}",
+                role, task_id
+            );
             let response = self
                 .subagent_manager
                 .submit_and_wait(&prompt, system_prompt.map(|s| s.as_str()))
@@ -274,7 +282,10 @@ impl OrchestratorActor {
             }
         } else {
             // Async dispatch for execution agents (六部)
-            info!("Dispatching execution agent '{}' for task {}", role, task_id);
+            info!(
+                "Dispatching execution agent '{}' for task {}",
+                role, task_id
+            );
             self.subagent_manager
                 .submit(&prompt, "cli", "pipeline_exec")?;
         }

@@ -92,8 +92,8 @@ impl Tool for DelegateTool {
 
     #[instrument(name = "tool.delegate", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
-        let args: DelegateArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: DelegateArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         // Permission check
         if !self
@@ -113,10 +113,7 @@ impl Tool for DelegateTool {
             // Synchronous: wait for the agent's response
             let response = self
                 .subagent
-                .submit_and_wait(
-                    &args.task_description,
-                    system_prompt.map(|s| s.as_str()),
-                )
+                .submit_and_wait(&args.task_description, system_prompt.map(|s| s.as_str()))
                 .await
                 .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 

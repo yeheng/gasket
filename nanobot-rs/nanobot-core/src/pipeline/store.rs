@@ -49,11 +49,9 @@ impl PipelineStore {
         .execute(&self.pool)
         .await?;
 
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_pipeline_tasks_state ON pipeline_tasks(state)",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_pipeline_tasks_state ON pipeline_tasks(state)")
+            .execute(&self.pool)
+            .await?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_pipeline_tasks_role ON pipeline_tasks(assigned_role)",
@@ -191,11 +189,10 @@ impl PipelineStore {
             .execute(&self.pool)
             .await?;
 
-        let count: (i32,) =
-            sqlx::query_as("SELECT review_count FROM pipeline_tasks WHERE id = ?")
-                .bind(id)
-                .fetch_one(&self.pool)
-                .await?;
+        let count: (i32,) = sqlx::query_as("SELECT review_count FROM pipeline_tasks WHERE id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(count.0 as u32)
     }
@@ -257,10 +254,7 @@ impl PipelineStore {
 
     /// Find tasks whose heartbeat is older than `timeout_secs` and that are
     /// in an active state (Executing, Triage, Planning, Reviewing, Assigned).
-    pub async fn find_stalled_tasks(
-        &self,
-        timeout_secs: u64,
-    ) -> anyhow::Result<Vec<PipelineTask>> {
+    pub async fn find_stalled_tasks(&self, timeout_secs: u64) -> anyhow::Result<Vec<PipelineTask>> {
         let cutoff = Utc::now() - chrono::Duration::seconds(timeout_secs as i64);
         let rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, title, description, state, priority, assigned_role,
@@ -582,7 +576,10 @@ mod tests {
     #[tokio::test]
     async fn test_progress_and_heartbeat() {
         let store = temp_store().await;
-        store.create_task(&make_task("p1", "Progress")).await.unwrap();
+        store
+            .create_task(&make_task("p1", "Progress"))
+            .await
+            .unwrap();
 
         store
             .append_progress("p1", "gong", "50% done", Some(50.0))

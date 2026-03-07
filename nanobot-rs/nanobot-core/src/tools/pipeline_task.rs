@@ -11,10 +11,10 @@ use tokio::sync::mpsc;
 use tracing::instrument;
 
 use super::base::{Tool, ToolError, ToolResult};
+use crate::pipeline::models::{PipelineTask, TaskPriority};
 use crate::pipeline::orchestrator::PipelineEvent;
 use crate::pipeline::state_machine::TaskState;
 use crate::pipeline::store::PipelineStore;
-use crate::pipeline::models::{PipelineTask, TaskPriority};
 
 pub struct PipelineTaskTool {
     store: PipelineStore,
@@ -118,8 +118,8 @@ impl Tool for PipelineTaskTool {
 
     #[instrument(name = "tool.pipeline_task", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
-        let args: TaskArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: TaskArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         match args.action.as_str() {
             "create" => self.do_create(args).await,
@@ -169,7 +169,12 @@ impl PipelineTaskTool {
             .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
         // Notify the orchestrator
-        let _ = self.event_tx.send(PipelineEvent::TaskCreated { task_id: id.clone() }).await;
+        let _ = self
+            .event_tx
+            .send(PipelineEvent::TaskCreated {
+                task_id: id.clone(),
+            })
+            .await;
 
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "status": "created",

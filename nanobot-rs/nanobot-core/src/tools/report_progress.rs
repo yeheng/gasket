@@ -70,8 +70,8 @@ impl Tool for ReportProgressTool {
 
     #[instrument(name = "tool.report_progress", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
-        let args: ProgressArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        let args: ProgressArgs =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
         // Validate percentage range
         if let Some(pct) = args.percentage {

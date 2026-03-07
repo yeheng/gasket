@@ -10,17 +10,13 @@ use super::state_machine::TaskState;
 /// Priority levels for pipeline tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TaskPriority {
     Low,
+    #[default]
     Normal,
     High,
     Critical,
-}
-
-impl Default for TaskPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 impl std::fmt::Display for TaskPriority {

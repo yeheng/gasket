@@ -32,15 +32,24 @@ impl PermissionMatrix {
         let mut m: HashMap<String, HashSet<String>> = HashMap::new();
 
         // 太子 → 中书省
-        m.insert("taizi".into(), ["zhongshu"].into_iter().map(Into::into).collect());
+        m.insert(
+            "taizi".into(),
+            ["zhongshu"].into_iter().map(Into::into).collect(),
+        );
 
         // 中书省 → 门下省
-        m.insert("zhongshu".into(), ["menxia"].into_iter().map(Into::into).collect());
+        m.insert(
+            "zhongshu".into(),
+            ["menxia"].into_iter().map(Into::into).collect(),
+        );
 
         // 门下省 → 尚书省 (approve) or 中书省 (reject back)
         m.insert(
             "menxia".into(),
-            ["shangshu", "zhongshu"].into_iter().map(Into::into).collect(),
+            ["shangshu", "zhongshu"]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         );
 
         // 尚书省 → 六部
