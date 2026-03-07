@@ -106,6 +106,7 @@ pub async fn run_session_actor(
                 let is_websocket = false;
 
                 // Create streaming callback for WebSocket channels
+                // Use synchronous send to preserve message ordering
                 let callback: Option<StreamCallback> = if is_websocket {
                     let ob_tx = outbound_tx.clone();
                     let ch = channel.clone();
@@ -130,13 +131,11 @@ pub async fn run_session_actor(
                         if let Some(ws_msg) = ws_msg {
                             let outbound =
                                 OutboundMessage::with_ws_message(ch.clone(), cid.clone(), ws_msg);
-                            // Fire-and-forget: don't block on send
-                            let tx = ob_tx.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = tx.send(outbound).await {
-                                    tracing::error!("Failed to send streaming event: {}", e);
-                                }
-                            });
+                            // Synchronous send to preserve ordering
+                            // Use try_send to avoid blocking, but still maintain order
+                            if let Err(e) = ob_tx.try_send(outbound) {
+                                tracing::error!("Failed to send streaming event: {}", e);
+                            }
                         }
                     }))
                 } else {
