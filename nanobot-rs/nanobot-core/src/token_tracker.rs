@@ -47,7 +47,11 @@ pub struct ModelPricing {
 
 impl ModelPricing {
     /// Create new pricing configuration
-    pub fn new(price_input_per_million: f64, price_output_per_million: f64, currency: &str) -> Self {
+    pub fn new(
+        price_input_per_million: f64,
+        price_output_per_million: f64,
+        currency: &str,
+    ) -> Self {
         Self {
             price_input_per_million,
             price_output_per_million,
@@ -177,12 +181,20 @@ pub fn format_cost(cost: f64, currency: &str) -> String {
 }
 
 /// Format token/cost info for a single request
-pub fn format_request_stats(usage: &TokenUsage, cost: f64, currency: &str, pricing: Option<&ModelPricing>) -> String {
+pub fn format_request_stats(
+    usage: &TokenUsage,
+    cost: f64,
+    currency: &str,
+    pricing: Option<&ModelPricing>,
+) -> String {
     let token_line = format!("[Token Usage] {}", format_token_usage(usage));
 
     let cost_line = if cost > 0.0 {
         let pricing_info = if let Some(p) = pricing {
-            format!(" (at ${:.2}/M input, ${:.2}/M output)", p.price_input_per_million, p.price_output_per_million)
+            format!(
+                " (at ${:.2}/M input, ${:.2}/M output)",
+                p.price_input_per_million, p.price_output_per_million
+            )
         } else {
             "".to_string()
         };

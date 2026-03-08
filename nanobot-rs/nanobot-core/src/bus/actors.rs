@@ -112,31 +112,38 @@ pub async fn run_session_actor(
                     let ch = channel.clone();
                     let cid = chat_id.clone();
                     Some(Box::new(move |event: &StreamEvent| {
-                        let ws_msg = match event {
-                            StreamEvent::Content(content) => {
-                                Some(WebSocketMessage::content(content.clone()))
-                            }
-                            StreamEvent::Reasoning(content) => {
-                                Some(WebSocketMessage::thinking(content.clone()))
-                            }
-                            StreamEvent::ToolStart { name, arguments } => Some(
-                                WebSocketMessage::tool_start(name.clone(), arguments.clone()),
-                            ),
-                            StreamEvent::ToolEnd { name, output } => Some(
-                                WebSocketMessage::tool_end(name.clone(), Some(output.clone())),
-                            ),
-                            StreamEvent::TokenStats { input_tokens, output_tokens, total_tokens, cost, currency } => {
-                                // Token stats are logged separately, not sent to WebSocket
-                                tracing::info!(
+                        let ws_msg =
+                            match event {
+                                StreamEvent::Content(content) => {
+                                    Some(WebSocketMessage::content(content.clone()))
+                                }
+                                StreamEvent::Reasoning(content) => {
+                                    Some(WebSocketMessage::thinking(content.clone()))
+                                }
+                                StreamEvent::ToolStart { name, arguments } => Some(
+                                    WebSocketMessage::tool_start(name.clone(), arguments.clone()),
+                                ),
+                                StreamEvent::ToolEnd { name, output } => Some(
+                                    WebSocketMessage::tool_end(name.clone(), Some(output.clone())),
+                                ),
+                                StreamEvent::TokenStats {
+                                    input_tokens,
+                                    output_tokens,
+                                    total_tokens,
+                                    cost,
+                                    currency,
+                                } => {
+                                    // Token stats are logged separately, not sent to WebSocket
+                                    tracing::info!(
                                     "[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
                                     input_tokens, output_tokens, total_tokens,
                                     if currency == "CNY" { "¥" } else { "$" },
                                     cost
                                 );
-                                None
-                            }
-                            StreamEvent::Done => Some(WebSocketMessage::done()),
-                        };
+                                    None
+                                }
+                                StreamEvent::Done => Some(WebSocketMessage::done()),
+                            };
 
                         if let Some(ws_msg) = ws_msg {
                             let outbound =

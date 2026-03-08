@@ -103,6 +103,7 @@ pub struct AgentResponse {
 
 /// Result from the agent loop execution.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct AgentLoopResult {
     /// Main response content
     content: String,
@@ -604,7 +605,11 @@ impl AgentLoop {
     /// Calculate token usage and cost for a response.
     ///
     /// Uses API-provided usage when available, falls back to tiktoken-rs estimation.
-    fn calculate_token_usage(&self, response: &ChatResponse, _model: &str) -> (Option<crate::token_tracker::TokenUsage>, f64) {
+    fn calculate_token_usage(
+        &self,
+        response: &ChatResponse,
+        _model: &str,
+    ) -> (Option<crate::token_tracker::TokenUsage>, f64) {
         // Try to get usage from API response first
         if let Some(usage) = &response.usage {
             let token_usage = crate::token_tracker::TokenUsage::from_api_fields(
