@@ -24,7 +24,6 @@ pub mod heartbeat;
 pub mod hooks;
 pub mod mcp;
 pub mod memory;
-pub mod pipeline;
 pub mod providers;
 pub mod search;
 

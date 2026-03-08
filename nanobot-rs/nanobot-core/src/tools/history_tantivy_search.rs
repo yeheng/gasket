@@ -16,7 +16,7 @@ use serde_json::Value;
 use tracing::info;
 
 use super::{simple_schema, Tool, ToolError, ToolResult};
-use crate::search::tantivy::{open_history_index, HistoryIndexReader};
+use crate::search::{open_history_index, HistoryIndexReader};
 use crate::search::{BooleanQuery, DateRange, FuzzyQuery, SearchQuery, SortOrder};
 
 /// Tool that searches session history using Tantivy full-text search.

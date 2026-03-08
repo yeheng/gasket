@@ -11,9 +11,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use tracing::instrument;
 
-use super::base::{Tool, ToolError, ToolResult};
-use crate::agent::subagent::SubagentManager;
-use crate::pipeline::permission::PermissionMatrix;
+use crate::permission::PermissionMatrix;
+use nanobot_core::agent::subagent::SubagentManager;
+use nanobot_core::tools::{Tool, ToolError, ToolResult};
 
 pub struct DelegateTool {
     subagent: Arc<SubagentManager>,

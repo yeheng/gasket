@@ -11,7 +11,7 @@ name = "nanobot"
 path = "src/main.rs"
 
 [features]
-default = ["markdown", "all-channels"]
+default = ["markdown", "all-channels", "tantivy"]
 markdown = ["termimad"]
 telegram = ["nanobot-core/telegram"]
 discord = ["nanobot-core/discord"]
@@ -21,9 +21,12 @@ feishu = ["nanobot-core/feishu"]
 dingtalk = ["nanobot-core/dingtalk"]
 wecom = ["nanobot-core/wecom"]
 all-channels = ["nanobot-core/all-channels"]
+tantivy = ["nanobot-core/tantivy"]
+pipeline = ["dep:nanobot-pipeline"]
 
 [dependencies]
 nanobot-core = { path = "../nanobot-core" }
+nanobot-pipeline = { path = "../nanobot-pipeline", optional = true }
 
 # Async
 tokio.workspace = true
@@ -79,3 +82,6 @@ axum = { workspace = true, features = ["ws"] }
 
 # Archive extraction (for workspace template downloads)
 tempfile = "3"
+
+# SQLite (for search commands)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

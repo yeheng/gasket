@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use super::{simple_schema, Tool, ToolError, ToolResult};
-use crate::search::tantivy::{open_memory_index, MemoryIndexWriter};
+use crate::search::{open_memory_index, MemoryIndexWriter};
 
 /// Tool that manages the memory Tantivy index.
 pub struct MemoryTantivyIndexTool {

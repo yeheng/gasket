@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use nanobot_core::config::config_dir;
-use nanobot_core::memory::SqliteStore;
-use nanobot_core::search::tantivy::{open_history_index, open_memory_index};
+#[cfg(feature = "tantivy")]
+use nanobot_core::search::{open_history_index, open_memory_index};
 
 /// Rebuild search indexes.
 pub async fn cmd_search_rebuild(index_type: &str) -> Result<()> {
@@ -132,16 +132,9 @@ async fn rebuild_memory_index(config_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-async fn rebuild_history_index(config_dir: &std::path::Path) -> Result<()> {
-    let index_path = config_dir.join("tantivy-index").join("history");
-
-    println!("🔄 Rebuilding history index...");
-
-    let db = SqliteStore::new().await?;
-    let (_, mut writer) = open_history_index(&index_path)?;
-    let count = writer.rebuild_from_db(&db).await?;
-
-    println!("✅ History index rebuilt: {} messages indexed", count);
+async fn rebuild_history_index(_config_dir: &std::path::Path) -> Result<()> {
+    println!("🔄 Rebuilding history index is not yet supported.");
+    println!("   Use memory index rebuild instead: nanobot search rebuild memory");
     Ok(())
 }
 
@@ -161,18 +154,7 @@ async fn update_memory_index(config_dir: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-async fn update_history_index(config_dir: &std::path::Path) -> Result<()> {
-    let index_path = config_dir.join("tantivy-index").join("history");
-
-    println!("🔄 Updating history index...");
-
-    let db = SqliteStore::new().await?;
-    let (_, mut writer) = open_history_index(&index_path)?;
-    let stats = writer.incremental_update(&db).await?;
-
-    println!(
-        "✅ History index updated: {} added, {} removed",
-        stats.added, stats.removed
-    );
+async fn update_history_index(_config_dir: &std::path::Path) -> Result<()> {
+    println!("🔄 Incremental history index update is not yet supported.");
     Ok(())
 }

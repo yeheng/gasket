@@ -28,7 +28,7 @@ pub struct Config {
     /// Multi-agent pipeline configuration (opt-in).
     /// When absent or `enabled: false`, the pipeline subsystem is completely dormant.
     #[serde(default)]
-    pub pipeline: Option<crate::pipeline::PipelineConfig>,
+    pub pipeline: Option<serde_json::Value>,
 }
 
 /// Provider configuration (OpenAI, OpenRouter, Anthropic, etc.)

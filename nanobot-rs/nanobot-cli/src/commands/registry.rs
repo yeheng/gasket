@@ -6,11 +6,16 @@ use std::sync::Arc;
 
 use nanobot_core::agent::AgentConfig;
 use nanobot_core::config::Config;
-use nanobot_core::search::tantivy::{open_history_index, open_memory_index};
 use nanobot_core::tools::{
-    EditFileTool, ExecTool, HistoryTantivySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
-    SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+    EditFileTool, ExecTool, ListDirTool, MemorySearchTool, ReadFileTool, SpawnTool, ToolMetadata,
+    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
+
+// Tantivy imports (only when feature is enabled)
+#[cfg(feature = "tantivy")]
+use nanobot_core::search::{open_history_index, open_memory_index};
+#[cfg(feature = "tantivy")]
+use nanobot_core::tools::HistoryTantivySearchTool;
 
 /// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
 ///
@@ -79,6 +84,7 @@ pub struct ToolRegistryConfig {
     /// Extra tools to register (e.g., gateway-specific MessageTool, CronTool)
     pub extra_tools: Vec<(Box<dyn nanobot_core::tools::Tool>, ToolMetadata)>,
     /// Enable Tantivy-powered advanced search tools (MemoryTantivySearchTool, HistoryTantivySearchTool)
+    #[cfg(feature = "tantivy")]
     pub enable_tantivy_search: bool,
 }
 
@@ -93,6 +99,7 @@ pub struct ToolRegistryConfig {
 /// # Returns
 /// A configured `ToolRegistry` ready for use
 pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry {
+    #[cfg(feature = "tantivy")]
     let ToolRegistryConfig {
         config,
         workspace,
@@ -100,6 +107,15 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         subagent_manager,
         extra_tools,
         enable_tantivy_search,
+    } = registry_config;
+
+    #[cfg(not(feature = "tantivy"))]
+    let ToolRegistryConfig {
+        config,
+        workspace,
+        mcp_tools,
+        subagent_manager,
+        extra_tools,
     } = registry_config;
 
     let restrict = config.tools.restrict_to_workspace;
@@ -223,8 +239,10 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
     // Memory search tool — unified: Tantivy when available, filesystem fallback
     // Create base tool and optionally attach Tantivy reader
+    #[allow(unused_mut)]
     let mut memory_tool = MemorySearchTool::new();
 
+    #[cfg(feature = "tantivy")]
     if enable_tantivy_search {
         let config_dir = nanobot_core::config::config_dir();
         let memory_index_path = config_dir.join("tantivy-index").join("memory");
@@ -248,6 +266,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     );
 
     // History search tool — Tantivy-powered (optional)
+    #[cfg(feature = "tantivy")]
     if enable_tantivy_search {
         let config_dir = nanobot_core::config::config_dir();
         let history_index_path = config_dir.join("tantivy-index").join("history");

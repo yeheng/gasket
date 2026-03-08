@@ -18,8 +18,9 @@ use super::orchestrator::{OrchestratorActor, PipelineEvent};
 use super::permission::PermissionMatrix;
 use super::stall_detector::StallDetector;
 use super::store::PipelineStore;
-use crate::agent::subagent::SubagentManager;
-use crate::tools::{PipelineTaskTool, ReportProgressTool, ToolRegistry};
+use crate::tools::{PipelineTaskTool, ReportProgressTool};
+use nanobot_core::agent::subagent::SubagentManager;
+use nanobot_core::tools::ToolRegistry;
 
 /// Pipeline subsystem handle.
 ///
@@ -111,11 +112,11 @@ pub async fn bootstrap(
         store.clone(),
         event_tx.clone(),
         graph_arc.clone(),
-    )));
-    tool_registry.register(Box::new(ReportProgressTool::new(
-        store.clone(),
-        event_tx.clone(),
-    )));
+    )) as Box<dyn nanobot_core::tools::Tool>);
+    tool_registry.register(
+        Box::new(ReportProgressTool::new(store.clone(), event_tx.clone()))
+            as Box<dyn nanobot_core::tools::Tool>,
+    );
 
     info!(
         "Pipeline subsystem initialized (entry_state={}, terminal_states={:?})",

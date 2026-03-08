@@ -12,11 +12,11 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
-use super::base::{Tool, ToolError, ToolResult};
-use crate::pipeline::graph::PipelineGraph;
-use crate::pipeline::models::{PipelineTask, TaskPriority};
-use crate::pipeline::orchestrator::PipelineEvent;
-use crate::pipeline::store::PipelineStore;
+use crate::graph::PipelineGraph;
+use crate::models::{PipelineTask, TaskPriority};
+use crate::orchestrator::PipelineEvent;
+use crate::store::PipelineStore;
+use nanobot_core::tools::{Tool, ToolError, ToolResult};
 
 pub struct PipelineTaskTool {
     store: PipelineStore,

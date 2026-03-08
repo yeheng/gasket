@@ -48,6 +48,7 @@ pub mod orchestrator;
 pub mod permission;
 pub mod stall_detector;
 pub mod store;
+pub mod tools;
 
 // Re-exports for convenience
 pub use bootstrap::{bootstrap, load_soul_templates, PipelineHandle};

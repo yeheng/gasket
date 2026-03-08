@@ -11,8 +11,9 @@ use nanobot_core::agent::{AgentLoop, SubagentManager};
 use nanobot_core::channels::Channel;
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
-use nanobot_core::pipeline::{self, PipelineHandle};
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
+#[cfg(feature = "pipeline")]
+use nanobot_pipeline::{PipelineConfig, PipelineHandle};
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -112,7 +113,7 @@ pub async fn cmd_gateway() -> Result<()> {
                         mcp_tools: vec![],
                         subagent_manager: None,
                         extra_tools: vec![],
-                        enable_tantivy_search: false,
+                        enable_tantivy_search: true,
                     })
                 }
             }),
@@ -121,66 +122,84 @@ pub async fn cmd_gateway() -> Result<()> {
         .await,
     );
 
-    // Build tool registry externally with gateway-specific tools
     let mut tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config: config.clone(),
         workspace: workspace.clone(),
         mcp_tools,
         subagent_manager: Some(subagent_manager.clone()),
-        extra_tools: vec![
-            (
-                Box::new(MessageTool::new(bus.outbound_sender())),
-                ToolMetadata {
-                    display_name: "Send Message".to_string(),
-                    category: "communication".to_string(),
-                    tags: vec!["message".to_string(), "send".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            ),
-            (
-                Box::new(CronTool::new(cron_service.clone())),
-                ToolMetadata {
-                    display_name: "Schedule Task".to_string(),
-                    category: "system".to_string(),
-                    tags: vec!["cron".to_string(), "schedule".to_string()],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            ),
-        ],
+        extra_tools: {
+            let ext: Vec<(Box<dyn nanobot_core::tools::Tool>, ToolMetadata)> = vec![
+                (
+                    Box::new(MessageTool::new(bus.outbound_sender()))
+                        as Box<dyn nanobot_core::tools::Tool>,
+                    ToolMetadata {
+                        display_name: "Send Message".to_string(),
+                        category: "communication".to_string(),
+                        tags: vec!["message".to_string(), "send".to_string()],
+                        requires_approval: false,
+                        is_mutating: false,
+                    },
+                ),
+                (
+                    Box::new(CronTool::new(cron_service.clone()))
+                        as Box<dyn nanobot_core::tools::Tool>,
+                    ToolMetadata {
+                        display_name: "Schedule Task".to_string(),
+                        category: "system".to_string(),
+                        tags: vec!["cron".to_string(), "schedule".to_string()],
+                        requires_approval: false,
+                        is_mutating: false,
+                    },
+                ),
+            ];
+
+            ext
+        },
         enable_tantivy_search: true, // Gateway mode enables Tantivy search tools
     });
 
     // Initialize pipeline subsystem if enabled
-    let _pipeline_handle: Option<PipelineHandle> = if let Some(ref pipeline_config) =
-        config.pipeline
-    {
-        // Load soul templates from workspace
-        let soul_templates = pipeline::load_soul_templates(&workspace.join("pipeline_templates"));
-
-        match pipeline::bootstrap(
-            pipeline_config,
-            memory_store.pool(),
-            subagent_manager.clone(),
-            &mut tools,
-            soul_templates,
-        )
-        .await
-        {
-            Ok(Some(handle)) => {
-                println!("{} Pipeline subsystem enabled", "✓".green());
-                Some(handle)
+    #[cfg(feature = "pipeline")]
+    let _pipeline_handle: Option<PipelineHandle> = if let Some(ref pipeline_raw) = config.pipeline {
+        // Parse raw JSON value into strongly typed config
+        match serde_json::from_value::<PipelineConfig>(pipeline_raw.clone()) {
+            Ok(pipeline_config) => {
+                let soul_templates = nanobot_pipeline::bootstrap::load_soul_templates(
+                    &workspace.join("pipeline_templates"),
+                );
+                match nanobot_pipeline::bootstrap::bootstrap(
+                    &pipeline_config,
+                    memory_store.pool().clone(),
+                    subagent_manager.clone(),
+                    &mut tools,
+                    soul_templates,
+                )
+                .await
+                {
+                    Ok(Some(handle)) => {
+                        println!("{} Pipeline subsystem enabled", "✓".green());
+                        Some(handle)
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::error!("Failed to initialize pipeline: {}", e);
+                        None
+                    }
+                }
             }
-            Ok(None) => None,
             Err(e) => {
-                tracing::error!("Failed to initialize pipeline: {}", e);
+                tracing::error!("Failed to parse pipeline config: {}", e);
                 None
             }
         }
     } else {
         None
     };
+
+    #[cfg(not(feature = "pipeline"))]
+    if config.pipeline.is_some() {
+        tracing::warn!("Pipeline config found but pipeline feature is not enabled.");
+    }
 
     let agent = Arc::new(
         AgentLoop::with_memory_store(

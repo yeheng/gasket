@@ -420,6 +420,14 @@ impl HistoryIndexWriter {
         Ok(())
     }
 
+    /// Clear all documents from the index.
+    pub fn clear(&mut self) -> Result<(), TantivyError> {
+        let writer = self.ensure_writer()?;
+        writer.delete_all_documents()?;
+        debug!("Cleared all documents from history index");
+        Ok(())
+    }
+
     /// Commit pending changes and reload the reader.
     pub fn commit(&mut self) -> Result<(), TantivyError> {
         if let Some(writer) = &mut self.writer {
@@ -430,173 +438,8 @@ impl HistoryIndexWriter {
         Ok(())
     }
 
-    /// Rebuild the entire index from SQLite database.
-    ///
-    /// This clears the existing index and re-indexes all session messages
-    /// from the database.
-    pub async fn rebuild_from_db(
-        &mut self,
-        db: &crate::memory::SqliteStore,
-    ) -> Result<usize, TantivyError> {
-        use sqlx::Row;
-
-        // Clear existing index
-        let writer = self.ensure_writer()?;
-        writer.delete_all_documents()?;
-
-        // Query all messages with their IDs
-        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
-            "SELECT id, session_key, role, content, timestamp, tools_used FROM session_messages ORDER BY id ASC",
-        )
-        .fetch_all(&db.pool)
-        .await
-        .map_err(|e| TantivyError::OperationError(format!("Failed to query messages: {}", e)))?;
-
-        let mut count = 0;
-        for row in rows {
-            let id: i64 = row.get("id");
-            let session_key: String = row.get("session_key");
-            let role: String = row.get("role");
-            let content: String = row.get("content");
-            let timestamp_str: String = row.get("timestamp");
-            let tools_json: Option<String> = row.get("tools_used");
-
-            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-
-            let tools: Option<Vec<String>> =
-                tools_json.and_then(|json| serde_json::from_str(&json).ok());
-
-            // Use database ID as the index ID
-            let doc_id = format!("{}:{}", session_key, id);
-
-            self.index_document(
-                &doc_id,
-                &content,
-                &role,
-                &session_key,
-                timestamp,
-                tools.as_deref(),
-            )?;
-            count += 1;
-
-            if count % 100 == 0 {
-                info!("Rebuilding history index: {} documents", count);
-            }
-        }
-
-        self.commit()?;
-        info!("History index rebuilt: {} documents", count);
-        Ok(count)
-    }
-
-    /// Incremental update: sync with database.
-    ///
-    /// This method compares the indexed documents with the database messages
-    /// and adds new messages, removes deleted ones.
-    ///
-    /// Returns update statistics.
-    pub async fn incremental_update(
-        &mut self,
-        db: &crate::memory::SqliteStore,
-    ) -> Result<super::IndexUpdateStats, TantivyError> {
-        use sqlx::Row;
-
-        let mut stats = super::IndexUpdateStats::default();
-
-        // Get all indexed document IDs
-        let indexed_docs = self.get_indexed_documents()?;
-
-        // Query all messages from database
-        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
-            "SELECT id, session_key, role, content, timestamp, tools_used FROM session_messages ORDER BY id ASC",
-        )
-        .fetch_all(&db.pool)
-        .await
-        .map_err(|e| TantivyError::OperationError(format!("Failed to query messages: {}", e)))?;
-
-        /// Helper struct to hold message data during sync.
-        struct MessageData {
-            doc_id: String,
-            session_key: String,
-            role: String,
-            content: String,
-            timestamp: DateTime<Utc>,
-            tools: Option<Vec<String>>,
-        }
-
-        // Build a set of database message IDs
-        let mut db_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut new_messages: Vec<MessageData> = Vec::new();
-
-        for row in rows {
-            let id: i64 = row.get("id");
-            let session_key: String = row.get("session_key");
-            let role: String = row.get("role");
-            let content: String = row.get("content");
-            let timestamp_str: String = row.get("timestamp");
-            let tools_json: Option<String> = row.get("tools_used");
-
-            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-
-            let tools: Option<Vec<String>> =
-                tools_json.and_then(|json| serde_json::from_str(&json).ok());
-
-            let doc_id = format!("{}:{}", session_key, id);
-            db_ids.insert(doc_id.clone());
-
-            // Check if this message is new (not in index)
-            if !indexed_docs.contains(&doc_id) {
-                new_messages.push(MessageData {
-                    doc_id,
-                    session_key,
-                    role,
-                    content,
-                    timestamp,
-                    tools,
-                });
-            }
-        }
-
-        // Remove documents that no longer exist in database
-        for id in &indexed_docs {
-            if !db_ids.contains(id) {
-                self.delete_document(id)?;
-                stats.removed += 1;
-                debug!("Removed deleted message from history index: {}", id);
-            }
-        }
-
-        // Add new messages
-        for msg in new_messages {
-            self.index_document(
-                &msg.doc_id,
-                &msg.content,
-                &msg.role,
-                &msg.session_key,
-                msg.timestamp,
-                msg.tools.as_deref(),
-            )?;
-            stats.added += 1;
-            debug!("Added new message to history index: {}", msg.doc_id);
-        }
-
-        if stats.added > 0 || stats.removed > 0 {
-            self.commit()?;
-        }
-
-        info!(
-            "History index incremental update: {} added, {} removed",
-            stats.added, stats.removed
-        );
-        Ok(stats)
-    }
-
     /// Get all indexed document IDs.
-    fn get_indexed_documents(&self) -> Result<std::collections::HashSet<String>, TantivyError> {
+    pub fn get_indexed_documents(&self) -> Result<std::collections::HashSet<String>, TantivyError> {
         use tantivy::collector::DocSetCollector;
 
         let searcher = self.reader.searcher();

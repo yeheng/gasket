@@ -77,7 +77,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         mcp_tools,
         subagent_manager: None,
         extra_tools: vec![],
-        enable_tantivy_search: true, // CLI mode enables Tantivy search tools
+        #[cfg(feature = "tantivy")]
+        enable_tantivy_search: true,
     });
 
     let agent = AgentLoop::with_memory_store(

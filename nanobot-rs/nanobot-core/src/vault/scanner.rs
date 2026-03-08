@@ -2,9 +2,19 @@
 
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 /// Placeholder pattern: {{vault:key_name}}
 pub const PLACEHOLDER_PATTERN: &str = r"\{\{vault:([a-zA-Z0-9_]+)\}\}";
+
+/// Cached regex instance for placeholder scanning
+/// Using OnceLock to avoid recompiling the regex on every function call
+static PLACEHOLDER_REGEX: OnceLock<Regex> = OnceLock::new();
+
+/// Get or initialize the cached regex instance
+fn get_placeholder_regex() -> &'static Regex {
+    PLACEHOLDER_REGEX.get_or_init(|| Regex::new(PLACEHOLDER_PATTERN).unwrap())
+}
 
 /// A scanned placeholder
 #[derive(Debug, Clone)]
@@ -23,7 +33,7 @@ pub struct Placeholder {
 ///
 /// Returns a list of all placeholders found in the text.
 pub fn scan_placeholders(text: &str) -> Vec<Placeholder> {
-    let re = Regex::new(PLACEHOLDER_PATTERN).unwrap();
+    let re = get_placeholder_regex();
 
     re.captures_iter(text)
         .filter_map(|cap| {
@@ -51,7 +61,7 @@ pub fn replace_placeholders(
     text: &str,
     replacements: &std::collections::HashMap<String, String>,
 ) -> String {
-    let re = Regex::new(PLACEHOLDER_PATTERN).unwrap();
+    let re = get_placeholder_regex();
 
     re.replace_all(text, |cap: &regex::Captures| -> String {
         let key = &cap[1];
@@ -65,7 +75,7 @@ pub fn replace_placeholders(
 
 /// Check if text contains any placeholders
 pub fn contains_placeholders(text: &str) -> bool {
-    let re = Regex::new(PLACEHOLDER_PATTERN).unwrap();
+    let re = get_placeholder_regex();
     re.is_match(text)
 }
 

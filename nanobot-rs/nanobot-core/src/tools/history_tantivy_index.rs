@@ -7,14 +7,16 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
+use sqlx::Row;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{debug, info};
 
 use super::{simple_schema, Tool, ToolError, ToolResult};
 use crate::memory::SqliteStore;
-use crate::search::tantivy::{open_history_index, HistoryIndexWriter};
+use crate::search::{open_history_index, HistoryIndexWriter, IndexUpdateStats};
 
 /// Tool that manages the history Tantivy index.
 pub struct HistoryTantivyIndexTool {
@@ -100,9 +102,59 @@ impl Tool for HistoryTantivyIndexTool {
 impl HistoryTantivyIndexTool {
     async fn execute_rebuild(&self) -> ToolResult {
         let mut w = self.writer.lock().await;
-        let count = w.rebuild_from_db(&self.db).await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to rebuild history index: {}", e))
+
+        // Clear existing index
+        w.clear().map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to clear history index: {}", e))
         })?;
+
+        // Query all messages with their IDs
+        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
+            "SELECT id, session_key, role, content, timestamp, tools_used FROM session_messages ORDER BY id ASC",
+        )
+        .fetch_all(&self.db.pool)
+        .await
+        .map_err(|e| ToolError::ExecutionError(format!("Failed to query messages: {}", e)))?;
+
+        let mut count = 0;
+        for row in rows {
+            let id: i64 = row.get("id");
+            let session_key: String = row.get("session_key");
+            let role: String = row.get("role");
+            let content: String = row.get("content");
+            let timestamp_str: String = row.get("timestamp");
+            let tools_json: Option<String> = row.get("tools_used");
+
+            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            let tools: Option<Vec<String>> =
+                tools_json.and_then(|json| serde_json::from_str(&json).ok());
+
+            // Use database ID as the index ID
+            let doc_id = format!("{}:{}", session_key, id);
+
+            w.index_document(
+                &doc_id,
+                &content,
+                &role,
+                &session_key,
+                timestamp,
+                tools.as_deref(),
+            )
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to index document: {}", e)))?;
+            count += 1;
+
+            if count % 100 == 0 {
+                info!("Rebuilding history index: {} documents", count);
+            }
+        }
+
+        w.commit().map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to commit history index: {}", e))
+        })?;
+
         Ok(format!(
             "History index rebuilt successfully. {} messages indexed.",
             count
@@ -111,9 +163,103 @@ impl HistoryTantivyIndexTool {
 
     async fn execute_update(&self) -> ToolResult {
         let mut w = self.writer.lock().await;
-        let stats = w.incremental_update(&self.db).await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to update history index: {}", e))
-        })?;
+        let mut stats = IndexUpdateStats::default();
+
+        // Get all indexed document IDs
+        let indexed_docs = w
+            .get_indexed_documents()
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to get indexed docs: {}", e)))?;
+
+        // Query all messages from database
+        let rows: Vec<sqlx::sqlite::SqliteRow> = sqlx::query(
+            "SELECT id, session_key, role, content, timestamp, tools_used FROM session_messages ORDER BY id ASC",
+        )
+        .fetch_all(&self.db.pool)
+        .await
+        .map_err(|e| ToolError::ExecutionError(format!("Failed to query messages: {}", e)))?;
+
+        /// Helper struct to hold message data during sync.
+        struct MessageData {
+            doc_id: String,
+            session_key: String,
+            role: String,
+            content: String,
+            timestamp: DateTime<Utc>,
+            tools: Option<Vec<String>>,
+        }
+
+        // Build a set of database message IDs
+        let mut db_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut new_messages: Vec<MessageData> = Vec::new();
+
+        for row in rows {
+            let id: i64 = row.get("id");
+            let session_key: String = row.get("session_key");
+            let role: String = row.get("role");
+            let content: String = row.get("content");
+            let timestamp_str: String = row.get("timestamp");
+            let tools_json: Option<String> = row.get("tools_used");
+
+            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            let tools: Option<Vec<String>> =
+                tools_json.and_then(|json| serde_json::from_str(&json).ok());
+
+            let doc_id = format!("{}:{}", session_key, id);
+            db_ids.insert(doc_id.clone());
+
+            // Check if this message is new (not in index)
+            if !indexed_docs.contains(&doc_id) {
+                new_messages.push(MessageData {
+                    doc_id,
+                    session_key,
+                    role,
+                    content,
+                    timestamp,
+                    tools,
+                });
+            }
+        }
+
+        // Remove documents that no longer exist in database
+        for id in &indexed_docs {
+            if !db_ids.contains(id) {
+                w.delete_document(id).map_err(|e| {
+                    ToolError::ExecutionError(format!("Failed to delete document: {}", e))
+                })?;
+                stats.removed += 1;
+                debug!("Removed deleted message from history index: {}", id);
+            }
+        }
+
+        // Add new messages
+        for msg in new_messages {
+            w.index_document(
+                &msg.doc_id,
+                &msg.content,
+                &msg.role,
+                &msg.session_key,
+                msg.timestamp,
+                msg.tools.as_deref(),
+            )
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to index document: {}", e)))?;
+            stats.added += 1;
+            debug!("Added new message to history index: {}", msg.doc_id);
+        }
+
+        if stats.added > 0 || stats.removed > 0 {
+            w.commit().map_err(|e| {
+                ToolError::ExecutionError(format!("Failed to commit history index: {}", e))
+            })?;
+        }
+
+        info!(
+            "History index incremental update: {} added, {} removed",
+            stats.added, stats.removed
+        );
+
         Ok(format!(
             "History index updated. Added: {}, Removed: {}",
             stats.added, stats.removed

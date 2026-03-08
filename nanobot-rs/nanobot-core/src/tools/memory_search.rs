@@ -8,6 +8,7 @@
 //! The choice of search strategy is encapsulated internally.
 
 use std::path::PathBuf;
+#[cfg(feature = "tantivy")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -17,7 +18,9 @@ use tokio::fs;
 use tracing::{debug, info, warn};
 
 use super::{simple_schema, Tool, ToolError, ToolResult};
-use crate::search::tantivy::MemoryIndexReader;
+#[cfg(feature = "tantivy")]
+use crate::search::MemoryIndexReader;
+#[cfg(feature = "tantivy")]
 use crate::search::{BooleanQuery, FuzzyQuery, SearchQuery, SortOrder};
 
 // ── Unified Search Tool ────────────────────────────────────────
@@ -32,6 +35,7 @@ pub struct MemorySearchTool {
     /// Memory directory containing `*.md` files
     memory_dir: PathBuf,
     /// Optional Tantivy index reader (None = filesystem-only mode)
+    #[cfg(feature = "tantivy")]
     tantivy_reader: Option<Arc<MemoryIndexReader>>,
 }
 
@@ -47,6 +51,7 @@ impl MemorySearchTool {
         let memory_dir = crate::config::config_dir().join("memory");
         Self {
             memory_dir,
+            #[cfg(feature = "tantivy")]
             tantivy_reader: None,
         }
     }
@@ -55,6 +60,7 @@ impl MemorySearchTool {
     pub fn with_dir(memory_dir: PathBuf) -> Self {
         Self {
             memory_dir,
+            #[cfg(feature = "tantivy")]
             tantivy_reader: None,
         }
     }
@@ -63,12 +69,14 @@ impl MemorySearchTool {
     ///
     /// When a reader is attached, searches will prefer Tantivy and fall back
     /// to filesystem search on failure.
+    #[cfg(feature = "tantivy")]
     pub fn with_tantivy_reader(mut self, reader: Arc<MemoryIndexReader>) -> Self {
         self.tantivy_reader = Some(reader);
         self
     }
 
     /// Try to create with Tantivy reader from default paths.
+    #[cfg(feature = "tantivy")]
     pub fn with_defaults() -> Result<Self, ToolError> {
         let config_dir = crate::config::config_dir();
         let memory_dir = config_dir.join("memory");
@@ -76,25 +84,33 @@ impl MemorySearchTool {
         // Try to open Tantivy index. If it fails, we still work with filesystem-only mode.
         let index_path = config_dir.join("tantivy-index").join("memory");
 
-        let tantivy_reader =
-            match crate::search::tantivy::open_memory_index(&index_path, &memory_dir) {
-                Ok((reader, _writer)) => {
-                    debug!("Tantivy memory index opened successfully");
-                    Some(Arc::new(reader))
-                }
-                Err(e) => {
-                    warn!(
-                        "Tantivy memory index unavailable, using filesystem fallback: {}",
-                        e
-                    );
-                    None
-                }
-            };
+        let tantivy_reader = match crate::search::open_memory_index(&index_path, &memory_dir) {
+            Ok((reader, _writer)) => {
+                debug!("Tantivy memory index opened successfully");
+                Some(Arc::new(reader))
+            }
+            Err(e) => {
+                warn!(
+                    "Tantivy memory index unavailable, using filesystem fallback: {}",
+                    e
+                );
+                None
+            }
+        };
 
         Ok(Self {
             memory_dir,
             tantivy_reader,
         })
+    }
+
+    /// Try to create with default paths (non-tantivy version).
+    #[cfg(not(feature = "tantivy"))]
+    pub fn with_defaults() -> Result<Self, ToolError> {
+        let config_dir = crate::config::config_dir();
+        let memory_dir = config_dir.join("memory");
+
+        Ok(Self { memory_dir })
     }
 }
 
@@ -106,9 +122,11 @@ struct SearchArgs {
     query: Option<String>,
 
     /// Boolean query with must/should/not clauses (Tantivy-only)
+    #[cfg(feature = "tantivy")]
     boolean: Option<BooleanQueryInput>,
 
     /// Fuzzy query with typo tolerance (Tantivy-only)
+    #[cfg(feature = "tantivy")]
     fuzzy: Option<FuzzyQueryInput>,
 
     /// Tag filters (AND semantics)
@@ -128,6 +146,7 @@ struct SearchArgs {
     sort: String,
 }
 
+#[cfg(feature = "tantivy")]
 #[derive(Deserialize)]
 struct BooleanQueryInput {
     must: Option<Vec<String>>,
@@ -135,6 +154,7 @@ struct BooleanQueryInput {
     not: Option<Vec<String>>,
 }
 
+#[cfg(feature = "tantivy")]
 #[derive(Deserialize)]
 struct FuzzyQueryInput {
     text: String,
@@ -159,59 +179,120 @@ impl Tool for MemorySearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search long-term memory files for past decisions, preferences, and project context. \
-         Supports keyword search. If Tantivy index is available, supports \
-         advanced features like boolean queries and fuzzy matching."
+        #[cfg(feature = "tantivy")]
+        {
+            "Search long-term memory files for past decisions, preferences, and project context. \
+             Supports keyword search. If Tantivy index is available, supports \
+             advanced features like boolean queries and fuzzy matching."
+        }
+        #[cfg(not(feature = "tantivy"))]
+        {
+            "Search long-term memory files for past decisions, preferences, and project context. \
+             Uses filesystem-based keyword search."
+        }
     }
 
     fn parameters(&self) -> Value {
-        simple_schema(&[
-            (
-                "query",
-                "string",
-                false,
-                "Search query text (keywords or phrases)",
-            ),
-            (
-                "boolean",
-                "object",
-                false,
-                "Boolean query with 'must' (AND), 'should' (OR), and 'not' (NOT) arrays of terms",
-            ),
-            (
-                "fuzzy",
-                "object",
-                false,
-                "Fuzzy query with 'text', optional 'distance' (1-2), and 'prefix' (boolean)",
-            ),
-            (
-                "tags",
-                "array",
-                false,
-                "Array of tags to filter by (AND semantics)",
-            ),
-            (
-                "context_lines",
-                "integer",
-                false,
-                "Number of context lines for matches (filesystem mode only, default: 2)",
-            ),
-            (
-                "limit",
-                "integer",
-                false,
-                "Maximum number of results (default: 10)",
-            ),
-            (
-                "sort",
-                "string",
-                false,
-                "Sort order: 'relevance' (default) or 'date'",
-            ),
-        ])
+        #[cfg(feature = "tantivy")]
+        {
+            simple_schema(&[
+                (
+                    "query",
+                    "string",
+                    false,
+                    "Search query text (keywords or phrases)",
+                ),
+                (
+                    "boolean",
+                    "object",
+                    false,
+                    "Boolean query with 'must' (AND), 'should' (OR), and 'not' (NOT) arrays of terms",
+                ),
+                (
+                    "fuzzy",
+                    "object",
+                    false,
+                    "Fuzzy query with 'text', optional 'distance' (1-2), and 'prefix' (boolean)",
+                ),
+                (
+                    "tags",
+                    "array",
+                    false,
+                    "Array of tags to filter by (AND semantics)",
+                ),
+                (
+                    "context_lines",
+                    "integer",
+                    false,
+                    "Number of context lines for matches (filesystem mode only, default: 2)",
+                ),
+                (
+                    "limit",
+                    "integer",
+                    false,
+                    "Maximum number of results (default: 10)",
+                ),
+                (
+                    "sort",
+                    "string",
+                    false,
+                    "Sort order: 'relevance' (default) or 'date'",
+                ),
+            ])
+        }
+        #[cfg(not(feature = "tantivy"))]
+        {
+            simple_schema(&[
+                (
+                    "query",
+                    "string",
+                    true,
+                    "Search query text (keywords or phrases)",
+                ),
+                (
+                    "tags",
+                    "array",
+                    false,
+                    "Array of tags to filter by (AND semantics)",
+                ),
+                (
+                    "context_lines",
+                    "integer",
+                    false,
+                    "Number of context lines for matches (default: 2)",
+                ),
+                (
+                    "limit",
+                    "integer",
+                    false,
+                    "Maximum number of results (default: 10)",
+                ),
+                (
+                    "sort",
+                    "string",
+                    false,
+                    "Sort order: 'relevance' (default) or 'date'",
+                ),
+            ])
+        }
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
+        #[cfg(feature = "tantivy")]
+        {
+            self.execute_with_tantivy(args).await
+        }
+        #[cfg(not(feature = "tantivy"))]
+        {
+            self.execute_filesystem_only(args).await
+        }
+    }
+}
+
+#[cfg(feature = "tantivy")]
+impl MemorySearchTool {
+    /// Execute with Tantivy support
+    async fn execute_with_tantivy(&self, args: Value) -> ToolResult {
         let parsed: SearchArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
 
@@ -266,9 +347,7 @@ impl Tool for MemorySearchTool {
         // Fallback: Filesystem search
         self.search_with_filesystem(&parsed).await
     }
-}
 
-impl MemorySearchTool {
     /// Execute search using Tantivy index, Returns the raw search results.
     fn search_with_tantivy(
         &self,
@@ -348,7 +427,20 @@ impl MemorySearchTool {
 
         output
     }
+}
 
+#[cfg(not(feature = "tantivy"))]
+impl MemorySearchTool {
+    /// Execute without Tantivy support (filesystem only)
+    async fn execute_filesystem_only(&self, args: Value) -> ToolResult {
+        let parsed: SearchArgs = serde_json::from_value(args)
+            .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
+
+        self.search_with_filesystem(&parsed).await
+    }
+}
+
+impl MemorySearchTool {
     /// Execute search using filesystem grep.
     async fn search_with_filesystem(&self, parsed: &SearchArgs) -> ToolResult {
         let query_text = match &parsed.query {

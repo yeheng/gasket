@@ -16,6 +16,7 @@ dingtalk = ["base64", "sha2"]
 feishu = []
 wecom = ["sha1", "aes", "cbc", "base64", "quick-xml"]
 webhook = ["axum", "tower", "tower-http"]
+tantivy = ["dep:nanobot-tantivy"]
 all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
 
 [dependencies]
@@ -97,8 +98,8 @@ bytes = "1"
 # SQLite (async)
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 
-# Full-text search
-tantivy = "0.25"
+# Full-text search (optional)
+nanobot-tantivy = { path = "../nanobot-tantivy", optional = true }
 
 # Concurrency
 parking_lot = "0.12"
@@ -118,3 +119,8 @@ tokio-test = "0.4"
 dotenvy = "0.15"
 rustls = { version = "0.23", features = ["ring"] }
 tempfile = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "scanner_benchmark"
+harness = false
