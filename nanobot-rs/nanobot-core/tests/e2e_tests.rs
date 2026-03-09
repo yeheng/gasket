@@ -292,12 +292,6 @@ fn test_simple_schema_with_array() {
         ("ids", "array<integer>", false, "List of IDs"),
     ]);
 
-    // Debug: print the schema
-    println!(
-        "Generated schema:\n{}",
-        serde_json::to_string_pretty(&schema).unwrap()
-    );
-
     // Verify tags array has items with string type
     let tags_prop = &schema["properties"]["tags"];
     assert!(tags_prop.is_object());
