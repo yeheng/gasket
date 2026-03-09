@@ -9,11 +9,12 @@ use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::agent::{AgentLoop, SubagentManager};
 #[allow(unused_imports)]
 use nanobot_core::channels::Channel;
+use nanobot_core::channels::OutboundSenderRegistry;
 use nanobot_core::config::load_config;
 use nanobot_core::cron::CronService;
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
-#[cfg(feature = "pipeline")]
-use nanobot_pipeline::{PipelineConfig, PipelineHandle};
+#[cfg(feature = "statemachine")]
+use nanobot_statemachine::{StateMachineBootstrapConfig, StateMachineHandle};
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -158,47 +159,45 @@ pub async fn cmd_gateway() -> Result<()> {
         enable_tantivy_search: true, // Gateway mode enables Tantivy search tools
     });
 
-    // Initialize pipeline subsystem if enabled
-    #[cfg(feature = "pipeline")]
-    let _pipeline_handle: Option<PipelineHandle> = if let Some(ref pipeline_raw) = config.pipeline {
-        // Parse raw JSON value into strongly typed config
-        match serde_json::from_value::<PipelineConfig>(pipeline_raw.clone()) {
-            Ok(pipeline_config) => {
-                let soul_templates = nanobot_pipeline::bootstrap::load_soul_templates(
-                    &workspace.join("pipeline_templates"),
-                );
-                match nanobot_pipeline::bootstrap::bootstrap(
-                    &pipeline_config,
-                    memory_store.pool().clone(),
-                    subagent_manager.clone(),
-                    &mut tools,
-                    soul_templates,
-                )
-                .await
-                {
-                    Ok(Some(handle)) => {
-                        println!("{} Pipeline subsystem enabled", "✓".green());
-                        Some(handle)
-                    }
-                    Ok(None) => None,
-                    Err(e) => {
-                        tracing::error!("Failed to initialize pipeline: {}", e);
-                        None
-                    }
+    // Initialize state machine subsystem if enabled
+    #[cfg(feature = "statemachine")]
+    let _statemachine_handle: Option<StateMachineHandle> = {
+        // Build bootstrap config from core config
+        let bootstrap_config = if let Some(ref sm_raw) = config.state_machine {
+            match serde_json::from_value::<StateMachineBootstrapConfig>(sm_raw.clone()) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    tracing::error!("Failed to parse state machine config: {}", e);
+                    StateMachineBootstrapConfig::default()
                 }
             }
+        } else {
+            StateMachineBootstrapConfig::default()
+        };
+
+        match nanobot_statemachine::bootstrap(
+            &bootstrap_config,
+            memory_store.pool().clone(),
+            subagent_manager.clone(),
+            &mut tools,
+        )
+        .await
+        {
+            Ok(Some(handle)) => {
+                println!("{}", "✓ State machine subsystem enabled".green());
+                Some(handle)
+            }
+            Ok(None) => None,
             Err(e) => {
-                tracing::error!("Failed to parse pipeline config: {}", e);
+                tracing::error!("Failed to initialize state machine: {}", e);
                 None
             }
         }
-    } else {
-        None
     };
 
-    #[cfg(not(feature = "pipeline"))]
-    if config.pipeline.is_some() {
-        tracing::warn!("Pipeline config found but pipeline feature is not enabled.");
+    #[cfg(not(feature = "statemachine"))]
+    if config.state_machine.is_some() {
+        tracing::warn!("State machine config found but statemachine feature is not enabled.");
     }
 
     let agent = Arc::new(
@@ -229,7 +228,8 @@ pub async fn cmd_gateway() -> Result<()> {
     // Outbound Actor decouples network I/O from the agent loop.
 
     // 1. Start Outbound Actor (consumes outbound_rx, fire-and-forget HTTP sends)
-    let channels_config = Arc::new(config.channels.clone());
+    // Create registry from config - supports custom channels via register_custom()
+    let outbound_registry = Arc::new(OutboundSenderRegistry::from_config(&config.channels));
 
     #[cfg(feature = "all-channels")]
     let websocket_manager = {
@@ -269,7 +269,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     tasks.push(tokio::spawn(nanobot_core::bus::run_outbound_actor(
         outbound_rx,
-        channels_config,
+        outbound_registry,
         #[cfg(feature = "all-channels")]
         Some(websocket_manager),
     )));

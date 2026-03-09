@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use super::{replace_placeholders, scan_placeholders, VaultStore};
+use crate::agent::interceptor::{InterceptReport, MessageInterceptor};
 use crate::providers::ChatMessage;
 
 /// Report of an injection operation
@@ -119,6 +120,49 @@ impl VaultInjector {
                 false
             }
         })
+    }
+
+    /// Get the injected values from the last injection (for log redaction)
+    pub fn get_injected_values(&self) -> Vec<String> {
+        // This is a simplified version - in practice, you might want to track this per-injection
+        Vec::new()
+    }
+}
+
+// Implement MessageInterceptor trait for integration with the interceptor chain
+impl MessageInterceptor for VaultInjector {
+    fn intercept(&self, messages: &mut Vec<ChatMessage>) -> Option<InterceptReport> {
+        let report = self.inject(messages);
+
+        if report.messages_modified == 0 && report.keys_used.is_empty() {
+            return None;
+        }
+
+        // Store injected values for later redaction
+        // (The caller is responsible for storing these)
+
+        Some(InterceptReport {
+            name: "vault_injector".to_string(),
+            messages_modified: report.messages_modified,
+            details: if report.missing_keys.is_empty() {
+                format!(
+                    "Injected {} keys: {:?}",
+                    report.keys_used.len(),
+                    report.keys_used
+                )
+            } else {
+                format!(
+                    "Injected {} keys, missing {} keys: {:?}",
+                    report.keys_used.len(),
+                    report.missing_keys.len(),
+                    report.missing_keys
+                )
+            },
+        })
+    }
+
+    fn name(&self) -> &str {
+        "vault_injector"
     }
 }
 

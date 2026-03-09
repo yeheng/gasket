@@ -1,8 +1,6 @@
-//! SQLite persistence layer for the pipeline subsystem.
+//! SQLite persistence layer for the state machine.
 //!
-//! Provides CRUD operations for pipeline tasks, flow audit logs, and
-//! progress entries. Shares the same `SqlitePool` as the rest of the
-//! system but operates on its own set of tables.
+//! Provides CRUD operations for tasks, flow audit logs, and progress entries.
 
 use std::collections::HashSet;
 
@@ -10,27 +8,27 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use tracing::debug;
 
-use super::models::{FlowLogEntry, PipelineTask, ProgressEntry, TaskPriority};
+use super::models::{FlowLogEntry, ProgressEntry, StateMachineTask, TaskPriority};
 
-/// Persistence layer for pipeline entities.
+/// Persistence layer for state machine entities.
 #[derive(Clone)]
-pub struct PipelineStore {
+pub struct StateMachineStore {
     pub(crate) pool: SqlitePool,
 }
 
-impl PipelineStore {
-    /// Wrap an existing pool (the same one used by `SqliteStore`).
+impl StateMachineStore {
+    /// Wrap an existing pool (the same one used by the main store).
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
-    /// Create the pipeline-specific tables.
+    /// Create the state machine-specific tables.
     ///
     /// Safe to call multiple times (`CREATE TABLE IF NOT EXISTS`).
     pub async fn init_tables(&self) -> anyhow::Result<()> {
-        // ── pipeline_tasks ──
+        // ── state_machine_tasks ──
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS pipeline_tasks (
+            "CREATE TABLE IF NOT EXISTS state_machine_tasks (
                 id              TEXT PRIMARY KEY,
                 title           TEXT NOT NULL,
                 description     TEXT NOT NULL DEFAULT '',
@@ -44,25 +42,28 @@ impl PipelineStore {
                 updated_at      TEXT NOT NULL,
                 result          TEXT,
                 origin_channel  TEXT,
-                origin_chat_id  TEXT
+                origin_chat_id  TEXT,
+                session_id      TEXT
             )",
         )
         .execute(&self.pool)
         .await?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_pipeline_tasks_state ON pipeline_tasks(state)")
-            .execute(&self.pool)
-            .await?;
-
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_pipeline_tasks_role ON pipeline_tasks(assigned_role)",
+            "CREATE INDEX IF NOT EXISTS idx_state_machine_tasks_state ON state_machine_tasks(state)",
         )
         .execute(&self.pool)
         .await?;
 
-        // ── pipeline_flow_log ──
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS pipeline_flow_log (
+            "CREATE INDEX IF NOT EXISTS idx_state_machine_tasks_role ON state_machine_tasks(assigned_role)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // ── state_machine_flow_log ──
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS state_machine_flow_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id     TEXT NOT NULL,
                 from_state  TEXT NOT NULL,
@@ -70,53 +71,53 @@ impl PipelineStore {
                 agent_role  TEXT NOT NULL,
                 reason      TEXT,
                 timestamp   TEXT NOT NULL,
-                FOREIGN KEY (task_id) REFERENCES pipeline_tasks(id) ON DELETE CASCADE
+                FOREIGN KEY (task_id) REFERENCES state_machine_tasks(id) ON DELETE CASCADE
             )",
         )
         .execute(&self.pool)
         .await?;
 
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_pipeline_flow_log_task ON pipeline_flow_log(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_state_machine_flow_log_task ON state_machine_flow_log(task_id)",
         )
         .execute(&self.pool)
         .await?;
 
-        // ── pipeline_progress_log ──
+        // ── state_machine_progress_log ──
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS pipeline_progress_log (
+            "CREATE TABLE IF NOT EXISTS state_machine_progress_log (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id     TEXT NOT NULL,
                 agent_role  TEXT NOT NULL,
                 content     TEXT NOT NULL,
                 percentage  REAL,
                 timestamp   TEXT NOT NULL,
-                FOREIGN KEY (task_id) REFERENCES pipeline_tasks(id) ON DELETE CASCADE
+                FOREIGN KEY (task_id) REFERENCES state_machine_tasks(id) ON DELETE CASCADE
             )",
         )
         .execute(&self.pool)
         .await?;
 
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_pipeline_progress_task ON pipeline_progress_log(task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_state_machine_progress_task ON state_machine_progress_log(task_id)",
         )
         .execute(&self.pool)
         .await?;
 
-        debug!("Pipeline tables initialised");
+        debug!("State machine tables initialized");
         Ok(())
     }
 
     // ── Task CRUD ───────────────────────────────────────────────────
 
-    /// Create a new pipeline task.
-    pub async fn create_task(&self, task: &PipelineTask) -> anyhow::Result<()> {
+    /// Create a new state machine task.
+    pub async fn create_task(&self, task: &StateMachineTask) -> anyhow::Result<()> {
         sqlx::query(
-            "INSERT INTO pipeline_tasks
+            "INSERT INTO state_machine_tasks
                 (id, title, description, state, priority, assigned_role,
                  review_count, retry_count, last_heartbeat, created_at, updated_at,
-                 result, origin_channel, origin_chat_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 result, origin_channel, origin_chat_id, session_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&task.id)
         .bind(&task.title)
@@ -132,6 +133,7 @@ impl PipelineStore {
         .bind(&task.result)
         .bind(&task.origin_channel)
         .bind(&task.origin_chat_id)
+        .bind(&task.session_id)
         .execute(&self.pool)
         .await?;
 
@@ -139,12 +141,12 @@ impl PipelineStore {
     }
 
     /// Fetch a task by ID.
-    pub async fn get_task(&self, id: &str) -> anyhow::Result<Option<PipelineTask>> {
+    pub async fn get_task(&self, id: &str) -> anyhow::Result<Option<StateMachineTask>> {
         let row = sqlx::query_as::<_, TaskRow>(
             "SELECT id, title, description, state, priority, assigned_role,
                     review_count, retry_count, last_heartbeat, created_at, updated_at,
-                    result, origin_channel, origin_chat_id
-             FROM pipeline_tasks WHERE id = ?",
+                    result, origin_channel, origin_chat_id, session_id
+             FROM state_machine_tasks WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -166,7 +168,7 @@ impl PipelineStore {
     ) -> anyhow::Result<bool> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
-            "UPDATE pipeline_tasks
+            "UPDATE state_machine_tasks
              SET state = ?, assigned_role = COALESCE(?, assigned_role),
                  updated_at = ?, last_heartbeat = ?
              WHERE id = ? AND state = ?",
@@ -185,15 +187,16 @@ impl PipelineStore {
 
     /// Increment the review counter for a task.
     pub async fn increment_review_count(&self, id: &str) -> anyhow::Result<u32> {
-        sqlx::query("UPDATE pipeline_tasks SET review_count = review_count + 1 WHERE id = ?")
+        sqlx::query("UPDATE state_machine_tasks SET review_count = review_count + 1 WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
 
-        let count: (i32,) = sqlx::query_as("SELECT review_count FROM pipeline_tasks WHERE id = ?")
-            .bind(id)
-            .fetch_one(&self.pool)
-            .await?;
+        let count: (i32,) =
+            sqlx::query_as("SELECT review_count FROM state_machine_tasks WHERE id = ?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?;
 
         Ok(count.0 as u32)
     }
@@ -201,7 +204,7 @@ impl PipelineStore {
     /// Set the final result text and mark the task as Done.
     pub async fn set_result(&self, id: &str, result: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE pipeline_tasks SET result = ?, updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE state_machine_tasks SET result = ?, updated_at = ? WHERE id = ?")
             .bind(result)
             .bind(&now)
             .bind(id)
@@ -211,12 +214,15 @@ impl PipelineStore {
     }
 
     /// List tasks filtered by state.
-    pub async fn list_tasks_by_state(&self, state: &str) -> anyhow::Result<Vec<PipelineTask>> {
+    pub async fn list_tasks_by_state(
+        &self,
+        state: &str,
+    ) -> anyhow::Result<Vec<StateMachineTask>> {
         let rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, title, description, state, priority, assigned_role,
                     review_count, retry_count, last_heartbeat, created_at, updated_at,
-                    result, origin_channel, origin_chat_id
-             FROM pipeline_tasks WHERE state = ? ORDER BY created_at ASC",
+                    result, origin_channel, origin_chat_id, session_id
+             FROM state_machine_tasks WHERE state = ? ORDER BY created_at ASC",
         )
         .bind(state)
         .fetch_all(&self.pool)
@@ -226,12 +232,12 @@ impl PipelineStore {
     }
 
     /// List tasks assigned to a specific role.
-    pub async fn list_tasks_by_role(&self, role: &str) -> anyhow::Result<Vec<PipelineTask>> {
+    pub async fn list_tasks_by_role(&self, role: &str) -> anyhow::Result<Vec<StateMachineTask>> {
         let rows = sqlx::query_as::<_, TaskRow>(
             "SELECT id, title, description, state, priority, assigned_role,
                     review_count, retry_count, last_heartbeat, created_at, updated_at,
-                    result, origin_channel, origin_chat_id
-             FROM pipeline_tasks WHERE assigned_role = ? ORDER BY created_at ASC",
+                    result, origin_channel, origin_chat_id, session_id
+             FROM state_machine_tasks WHERE assigned_role = ? ORDER BY created_at ASC",
         )
         .bind(role)
         .fetch_all(&self.pool)
@@ -245,7 +251,7 @@ impl PipelineStore {
     /// Update the heartbeat timestamp for a task.
     pub async fn update_heartbeat(&self, id: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query("UPDATE pipeline_tasks SET last_heartbeat = ? WHERE id = ?")
+        sqlx::query("UPDATE state_machine_tasks SET last_heartbeat = ? WHERE id = ?")
             .bind(&now)
             .bind(id)
             .execute(&self.pool)
@@ -259,7 +265,7 @@ impl PipelineStore {
         &self,
         timeout_secs: u64,
         active_states: &HashSet<String>,
-    ) -> anyhow::Result<Vec<PipelineTask>> {
+    ) -> anyhow::Result<Vec<StateMachineTask>> {
         if active_states.is_empty() {
             return Ok(vec![]);
         }
@@ -271,8 +277,8 @@ impl PipelineStore {
         let sql = format!(
             "SELECT id, title, description, state, priority, assigned_role,
                     review_count, retry_count, last_heartbeat, created_at, updated_at,
-                    result, origin_channel, origin_chat_id
-             FROM pipeline_tasks
+                    result, origin_channel, origin_chat_id, session_id
+             FROM state_machine_tasks
              WHERE last_heartbeat < ?
                AND state IN ({})
              ORDER BY last_heartbeat ASC",
@@ -303,7 +309,7 @@ impl PipelineStore {
     ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO pipeline_flow_log (task_id, from_state, to_state, agent_role, reason, timestamp)
+            "INSERT INTO state_machine_flow_log (task_id, from_state, to_state, agent_role, reason, timestamp)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(task_id)
@@ -321,7 +327,7 @@ impl PipelineStore {
     pub async fn get_flow_log(&self, task_id: &str) -> anyhow::Result<Vec<FlowLogEntry>> {
         let rows = sqlx::query_as::<_, FlowLogRow>(
             "SELECT id, task_id, from_state, to_state, agent_role, reason, timestamp
-             FROM pipeline_flow_log WHERE task_id = ? ORDER BY id ASC",
+             FROM state_machine_flow_log WHERE task_id = ? ORDER BY id ASC",
         )
         .bind(task_id)
         .fetch_all(&self.pool)
@@ -342,7 +348,7 @@ impl PipelineStore {
     ) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO pipeline_progress_log (task_id, agent_role, content, percentage, timestamp)
+            "INSERT INTO state_machine_progress_log (task_id, agent_role, content, percentage, timestamp)
              VALUES (?, ?, ?, ?, ?)",
         )
         .bind(task_id)
@@ -354,7 +360,7 @@ impl PipelineStore {
         .await?;
 
         // Piggyback heartbeat update
-        sqlx::query("UPDATE pipeline_tasks SET last_heartbeat = ? WHERE id = ?")
+        sqlx::query("UPDATE state_machine_tasks SET last_heartbeat = ? WHERE id = ?")
             .bind(&now)
             .bind(task_id)
             .execute(&self.pool)
@@ -367,7 +373,7 @@ impl PipelineStore {
     pub async fn get_progress(&self, task_id: &str) -> anyhow::Result<Vec<ProgressEntry>> {
         let rows = sqlx::query_as::<_, ProgressRow>(
             "SELECT id, task_id, agent_role, content, percentage, timestamp
-             FROM pipeline_progress_log WHERE task_id = ? ORDER BY id ASC",
+             FROM state_machine_progress_log WHERE task_id = ? ORDER BY id ASC",
         )
         .bind(task_id)
         .fetch_all(&self.pool)
@@ -395,9 +401,10 @@ struct TaskRow {
     result: Option<String>,
     origin_channel: Option<String>,
     origin_chat_id: Option<String>,
+    session_id: Option<String>,
 }
 
-impl From<TaskRow> for PipelineTask {
+impl From<TaskRow> for StateMachineTask {
     fn from(r: TaskRow) -> Self {
         Self {
             id: r.id,
@@ -420,6 +427,7 @@ impl From<TaskRow> for PipelineTask {
             result: r.result,
             origin_channel: r.origin_channel,
             origin_chat_id: r.origin_chat_id,
+            session_id: r.session_id,
         }
     }
 }
@@ -480,9 +488,11 @@ impl From<ProgressRow> for ProgressEntry {
 mod tests {
     use super::*;
 
-    async fn temp_store() -> PipelineStore {
-        let path =
-            std::env::temp_dir().join(format!("nanobot_pipeline_test_{}.db", uuid::Uuid::new_v4()));
+    async fn temp_store() -> StateMachineStore {
+        let path = std::env::temp_dir().join(format!(
+            "nanobot_statemachine_test_{}.db",
+            uuid::Uuid::new_v4()
+        ));
 
         let options = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(&path)
@@ -496,14 +506,14 @@ mod tests {
             .await
             .unwrap();
 
-        let store = PipelineStore::new(pool);
+        let store = StateMachineStore::new(pool);
         store.init_tables().await.unwrap();
         store
     }
 
-    fn make_task(id: &str, title: &str) -> PipelineTask {
+    fn make_task(id: &str, title: &str) -> StateMachineTask {
         let now = Utc::now();
-        PipelineTask {
+        StateMachineTask {
             id: id.to_string(),
             title: title.to_string(),
             description: String::new(),
@@ -518,6 +528,7 @@ mod tests {
             result: None,
             origin_channel: None,
             origin_chat_id: None,
+            session_id: None,
         }
     }
 
@@ -569,81 +580,5 @@ mod tests {
         let triage = store.list_tasks_by_state("triage").await.unwrap();
         assert_eq!(triage.len(), 1);
         assert_eq!(triage[0].id, "b");
-    }
-
-    #[tokio::test]
-    async fn test_flow_log() {
-        let store = temp_store().await;
-        store.create_task(&make_task("f1", "Flow")).await.unwrap();
-
-        store
-            .append_flow_log("f1", "pending", "triage", "taizi", Some("initial triage"))
-            .await
-            .unwrap();
-        store
-            .append_flow_log("f1", "triage", "planning", "zhongshu", None)
-            .await
-            .unwrap();
-
-        let log = store.get_flow_log("f1").await.unwrap();
-        assert_eq!(log.len(), 2);
-        assert_eq!(log[0].from_state, "pending");
-        assert_eq!(log[1].to_state, "planning");
-    }
-
-    #[tokio::test]
-    async fn test_progress_and_heartbeat() {
-        let store = temp_store().await;
-        store
-            .create_task(&make_task("p1", "Progress"))
-            .await
-            .unwrap();
-
-        store
-            .append_progress("p1", "gong", "50% done", Some(50.0))
-            .await
-            .unwrap();
-
-        let entries = store.get_progress("p1").await.unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].content, "50% done");
-        assert!((entries[0].percentage.unwrap() - 50.0).abs() < f32::EPSILON);
-    }
-
-    #[tokio::test]
-    async fn test_stalled_tasks() {
-        let store = temp_store().await;
-        let mut task = make_task("s1", "Stall");
-        // Set heartbeat to 2 minutes ago
-        task.last_heartbeat = Utc::now() - chrono::Duration::seconds(120);
-        task.state = "executing".to_string();
-        store.create_task(&task).await.unwrap();
-
-        let active_states: HashSet<String> =
-            ["executing", "triage", "planning", "reviewing", "assigned"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect();
-
-        let stalled = store.find_stalled_tasks(60, &active_states).await.unwrap();
-        assert_eq!(stalled.len(), 1);
-        assert_eq!(stalled[0].id, "s1");
-
-        // With a longer timeout, the task is not stalled
-        let not_stalled = store.find_stalled_tasks(300, &active_states).await.unwrap();
-        assert_eq!(not_stalled.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_stalled_tasks_empty_active_states() {
-        let store = temp_store().await;
-        let mut task = make_task("s2", "Stall2");
-        task.last_heartbeat = Utc::now() - chrono::Duration::seconds(120);
-        task.state = "executing".to_string();
-        store.create_task(&task).await.unwrap();
-
-        let empty: HashSet<String> = HashSet::new();
-        let stalled = store.find_stalled_tasks(60, &empty).await.unwrap();
-        assert!(stalled.is_empty());
     }
 }

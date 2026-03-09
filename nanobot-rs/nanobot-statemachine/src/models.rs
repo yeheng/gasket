@@ -1,11 +1,11 @@
-//! Domain models for the multi-agent pipeline.
+//! Domain models for the state machine.
 //!
 //! These structs map 1:1 to the SQLite tables defined in `store.rs`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Priority levels for pipeline tasks.
+/// Priority levels for state machine tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -39,16 +39,16 @@ impl TaskPriority {
     }
 }
 
-/// A pipeline task — the central entity that flows through the pipeline graph.
+/// A state machine task — the central entity that flows through the state machine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PipelineTask {
+pub struct StateMachineTask {
     /// Unique identifier (UUID v4).
     pub id: String,
     /// Human-readable title.
     pub title: String,
     /// Detailed description / prompt.
     pub description: String,
-    /// Current state in the pipeline (validated against PipelineGraph at boundaries).
+    /// Current state in the state machine.
     pub state: String,
     /// Priority level.
     pub priority: TaskPriority,
@@ -70,6 +70,8 @@ pub struct PipelineTask {
     pub origin_channel: Option<String>,
     /// Origin chat ID for routing the result back.
     pub origin_chat_id: Option<String>,
+    /// Session ID for tracking conversation context.
+    pub session_id: Option<String>,
 }
 
 /// A single entry in the task flow audit log.

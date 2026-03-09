@@ -145,6 +145,7 @@ fn convert_chunk(chunk: OpenAIStreamChunk) -> ChatStreamChunk {
             return ChatStreamChunk {
                 delta: ChatStreamDelta::default(),
                 finish_reason: None,
+                usage: None,
             }
         }
     };
@@ -167,6 +168,13 @@ fn convert_chunk(chunk: OpenAIStreamChunk) -> ChatStreamChunk {
         })
         .collect();
 
+    // Convert usage if present (typically in the final chunk)
+    let usage = chunk.usage.map(|u| super::Usage {
+        input_tokens: u.input_tokens,
+        output_tokens: u.output_tokens,
+        total_tokens: u.total_tokens,
+    });
+
     ChatStreamChunk {
         delta: ChatStreamDelta {
             content: choice.delta.content,
@@ -174,6 +182,7 @@ fn convert_chunk(chunk: OpenAIStreamChunk) -> ChatStreamChunk {
             tool_calls,
         },
         finish_reason,
+        usage,
     }
 }
 
@@ -184,6 +193,18 @@ fn convert_chunk(chunk: OpenAIStreamChunk) -> ChatStreamChunk {
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamChunk {
     choices: Vec<OpenAIStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAIStreamUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamUsage {
+    #[serde(default, rename = "prompt_tokens")]
+    input_tokens: usize,
+    #[serde(default, rename = "completion_tokens")]
+    output_tokens: usize,
+    #[serde(default, rename = "total_tokens")]
+    total_tokens: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -256,5 +277,29 @@ mod tests {
             result.delta.reasoning_content.as_deref(),
             Some("Let me think...")
         );
+    }
+
+    #[test]
+    fn test_convert_chunk_with_usage() {
+        // This is the format OpenAI uses in the final streaming chunk
+        let raw = r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}}"#;
+        let chunk: OpenAIStreamChunk = serde_json::from_str(raw).unwrap();
+        let result = convert_chunk(chunk);
+
+        assert_eq!(result.finish_reason, Some(FinishReason::Stop));
+        assert!(result.usage.is_some());
+        let usage = result.usage.unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn test_convert_chunk_without_usage() {
+        // Chunks without usage should have usage = None
+        let raw = r#"{"id":"chatcmpl-1","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}"#;
+        let chunk: OpenAIStreamChunk = serde_json::from_str(raw).unwrap();
+        let result = convert_chunk(chunk);
+        assert!(result.usage.is_none());
     }
 }

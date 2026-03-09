@@ -81,7 +81,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         enable_tantivy_search: true,
     });
 
-    let agent = AgentLoop::with_memory_store(
+    let mut agent = AgentLoop::with_memory_store(
         provider_info.provider,
         workspace,
         agent_config,
@@ -90,6 +90,12 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     )
     .await
     .context("Failed to initialize agent (check workspace bootstrap files)")?;
+
+    // Set pricing configuration if available
+    if let Some((input_price, output_price, currency)) = provider_info.pricing {
+        agent.set_pricing(input_price, output_price, &currency);
+    }
+
     let render_md = !opts.no_markdown;
     let use_streaming = !opts.no_stream;
 

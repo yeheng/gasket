@@ -13,7 +13,7 @@ resolver = "2"
 members = [
     "nanobot-core",
     "nanobot-cli",
-    "nanobot-pipeline",
+    "nanobot-statemachine",
     "nanobot-tantivy",
 ]
 

@@ -123,6 +123,7 @@ pub async fn accumulate_stream(
     let mut content = String::new();
     let mut reasoning_content = String::new();
     let mut tool_acc = ToolCallAccumulator::new();
+    let mut accumulated_usage: Option<crate::providers::Usage> = None;
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result?;
@@ -147,6 +148,11 @@ pub async fn accumulate_stream(
         for tc_delta in &chunk.delta.tool_calls {
             tool_acc.feed(tc_delta);
         }
+
+        // Capture usage from stream chunks (typically sent in the final chunk)
+        if let Some(ref usage) = chunk.usage {
+            accumulated_usage = Some(usage.clone());
+        }
     }
 
     eprintln!();
@@ -163,7 +169,7 @@ pub async fn accumulate_stream(
         } else {
             Some(reasoning_content)
         },
-        usage: None,
+        usage: accumulated_usage,
     })
 }
 

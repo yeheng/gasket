@@ -1,6 +1,6 @@
-//! Pipeline task board tool.
+//! State machine task tool.
 //!
-//! Allows agents to interact with the shared task board:
+//! Allows agents to interact with the state machine task board:
 //! create, get, list, transition, and query flow logs.
 
 use std::sync::Arc;
@@ -12,29 +12,56 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
-use crate::graph::PipelineGraph;
-use crate::models::{PipelineTask, TaskPriority};
-use crate::orchestrator::PipelineEvent;
-use crate::store::PipelineStore;
+use crate::events::StateMachineEvent;
+use crate::models::{StateMachineTask, TaskPriority};
+use crate::store::StateMachineStore;
+use crate::types::StateMachineConfig;
 use nanobot_core::tools::{Tool, ToolError, ToolResult};
 
-pub struct PipelineTaskTool {
-    store: PipelineStore,
-    event_tx: mpsc::Sender<PipelineEvent>,
-    graph: Arc<PipelineGraph>,
+pub struct StateMachineTaskTool {
+    store: StateMachineStore,
+    event_tx: mpsc::Sender<StateMachineEvent>,
+    config: Arc<StateMachineConfig>,
 }
 
-impl PipelineTaskTool {
+impl StateMachineTaskTool {
     pub fn new(
-        store: PipelineStore,
-        event_tx: mpsc::Sender<PipelineEvent>,
-        graph: Arc<PipelineGraph>,
+        store: StateMachineStore,
+        event_tx: mpsc::Sender<StateMachineEvent>,
+        config: Arc<StateMachineConfig>,
     ) -> Self {
         Self {
             store,
             event_tx,
-            graph,
+            config,
         }
+    }
+
+    /// Build the list of valid states from the config.
+    fn valid_states(&self) -> Vec<&str> {
+        let mut states = Vec::new();
+        for t in &self.config.transitions {
+            if !states.contains(&t.from.as_str()) {
+                states.push(t.from.as_str());
+            }
+            if !states.contains(&t.to.as_str()) {
+                states.push(t.to.as_str());
+            }
+        }
+        states
+    }
+
+    /// Build the list of unique roles from the config.
+    fn valid_roles(&self) -> Vec<&str> {
+        let mut roles: Vec<&str> = self
+            .config
+            .state_roles
+            .values()
+            .map(|s| s.as_str())
+            .collect();
+        roles.sort();
+        roles.dedup();
+        roles
     }
 }
 
@@ -59,25 +86,18 @@ struct TaskArgs {
 }
 
 #[async_trait]
-impl Tool for PipelineTaskTool {
+impl Tool for StateMachineTaskTool {
     fn name(&self) -> &str {
-        "pipeline_task"
+        "state_machine_task"
     }
 
     fn description(&self) -> &str {
-        "Interact with the pipeline task board: create, get, list, transition state, or query flow logs."
+        "Interact with the state machine task board: create, get, list, transition state, or query flow logs."
     }
 
     fn parameters(&self) -> Value {
-        // Dynamically get valid states from the graph
-        let valid_states: Vec<&str> = self.graph.transitions.keys().map(|s| s.as_str()).collect();
-        let valid_roles: Vec<&str> = self
-            .graph
-            .state_roles
-            .values()
-            .map(|s| s.as_str())
-            .collect();
-        let unique_roles: Vec<&str> = valid_roles.into_iter().collect();
+        let valid_states = self.valid_states();
+        let valid_roles = self.valid_roles();
 
         serde_json::json!({
             "type": "object",
@@ -115,11 +135,11 @@ impl Tool for PipelineTaskTool {
                 "state": {
                     "type": "string",
                     "enum": valid_states,
-                    "description": "Filter by state (for list). Valid states are defined by the pipeline graph."
+                    "description": "Filter by state (for list). Valid states are defined by the state machine config."
                 },
                 "role": {
                     "type": "string",
-                    "enum": unique_roles,
+                    "enum": valid_roles,
                     "description": "Filter by assigned role (for list)"
                 },
                 "to_state": {
@@ -140,7 +160,7 @@ impl Tool for PipelineTaskTool {
         })
     }
 
-    #[instrument(name = "tool.pipeline_task", skip_all)]
+    #[instrument(name = "tool.state_machine_task", skip_all)]
     async fn execute(&self, args: Value) -> ToolResult {
         let args: TaskArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
@@ -158,7 +178,7 @@ impl Tool for PipelineTaskTool {
     }
 }
 
-impl PipelineTaskTool {
+impl StateMachineTaskTool {
     async fn do_create(&self, args: TaskArgs) -> ToolResult {
         let title = args
             .title
@@ -166,7 +186,7 @@ impl PipelineTaskTool {
         let now = Utc::now();
         let id = uuid::Uuid::new_v4().to_string();
 
-        let task = PipelineTask {
+        let task = StateMachineTask {
             id: id.clone(),
             title,
             description: args.description.unwrap_or_default(),
@@ -185,6 +205,7 @@ impl PipelineTaskTool {
             result: None,
             origin_channel: args.origin_channel,
             origin_chat_id: args.origin_chat_id,
+            session_id: None,
         };
 
         self.store
@@ -192,11 +213,12 @@ impl PipelineTaskTool {
             .await
             .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
-        // Notify the orchestrator
+        // Emit TaskCreated event to trigger initial dispatch
         let _ = self
             .event_tx
-            .send(PipelineEvent::TaskCreated {
+            .send(StateMachineEvent::TaskCreated {
                 task_id: id.clone(),
+                session_id: None,
             })
             .await;
 
@@ -224,14 +246,6 @@ impl PipelineTaskTool {
 
     async fn do_list(&self, args: TaskArgs) -> ToolResult {
         let tasks = if let Some(state_str) = &args.state {
-            if !self.graph.is_valid_state(state_str) {
-                let valid_states: Vec<&str> =
-                    self.graph.transitions.keys().map(|s| s.as_str()).collect();
-                return Err(ToolError::InvalidArguments(format!(
-                    "Unknown state: '{}'. Valid states: {:?}",
-                    state_str, valid_states
-                )));
-            }
             self.store
                 .list_tasks_by_state(state_str)
                 .await
@@ -244,20 +258,11 @@ impl PipelineTaskTool {
         } else {
             // Default: list all tasks in common active states
             let mut all_tasks = Vec::new();
-            for state in [
-                "pending",
-                "triage",
-                "planning",
-                "reviewing",
-                "assigned",
-                "executing",
-                "review",
-                "blocked",
-            ] {
-                if self.graph.is_valid_state(state) {
-                    if let Ok(tasks) = self.store.list_tasks_by_state(state).await {
-                        all_tasks.extend(tasks);
-                    }
+            // Get all unique states from config
+            let states: Vec<&str> = self.valid_states();
+            for state in states {
+                if let Ok(tasks) = self.store.list_tasks_by_state(state).await {
+                    all_tasks.extend(tasks);
                 }
             }
             all_tasks
@@ -277,15 +282,6 @@ impl PipelineTaskTool {
             .agent_role
             .ok_or_else(|| ToolError::InvalidArguments("agent_role is required".into()))?;
 
-        if !self.graph.is_valid_state(&to_state) {
-            let valid_states: Vec<&str> =
-                self.graph.transitions.keys().map(|s| s.as_str()).collect();
-            return Err(ToolError::InvalidArguments(format!(
-                "Unknown state: '{}'. Valid states: {:?}",
-                to_state, valid_states
-            )));
-        }
-
         // Fetch current task to validate transition
         let task = self
             .store
@@ -294,8 +290,9 @@ impl PipelineTaskTool {
             .map_err(|e| ToolError::ExecutionError(e.to_string()))?
             .ok_or_else(|| ToolError::NotFound(format!("Task {id} not found")))?;
 
-        if !self.graph.can_transition(&task.state, &to_state) {
-            let allowed = self.graph.allowed_transitions(&task.state);
+        // Validate the transition is allowed
+        if !self.config.can_transition(&task.state, &to_state) {
+            let allowed = self.config.allowed_transitions(&task.state);
             return Err(ToolError::ExecutionError(format!(
                 "Invalid transition: '{}' → '{}'. Allowed transitions from '{}': {:?}",
                 task.state, to_state, task.state, allowed
@@ -326,12 +323,13 @@ impl PipelineTaskTool {
             .await
             .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
-        // Notify orchestrator
+        // Emit TaskTransitioned event
         let _ = self
             .event_tx
-            .send(PipelineEvent::TaskTransitioned {
+            .send(StateMachineEvent::TaskTransitioned {
                 task_id: id.clone(),
-                new_state: to_state.clone(),
+                from_state: task.state.clone(),
+                to_state: to_state.clone(),
                 agent_role: agent_role.clone(),
             })
             .await;

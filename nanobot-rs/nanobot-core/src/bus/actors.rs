@@ -25,7 +25,7 @@ use tokio::time::{timeout, Duration};
 
 use crate::agent::{AgentLoop, StreamCallback, StreamEvent};
 use crate::bus::events::{InboundMessage, OutboundMessage, SessionKey, WebSocketMessage};
-use crate::config::ChannelsConfig;
+use crate::channels::OutboundSenderRegistry;
 
 // ── Outbound Actor ──────────────────────────────────────────
 
@@ -33,9 +33,12 @@ use crate::config::ChannelsConfig;
 ///
 /// Even if Telegram's API blocks for 30 seconds, this never blocks
 /// the core AgentLoop or upstream session actors.
+///
+/// Uses `OutboundSenderRegistry` for extensible routing, supporting
+/// both built-in channels and custom channels registered at runtime.
 pub async fn run_outbound_actor(
     mut rx: mpsc::Receiver<OutboundMessage>,
-    config: Arc<ChannelsConfig>,
+    registry: Arc<OutboundSenderRegistry>,
     #[cfg(feature = "webhook")] websocket_manager: Option<
         Arc<crate::channels::websocket::WebSocketManager>,
     >,
@@ -50,11 +53,11 @@ pub async fn run_outbound_actor(
             continue;
         }
 
-        let cfg = config.clone();
+        let reg = registry.clone();
         // Fire-and-forget: each send runs in its own task,
         // eliminating Head-of-Line Blocking across messages.
         tokio::spawn(async move {
-            if let Err(e) = crate::channels::send_outbound(&cfg, msg).await {
+            if let Err(e) = reg.send(msg).await {
                 tracing::error!("Outbound delivery failed: {}", e);
             }
         });

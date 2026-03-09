@@ -443,6 +443,8 @@ pub struct ChatStreamChunk {
     pub delta: ChatStreamDelta,
     /// Set on the final chunk to indicate why the stream ended
     pub finish_reason: Option<FinishReason>,
+    /// Token usage (may be present in the final chunk)
+    pub usage: Option<Usage>,
 }
 
 impl ChatStreamChunk {
@@ -474,6 +476,7 @@ impl ChatStreamChunk {
                     .collect(),
             },
             finish_reason,
+            usage: response.usage,
         }
     }
 }

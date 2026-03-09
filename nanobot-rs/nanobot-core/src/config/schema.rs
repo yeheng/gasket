@@ -25,10 +25,10 @@ pub struct Config {
     #[serde(default)]
     pub tools: ToolsConfig,
 
-    /// Multi-agent pipeline configuration (opt-in).
-    /// When absent or `enabled: false`, the pipeline subsystem is completely dormant.
+    /// Multi-agent state machine configuration (opt-in).
+    /// When absent or `enabled: false`, the state machine subsystem is completely dormant.
     #[serde(default)]
-    pub pipeline: Option<serde_json::Value>,
+    pub state_machine: Option<serde_json::Value>,
 }
 
 /// Provider configuration (OpenAI, OpenRouter, Anthropic, etc.)

@@ -1,16 +1,16 @@
 [package]
-name = "nanobot-pipeline"
+name = "nanobot-statemachine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Multi-agent pipeline subsystem for nanobot AI assistant"
+description = "State machine for multi-agent collaboration in nanobot"
 
 [dependencies]
 nanobot-core = { path = "../nanobot-core" }
 
 # Async
-tokio = { workspace = true, features = ["sync", "macros", "time"] }
+tokio = { workspace = true, features = ["sync", "macros", "time", "rt"] }
 async-trait.workspace = true
 
 # Serialization

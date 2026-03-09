@@ -1,7 +1,6 @@
-//! Progress reporting tool for executing agents.
+//! Report progress tool.
 //!
-//! Ministry agents call this tool to report progress, update their
-//! heartbeat timestamp, and optionally notify the orchestrator.
+//! Allows agents to report progress on tasks, which also updates the heartbeat.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -9,17 +8,17 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
-use crate::orchestrator::PipelineEvent;
-use crate::store::PipelineStore;
+use crate::events::StateMachineEvent;
+use crate::store::StateMachineStore;
 use nanobot_core::tools::{Tool, ToolError, ToolResult};
 
 pub struct ReportProgressTool {
-    store: PipelineStore,
-    event_tx: mpsc::Sender<PipelineEvent>,
+    store: StateMachineStore,
+    event_tx: mpsc::Sender<StateMachineEvent>,
 }
 
 impl ReportProgressTool {
-    pub fn new(store: PipelineStore, event_tx: mpsc::Sender<PipelineEvent>) -> Self {
+    pub fn new(store: StateMachineStore, event_tx: mpsc::Sender<StateMachineEvent>) -> Self {
         Self { store, event_tx }
     }
 }
@@ -27,7 +26,6 @@ impl ReportProgressTool {
 #[derive(Deserialize)]
 struct ProgressArgs {
     task_id: String,
-    agent_role: String,
     content: String,
     percentage: Option<f32>,
 }
@@ -39,8 +37,7 @@ impl Tool for ReportProgressTool {
     }
 
     fn description(&self) -> &str {
-        "Report execution progress for a pipeline task. Updates the heartbeat \
-         and appends a progress log entry."
+        "Report progress on a state machine task. This also updates the task heartbeat to prevent stall detection."
     }
 
     fn parameters(&self) -> Value {
@@ -49,22 +46,18 @@ impl Tool for ReportProgressTool {
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The pipeline task ID"
-                },
-                "agent_role": {
-                    "type": "string",
-                    "description": "Your role name (e.g. gong, hu)"
+                    "description": "The ID of the task to report progress on"
                 },
                 "content": {
                     "type": "string",
-                    "description": "Progress description"
+                    "description": "Human-readable progress description (e.g., 'Completed analysis phase')"
                 },
                 "percentage": {
                     "type": "number",
                     "description": "Optional completion percentage (0-100)"
                 }
             },
-            "required": ["task_id", "agent_role", "content"]
+            "required": ["task_id", "content"]
         })
     }
 
@@ -73,38 +66,39 @@ impl Tool for ReportProgressTool {
         let args: ProgressArgs =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        // Validate percentage range
-        if let Some(pct) = args.percentage {
-            if !(0.0..=100.0).contains(&pct) {
-                return Err(ToolError::InvalidArguments(
-                    "percentage must be between 0 and 100".into(),
-                ));
-            }
-        }
+        // Verify task exists
+        let task = self
+            .store
+            .get_task(&args.task_id)
+            .await
+            .map_err(|e| ToolError::ExecutionError(e.to_string()))?
+            .ok_or_else(|| ToolError::NotFound(format!("Task {} not found", args.task_id)))?;
 
-        // Persist progress + update heartbeat
+        // Append progress (this also updates heartbeat)
         self.store
             .append_progress(
                 &args.task_id,
-                &args.agent_role,
+                task.assigned_role.as_deref().unwrap_or("unknown"),
                 &args.content,
                 args.percentage,
             )
             .await
             .map_err(|e| ToolError::ExecutionError(e.to_string()))?;
 
-        // Notify orchestrator
+        // Emit ProgressReported event
         let _ = self
             .event_tx
-            .send(PipelineEvent::ProgressReported {
+            .send(StateMachineEvent::ProgressReported {
                 task_id: args.task_id.clone(),
-                agent_role: args.agent_role.clone(),
+                agent_role: task.assigned_role.unwrap_or_else(|| "unknown".to_string()),
+                content: args.content.clone(),
             })
             .await;
 
         Ok(serde_json::to_string_pretty(&serde_json::json!({
-            "status": "recorded",
+            "status": "reported",
             "task_id": args.task_id,
+            "content": args.content,
             "percentage": args.percentage,
         }))
         .unwrap())

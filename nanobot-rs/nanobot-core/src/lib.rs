@@ -42,3 +42,6 @@ pub use providers::{GeminiProvider, LlmProvider, OpenAICompatibleProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};
 pub use vault::{InjectionReport, VaultError, VaultInjector, VaultStore};
+
+// Re-export outbound routing types for convenience
+pub use channels::{OutboundSender, OutboundSenderRegistry};
