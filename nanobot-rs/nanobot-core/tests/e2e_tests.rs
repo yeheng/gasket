@@ -316,9 +316,13 @@ async fn test_config_defaults() {
 
     let config = Config::default();
 
-    assert_eq!(config.agents.defaults.temperature, 0.0);
-    assert_eq!(config.agents.defaults.max_tokens, 0);
-    assert_eq!(config.agents.defaults.max_iterations, 0);
+    // Agent defaults have sensible default values
+    assert_eq!(config.agents.defaults.temperature, 0.7);
+    assert_eq!(config.agents.defaults.max_tokens, 4096);
+    assert_eq!(config.agents.defaults.max_iterations, 20);
+    assert_eq!(config.agents.defaults.memory_window, 50);
+    assert!(config.agents.defaults.streaming);
+    assert!(!config.agents.defaults.thinking_enabled);
     assert!(!config.tools.restrict_to_workspace);
 }
 
