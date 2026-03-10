@@ -25,11 +25,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tracing::{debug, warn};
 
-use crate::agent::summarization::SummarizationService;
+use crate::agent::summarization::{ContextCompressionHook, SummarizationService};
 use crate::bus::events::SessionKey;
-use crate::providers::ChatMessage;
-use crate::session::{Session, SessionManager};
+use crate::session::{Session, SessionManager, SessionMessage};
 
 /// Trait for agent context operations.
 ///
@@ -54,7 +54,7 @@ pub trait AgentContext: Send + Sync {
 
     /// Compress context in the background (non-blocking).
     /// The implementation may spawn a background task or be a no-op.
-    fn compress_context(&self, key: &str, evicted: &[ChatMessage]);
+    fn compress_context(&self, key: &str, evicted: &[SessionMessage]);
 
     /// Check if this context has persistence enabled.
     fn is_persistent(&self) -> bool;
@@ -107,27 +107,34 @@ impl AgentContext for PersistentContext {
         self.summarization.load_summary(key).await
     }
 
-    fn compress_context(&self, key: &str, evicted: &[ChatMessage]) {
+    fn compress_context(&self, key: &str, evicted: &[SessionMessage]) {
         if evicted.is_empty() {
             return;
         }
 
         let svc = Arc::clone(&self.summarization);
         let key = key.to_string();
+        let evicted = evicted.to_vec();
 
         tokio::spawn(async move {
-            tracing::debug!(
+            debug!(
                 "[Summarization] Background compression task started for session '{}'",
                 key
             );
-            // Note: compress takes SessionMessage, but we have ChatMessage here.
-            // For now, we just skip compression for evicted messages in this refactoring.
-            // A more complete implementation would convert ChatMessage to SessionMessage.
-            let _ = svc;
-            tracing::debug!(
-                "[Summarization] Background compression completed for session '{}'",
-                key
-            );
+            match svc.compress(&key, &evicted).await {
+                Ok(_) => {
+                    debug!(
+                        "[Summarization] Background compression completed for session '{}'",
+                        key
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "[Summarization] Background compression failed for session '{}': {}",
+                        key, e
+                    );
+                }
+            }
         });
     }
 
@@ -177,7 +184,7 @@ impl AgentContext for StatelessContext {
         None
     }
 
-    fn compress_context(&self, _key: &str, _evicted: &[ChatMessage]) {
+    fn compress_context(&self, _key: &str, _evicted: &[SessionMessage]) {
         // No compression for stateless context
     }
 

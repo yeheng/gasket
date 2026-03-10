@@ -374,9 +374,14 @@ impl MemoryIndexWriter {
     }
 
     /// Commit pending changes and reload the reader.
+    ///
+    /// Uses `tokio::task::block_in_place` to safely execute blocking I/O
+    /// (segment merging, disk writes) without blocking the async runtime.
     pub fn commit(&mut self) -> Result<(), TantivyError> {
         if let Some(writer) = &mut self.writer {
-            writer.commit()?;
+            // Tantivy's commit() is a blocking operation (disk I/O, segment merging).
+            // Use block_in_place to avoid blocking the Tokio reactor.
+            tokio::task::block_in_place(|| writer.commit())?;
             self.reader.reload()?;
             info!("Memory index committed");
         }
