@@ -197,6 +197,7 @@ onMounted(() => {
   connect();
   nextTick(() => {
     scrollToBottom();
+    renderMermaidDiagrams();
   });
 
   // Setup scroll button observer
@@ -223,6 +224,7 @@ watch(() => props.sessionId, () => {
   connect();
   nextTick(() => {
     scrollToBottom();
+    renderMermaidDiagrams();
   });
 });
 
@@ -435,10 +437,10 @@ const sendMessage = () => {
 
   if (ws.value?.readyState === WebSocket.OPEN) {
     ws.value.send(text);
-    setTimeout(() => {
-      isSending.value = false;
-      isReceiving.value = true;
-    }, 100);
+    // State transition from 'sending' → 'receiving' is handled by
+    // handleMessage() when the first server response arrives.
+    // No artificial setTimeout — it races with fast responses and
+    // can override the 'done' state back to 'receiving'.
   }
 
   scrollToMessage(newMessageId);
@@ -574,6 +576,8 @@ const renderMermaidDiagrams = async () => {
   try {
     const elements = document.querySelectorAll('pre.mermaid:not([data-processed])');
     if (elements.length > 0) {
+      // Clear data-processed to allow re-rendering if needed, 
+      // but usually we just want to render new ones.
       await mermaid.run({ nodes: elements as any });
     }
   } catch (e) {
@@ -581,10 +585,19 @@ const renderMermaidDiagrams = async () => {
   }
 };
 
-// Watch for message changes to trigger mermaid rendering
+// Watch for message changes - only render if not currently receiving
 watch(localMessages, () => {
-  renderMermaidDiagrams();
+  if (!isReceiving.value && !isThinking.value) {
+    renderMermaidDiagrams();
+  }
 }, { deep: true });
+
+// Watch for completion of response to trigger rendering
+watch([isReceiving, isThinking], ([newReceiving, newThinking]) => {
+  if (!newReceiving && !newThinking) {
+    renderMermaidDiagrams();
+  }
+});
 
 // Copy message content
 const copyMessage = async (msg: Message) => {
@@ -923,7 +936,7 @@ const toggleThinkingExpand = (msgId: string) => {
             <Button
               v-else
               @click="sendMessage"
-              :disabled="!inputValue.trim() || !isConnected || sessionStatus === 'receiving' || sessionStatus === 'sending'"
+              :disabled="!inputValue.trim() || !isConnected || sessionStatus === 'sending'"
               class="w-11 h-11 rounded-xl text-white shrink-0 ml-2 transition-all"
               :class="{
                 'bg-blue-500 hover:bg-blue-400': sessionStatus === 'idle',
