@@ -186,6 +186,13 @@ fn log_llm_response(response: &ChatResponse, iteration: u32, vault_values: &[Str
 ///
 /// Message interceptors (e.g., VaultInjector) are called before LLM processing
 /// via the `interceptors` chain — pluggable middleware pattern.
+///
+/// ## Security Note: Vault Values Lifecycle
+///
+/// Injected vault values (plaintext secrets) are scoped to **single requests**.
+/// They are collected as local variables in `process_direct_with_callback`,
+/// passed through the agent loop, and dropped when the request completes.
+/// This prevents memory accumulation and limits exposure window.
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
     tools: ToolRegistry,
@@ -204,8 +211,6 @@ pub struct AgentLoop {
     external_hooks: ExternalHookRunner,
     /// Message interceptor chain for pre-LLM processing (vault injection, etc.)
     interceptors: InterceptorChain,
-    /// Injected values for log redaction (thread-safe).
-    vault_values: Mutex<Vec<String>>,
     /// Token usage tracker for the session
     session_stats: Mutex<crate::token_tracker::SessionTokenStats>,
     /// Model pricing configuration (optional)
@@ -278,7 +283,6 @@ impl AgentLoop {
             skills_context,
             external_hooks,
             interceptors,
-            vault_values: Mutex::new(Vec::new()),
             session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
         })
@@ -346,7 +350,6 @@ impl AgentLoop {
             skills_context,
             external_hooks,
             interceptors,
-            vault_values: Mutex::new(Vec::new()),
             session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
         })
@@ -378,7 +381,6 @@ impl AgentLoop {
             skills_context: None,
             external_hooks: ExternalHookRunner::noop(),
             interceptors: InterceptorChain::new(), // Empty chain for subagents
-            vault_values: Mutex::new(Vec::new()),
             session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
         })
@@ -527,11 +529,24 @@ impl AgentLoop {
         // ── 7.5. Run interceptor chain (vault injection, etc.) ────────
         // Interceptors modify messages in-place before sending to LLM.
         // The vault injector is one such interceptor; others can be added.
-        let _interceptor_reports = self.interceptors.run(&mut messages);
+        // CRITICAL: Collect injected values into LOCAL variable for log redaction!
+        // This prevents memory leaks by scoping secrets to single requests.
+        let interceptor_reports = self.interceptors.run(&mut messages);
 
-        // Note: vault_values are now managed internally by the vault interceptor.
-        // For log redaction, we need to track what was injected.
-        // This is a simplified approach - in production, interceptors would report injected values.
+        // Collect all injected values into a LOCAL variable (not global state!)
+        let mut local_vault_values = Vec::new();
+        for report in &interceptor_reports {
+            local_vault_values.extend(report.injected_values.iter().cloned());
+        }
+        // Deduplicate
+        local_vault_values.sort();
+        local_vault_values.dedup();
+        if !local_vault_values.is_empty() {
+            debug!(
+                "[Agent] Collected {} injected values for log redaction (scoped to this request)",
+                local_vault_values.len()
+            );
+        }
 
         // ── 8. Run agent loop ─────────────────────────────────────
         // For WebSocket and other real-time channels, always use the callback if provided,
@@ -546,17 +561,15 @@ impl AgentLoop {
         } else {
             None
         };
-        let result = self.run_agent_loop(messages, effective_cb).await?;
+        let result = self
+            .run_agent_loop(messages, effective_cb, &local_vault_values)
+            .await?;
 
         // ── 9. External hook: post_response (audit / alerting) ────
         let tools_used_str = result.tools_used.join(", ");
 
         // Redact secrets from post_response hook
-        let safe_content = if let Ok(values) = self.vault_values.lock().as_ref() {
-            redact_secrets(&result.content, values)
-        } else {
-            result.content.clone()
-        };
+        let safe_content = redact_secrets(&result.content, &local_vault_values);
 
         if let Err(e) = self
             .external_hooks
@@ -568,11 +581,7 @@ impl AgentLoop {
 
         // ── 10. Save assistant message (trait dispatch) ──────────
         // Redact secrets before saving to history
-        let history_content = if let Ok(values) = self.vault_values.lock().as_ref() {
-            redact_secrets(&result.content, values)
-        } else {
-            result.content.clone()
-        };
+        let history_content = redact_secrets(&result.content, &local_vault_values);
 
         self.context
             .save_message(
@@ -659,20 +668,20 @@ impl AgentLoop {
     /// trait impl wraps the response in a single-chunk stream, so both paths
     /// converge here.  When 'callback' is 'None', stream events are silently
     /// discarded.
+    ///
+    /// # Security: Vault Values Scoping
+    ///
+    /// `vault_values` is passed as a parameter (not stored in self) to ensure
+    /// plaintext secrets are scoped to single requests. This prevents memory
+    /// accumulation and limits the exposure window for sensitive data.
     async fn run_agent_loop(
         &self,
         initial_messages: Vec<ChatMessage>,
         callback: Option<&StreamCallback>,
+        vault_values: &[String],
     ) -> Result<AgentLoopResult, AgentError> {
         let noop: StreamCallback = Box::new(|_| {});
         let cb: &StreamCallback = callback.unwrap_or(&noop);
-
-        // Get vault values for log redaction
-        let vault_values: Vec<String> = self
-            .vault_values
-            .lock()
-            .map(|v| v.clone())
-            .unwrap_or_default();
 
         let mut messages = initial_messages;
         let mut tools_used = Vec::new();
@@ -716,7 +725,7 @@ impl AgentLoop {
             }
 
             // Inline logging (replaces LoggingHook::on_llm_response)
-            log_llm_response(&response, iteration, &vault_values);
+            log_llm_response(&response, iteration, vault_values);
 
             let has_tools = response.has_tool_calls();
             info!(

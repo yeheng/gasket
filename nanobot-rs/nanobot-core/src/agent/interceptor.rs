@@ -35,6 +35,9 @@ pub struct InterceptReport {
     pub messages_modified: usize,
     /// Human-readable details about what was done
     pub details: String,
+    /// Sensitive values that were injected (for log redaction)
+    /// This is critical for security - these values must be redacted from logs
+    pub injected_values: Vec<String>,
 }
 
 /// Trait for message interceptors that modify messages before LLM processing.
@@ -130,6 +133,7 @@ mod tests {
                         name: "test".to_string(),
                         messages_modified: 1,
                         details: "Added prefix".to_string(),
+                        injected_values: vec![],
                     });
                 }
             }

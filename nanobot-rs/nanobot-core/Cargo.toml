@@ -12,9 +12,9 @@ telegram = ["teloxide"]
 discord = ["serenity"]
 slack = ["tokio-tungstenite"]
 email = ["lettre", "async-imap", "tokio-rustls", "rustls-native-certs"]
-dingtalk = ["base64", "sha2"]
+dingtalk = ["sha2"]
 feishu = []
-wecom = ["sha1", "aes", "cbc", "base64", "quick-xml"]
+wecom = ["sha1", "aes", "cbc", "quick-xml"]
 webhook = ["axum", "tower", "tower-http"]
 tantivy = ["dep:nanobot-tantivy"]
 all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
@@ -74,7 +74,7 @@ serenity = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 
 # DingTalk (optional)
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.22" }
 sha2 = { version = "0.10", optional = true }
 
 # WeCom (optional)
@@ -109,6 +109,12 @@ tiktoken-rs = "0.9"
 
 # Regex for vault placeholder scanning
 regex = "1"
+
+# Encryption dependencies
+chacha20poly1305 = "0.10"
+argon2 = { version = "0.5", features = ["std"] }
+rand = "0.8"
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
 
 # Archive extraction (for workspace template downloads)
 tar = "0.4"
