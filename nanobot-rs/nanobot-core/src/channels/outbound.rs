@@ -48,12 +48,12 @@ pub trait OutboundSender: Send + Sync {
 ///
 /// Manages a collection of `OutboundSender` implementations and routes
 /// messages to the appropriate sender based on the channel type.
+///
+/// Uses a single HashMap with `ChannelType` as key, including
+/// `ChannelType::Custom(name)` for extensibility without special cases.
 pub struct OutboundSenderRegistry {
-    /// Senders for built-in channels (keyed by ChannelType)
+    /// All senders, keyed by ChannelType (including Custom variant)
     senders: HashMap<ChannelType, Arc<dyn OutboundSender>>,
-
-    /// Senders for custom channels (keyed by custom name)
-    custom_senders: HashMap<String, Arc<dyn OutboundSender>>,
 }
 
 impl OutboundSenderRegistry {
@@ -61,7 +61,6 @@ impl OutboundSenderRegistry {
     pub fn new() -> Self {
         Self {
             senders: HashMap::new(),
-            custom_senders: HashMap::new(),
         }
     }
 
@@ -158,7 +157,7 @@ impl OutboundSenderRegistry {
     /// core code. The sender will be invoked for `ChannelType::Custom(name)`.
     pub fn register_custom(&mut self, name: String, sender: Arc<dyn OutboundSender>) {
         debug!("Registering custom outbound sender: {}", name);
-        self.custom_senders.insert(name, sender);
+        self.senders.insert(ChannelType::Custom(name), sender);
     }
 
     /// Send an outbound message via the appropriate sender.
@@ -191,18 +190,12 @@ impl OutboundSenderRegistry {
 
     /// Get the sender for a channel type.
     fn get_sender(&self, channel: &ChannelType) -> Option<Arc<dyn OutboundSender>> {
-        match channel {
-            ChannelType::Custom(name) => self.custom_senders.get(name).cloned(),
-            _ => self.senders.get(channel).cloned(),
-        }
+        self.senders.get(channel).cloned()
     }
 
     /// Check if a sender is registered for the given channel.
     pub fn has_sender(&self, channel: &ChannelType) -> bool {
-        match channel {
-            ChannelType::Custom(name) => self.custom_senders.contains_key(name),
-            _ => self.senders.contains_key(channel),
-        }
+        self.senders.contains_key(channel)
     }
 }
 

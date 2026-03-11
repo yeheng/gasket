@@ -67,8 +67,14 @@ pub async fn cmd_gateway() -> Result<()> {
     let (bus, inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(100);
     let bus = Arc::new(bus);
 
-    // Create cron service
-    let cron_service = Arc::new(CronService::new(workspace.clone()).await);
+    // MemoryStore provides the underlying SqliteStore for session management
+    // Create this FIRST to ensure a single connection pool is shared across all services
+    let memory_store = Arc::new(MemoryStore::new().await);
+    let sqlite_store = memory_store.sqlite_store().clone();
+
+    // Create cron service with the shared SqliteStore to avoid duplicate connection pools
+    let cron_service =
+        Arc::new(CronService::with_store(sqlite_store.clone(), workspace.clone()).await);
 
     // Create agent with all dependencies
     let provider_info = crate::provider::find_provider(&config)?;
@@ -94,10 +100,6 @@ pub async fn cmd_gateway() -> Result<()> {
     } else {
         Vec::new()
     };
-
-    // MemoryStore provides the underlying SqliteStore for session management
-    let memory_store = Arc::new(MemoryStore::new().await);
-    let sqlite_store = memory_store.sqlite_store().clone();
 
     let subagent_manager = Arc::new(
         SubagentManager::new(

@@ -209,10 +209,11 @@ impl ExternalHookRunner {
             json_input.len()
         );
 
-        // Spawn the subprocess
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(script_path.to_string_lossy().as_ref())
+        // Spawn the subprocess directly - let the OS handle shebang interpretation.
+        // This ensures timeout kill signals reach the actual script process,
+        // not an intermediate shell wrapper that would leave orphan processes.
+        let mut child = Command::new(&script_path)
+            .kill_on_drop(true) // Ensure process is killed if timeout occurs
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -224,7 +225,7 @@ impl ExternalHookRunner {
             // stdin is dropped here, sending EOF
         }
 
-        // Wait with timeout
+        // Wait with timeout - kill_on_drop(true) ensures the process is killed on timeout
         let output = match tokio::time::timeout(HOOK_TIMEOUT, child.wait_with_output()).await {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => {
@@ -235,13 +236,11 @@ impl ExternalHookRunner {
                 ));
             }
             Err(_) => {
-                // Timeout — kill the process
+                // Timeout — kill_on_drop(true) will kill the process when child is dropped
                 warn!(
-                    "Hook {} timed out after {:?}, killing",
+                    "Hook {} timed out after {:?}, process killed",
                     script_name, HOOK_TIMEOUT
                 );
-                // child is consumed by wait_with_output, but on timeout we need to kill
-                // Since wait_with_output consumes child, we handle this by letting it drop
                 return Err(anyhow::anyhow!(
                     "Hook {} timed out after {:?}",
                     script_name,
