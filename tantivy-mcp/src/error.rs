@@ -1,0 +1,56 @@
+//! Error types for tantivy-mcp.
+
+use std::path::PathBuf;
+use thiserror::Error;
+
+/// Main error type for tantivy-mcp.
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("Index not found: {0}")]
+    IndexNotFound(String),
+
+    #[error("Index already exists: {0}")]
+    IndexAlreadyExists(String),
+
+    #[error("Document not found: {0}")]
+    DocumentNotFound(String),
+
+    #[error("Schema error: {0}")]
+    SchemaError(String),
+
+    #[error("Unknown field: {0}")]
+    UnknownField(String),
+
+    #[error("Invalid field value: {0}")]
+    InvalidFieldValue(String),
+
+    #[error("Index error: {0}")]
+    IndexError(#[from] tantivy::TantivyError),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("JSON error: {0}")]
+    JsonError(#[from] serde_json::Error),
+
+    #[error("MCP error: {0}")]
+    McpError(String),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
+
+    #[error("Lock error: {0}")]
+    LockError(String),
+
+    #[error("Backup error: {0}")]
+    BackupError(String),
+
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
+    #[error("Path error: {0}")]
+    PathError(PathBuf, String),
+}
+
+/// Result type alias for tantivy-mcp.
+pub type Result<T> = std::result::Result<T, Error>;

@@ -6,16 +6,11 @@ use std::sync::Arc;
 
 use nanobot_core::agent::AgentConfig;
 use nanobot_core::config::Config;
+use nanobot_core::memory::SqliteStore;
 use nanobot_core::tools::{
-    EditFileTool, ExecTool, ListDirTool, MemorySearchTool, ReadFileTool, SpawnTool, ToolMetadata,
-    ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+    EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
+    SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
 };
-
-// Tantivy imports (only when feature is enabled)
-#[cfg(feature = "tantivy")]
-use nanobot_core::search::{open_history_index, open_memory_index};
-#[cfg(feature = "tantivy")]
-use nanobot_core::tools::HistoryTantivySearchTool;
 
 /// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
 ///
@@ -83,9 +78,8 @@ pub struct ToolRegistryConfig {
     pub subagent_manager: Option<Arc<nanobot_core::agent::SubagentManager>>,
     /// Extra tools to register (e.g., gateway-specific MessageTool, CronTool)
     pub extra_tools: Vec<(Box<dyn nanobot_core::tools::Tool>, ToolMetadata)>,
-    /// Enable Tantivy-powered advanced search tools (MemoryTantivySearchTool, HistoryTantivySearchTool)
-    #[cfg(feature = "tantivy")]
-    pub enable_tantivy_search: bool,
+    /// SQLite store for history search (optional)
+    pub sqlite_store: Option<SqliteStore>,
 }
 
 /// Build tool registry with common tools shared between CLI and gateway modes.
@@ -99,23 +93,13 @@ pub struct ToolRegistryConfig {
 /// # Returns
 /// A configured `ToolRegistry` ready for use
 pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry {
-    #[cfg(feature = "tantivy")]
     let ToolRegistryConfig {
         config,
         workspace,
         mcp_tools,
         subagent_manager,
         extra_tools,
-        enable_tantivy_search,
-    } = registry_config;
-
-    #[cfg(not(feature = "tantivy"))]
-    let ToolRegistryConfig {
-        config,
-        workspace,
-        mcp_tools,
-        subagent_manager,
-        extra_tools,
+        sqlite_store,
     } = registry_config;
 
     let restrict = config.tools.restrict_to_workspace;
@@ -237,22 +221,9 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         tools.register(mcp_tool);
     }
 
-    // Memory search tool — unified: Tantivy when available, filesystem fallback
-    // Create base tool and optionally attach Tantivy reader
-    #[allow(unused_mut)]
-    let mut memory_tool = MemorySearchTool::new();
-
-    #[cfg(feature = "tantivy")]
-    if enable_tantivy_search {
-        let config_dir = nanobot_core::config::config_dir();
-        let memory_index_path = config_dir.join("tantivy-index").join("memory");
-        let memory_dir = config_dir.join("memory");
-
-        if let Ok((m_reader, _m_writer)) = open_memory_index(&memory_index_path, &memory_dir) {
-            memory_tool = memory_tool.with_tantivy_reader(Arc::new(m_reader));
-            tracing::debug!("Memory search tool: Tantivy reader attached");
-        }
-    }
+    // Memory search tool using filesystem-based search
+    // For advanced Tantivy-based full-text search, use the standalone tantivy-mcp server
+    let memory_tool = MemorySearchTool::new();
 
     tools.register_with_metadata(
         Box::new(memory_tool),
@@ -265,28 +236,19 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         },
     );
 
-    // History search tool — Tantivy-powered (optional)
-    #[cfg(feature = "tantivy")]
-    if enable_tantivy_search {
-        let config_dir = nanobot_core::config::config_dir();
-        let history_index_path = config_dir.join("tantivy-index").join("history");
-
-        if let Ok((h_reader, _h_writer)) = open_history_index(&history_index_path) {
-            tools.register_with_metadata(
-                Box::new(HistoryTantivySearchTool::new(Arc::new(h_reader))),
-                ToolMetadata {
-                    display_name: "History Search".to_string(),
-                    category: "search".to_string(),
-                    tags: vec![
-                        "tantivy".to_string(),
-                        "full-text".to_string(),
-                        "history".to_string(),
-                    ],
-                    requires_approval: false,
-                    is_mutating: false,
-                },
-            );
-        }
+    // History search tool using SQLite database
+    if let Some(db) = sqlite_store {
+        let history_tool = HistorySearchTool::new(db);
+        tools.register_with_metadata(
+            Box::new(history_tool),
+            ToolMetadata {
+                display_name: "History Search".to_string(),
+                category: "search".to_string(),
+                tags: vec!["search".to_string(), "history".to_string(), "sqlite".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
     }
 
     // Extra tools (e.g., gateway-specific MessageTool, CronTool)

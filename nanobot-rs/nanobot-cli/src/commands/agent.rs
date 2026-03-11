@@ -68,8 +68,9 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         Vec::new()
     };
 
-    // Build tool registry (CLI mode: no bus/cron, but support Tantivy search)
+    // Build tool registry (CLI mode: no bus/cron)
     let memory_store = Arc::new(MemoryStore::new().await);
+    let sqlite_store = memory_store.sqlite_store().clone();
 
     let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config,
@@ -77,8 +78,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         mcp_tools,
         subagent_manager: None,
         extra_tools: vec![],
-        #[cfg(feature = "tantivy")]
-        enable_tantivy_search: true,
+        sqlite_store: Some(sqlite_store),
     });
 
     let mut agent = AgentLoop::with_memory_store(

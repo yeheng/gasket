@@ -1,0 +1,163 @@
+//! Automatic maintenance scheduler.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+use tracing::{error, info};
+
+use crate::index::IndexManager;
+use crate::Result;
+
+/// Maintenance scheduler for automatic index maintenance.
+pub struct MaintenanceScheduler {
+    manager: Arc<RwLock<IndexManager>>,
+    config: MaintenanceConfig,
+    status: Arc<RwLock<MaintenanceStatus>>,
+}
+
+/// Maintenance configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaintenanceConfig {
+    /// Enable automatic compaction.
+    pub auto_compact: bool,
+    /// Deleted ratio threshold for auto-compaction.
+    pub deleted_ratio_threshold: f32,
+    /// Maximum segments before auto-compaction.
+    pub max_segments: usize,
+    /// Enable automatic expiration.
+    pub auto_expire: bool,
+    /// Expiration check interval in seconds.
+    pub expire_interval_secs: u64,
+}
+
+impl Default for MaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            auto_compact: true,
+            deleted_ratio_threshold: 0.2,
+            max_segments: 10,
+            auto_expire: true,
+            expire_interval_secs: 3600,
+        }
+    }
+}
+
+/// Maintenance status.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MaintenanceStatus {
+    /// Last compaction time per index.
+    pub last_compaction: HashMap<String, DateTime<Utc>>,
+    /// Last expiration time per index.
+    pub last_expiration: HashMap<String, DateTime<Utc>>,
+    /// Pending maintenance tasks.
+    pub pending_tasks: Vec<MaintenanceTask>,
+}
+
+/// A pending maintenance task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaintenanceTask {
+    /// Index name.
+    pub index_name: String,
+    /// Task type.
+    pub task_type: MaintenanceTaskType,
+    /// When the task was created.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Type of maintenance task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaintenanceTaskType {
+    Compaction,
+    Expiration,
+}
+
+impl MaintenanceScheduler {
+    /// Create a new maintenance scheduler.
+    pub fn new(manager: Arc<RwLock<IndexManager>>, config: MaintenanceConfig) -> Self {
+        Self {
+            manager,
+            config,
+            status: Arc::new(RwLock::new(MaintenanceStatus::default())),
+        }
+    }
+
+    /// Start the maintenance scheduler.
+    pub fn start(&self) -> tokio::task::JoinHandle<()> {
+        let manager = self.manager.clone();
+        let config = self.config.clone();
+        let status = self.status.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(config.expire_interval_secs));
+
+            loop {
+                interval.tick().await;
+
+                if config.auto_expire || config.auto_compact {
+                    if let Err(e) = run_maintenance(&manager, &config, &status).await {
+                        error!("Maintenance error: {}", e);
+                    }
+                }
+            }
+        })
+    }
+
+    /// Get current maintenance status.
+    pub async fn get_status(&self) -> MaintenanceStatus {
+        self.status.read().await.clone()
+    }
+}
+
+/// Run maintenance tasks.
+async fn run_maintenance(
+    manager: &Arc<RwLock<IndexManager>>,
+    config: &MaintenanceConfig,
+    status: &Arc<RwLock<MaintenanceStatus>>,
+) -> Result<()> {
+    let indexes: Vec<String> = {
+        let manager = manager.read().await;
+        manager.list_indexes()
+    };
+
+    for index_name in indexes {
+        // Check if compaction is needed
+        if config.auto_compact {
+            let needs_compaction = {
+                let manager = manager.read().await;
+                if let Ok(stats) = manager.get_stats(&index_name) {
+                    let deleted_ratio = stats.deleted_count as f32 / (stats.doc_count as f32 + 1.0);
+                    deleted_ratio > config.deleted_ratio_threshold
+                        || stats.segment_count > config.max_segments
+                } else {
+                    false
+                }
+            };
+
+            if needs_compaction {
+                info!("Auto-compacting index: {}", index_name);
+                let manager = manager.write().await;
+                if let Err(e) = manager.compact(&index_name) {
+                    error!("Compaction failed for {}: {}", index_name, e);
+                } else {
+                    let mut status = status.write().await;
+                    status.last_compaction.insert(index_name.clone(), Utc::now());
+                }
+            }
+        }
+
+        // Run expiration
+        if config.auto_expire {
+            info!("Running expiration for index: {}", index_name);
+            // TODO: implement expiration
+            let mut status = status.write().await;
+            status.last_expiration.insert(index_name, Utc::now());
+        }
+    }
+
+    Ok(())
+}

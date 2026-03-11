@@ -99,6 +99,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
     // MemoryStore provides the underlying SqliteStore for session management
     let memory_store = Arc::new(MemoryStore::new().await);
+    let sqlite_store = memory_store.sqlite_store().clone();
 
     let subagent_manager = Arc::new(
         SubagentManager::new(
@@ -114,7 +115,7 @@ pub async fn cmd_gateway() -> Result<()> {
                         mcp_tools: vec![],
                         subagent_manager: None,
                         extra_tools: vec![],
-                        enable_tantivy_search: true,
+                        sqlite_store: None, // Subagent doesn't need history search
                     })
                 }
             }),
@@ -123,6 +124,7 @@ pub async fn cmd_gateway() -> Result<()> {
         .await,
     );
 
+    #[allow(unused_mut)]
     let mut tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config: config.clone(),
         workspace: workspace.clone(),
@@ -156,7 +158,7 @@ pub async fn cmd_gateway() -> Result<()> {
 
             ext
         },
-        enable_tantivy_search: true, // Gateway mode enables Tantivy search tools
+        sqlite_store: Some(sqlite_store),
     });
 
     // Initialize state machine subsystem if enabled
