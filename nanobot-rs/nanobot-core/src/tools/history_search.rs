@@ -36,7 +36,10 @@ impl HistorySearchTool {
         let db = SqliteStore::new()
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to open database: {}", e)))?;
-        Ok(Self { db, default_limit: 15 })
+        Ok(Self {
+            db,
+            default_limit: 15,
+        })
     }
 }
 

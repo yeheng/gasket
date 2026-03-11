@@ -130,7 +130,10 @@ pub struct VaultEntryV2 {
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
     /// Last usage timestamp (lock-free atomic update via `touch()`)
-    #[serde(default = "AtomicTimestamp::none", skip_serializing_if = "atomic_ts_is_none")]
+    #[serde(
+        default = "AtomicTimestamp::none",
+        skip_serializing_if = "atomic_ts_is_none"
+    )]
     pub last_used: AtomicTimestamp,
 }
 
