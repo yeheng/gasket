@@ -12,6 +12,7 @@ export interface Message {
   content: string;
   thinking?: string;
   toolCalls?: any[];
+  steps?: any[];
   timestamp: number;
 }
 
@@ -98,6 +99,13 @@ const selectSession = (id: string) => {
   }
 };
 
+const deleteAllSessions = () => {
+  if (confirm('Are you sure you want to delete all chats? This cannot be undone.')) {
+    sessions.value = [];
+    createNewSession();
+  }
+};
+
 // Session rename
 const startRename = (session: Session, event: Event) => {
   event.stopPropagation();
@@ -176,10 +184,13 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
         </Button>
       </div>
       
-      <div class="px-4 pb-4">
-        <Button variant="outline" class="w-full justify-start gap-2 bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20 text-slate-100" @click="createNewSession">
+      <div class="px-4 pb-4 flex gap-2">
+        <Button variant="outline" class="flex-1 justify-start gap-2 bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20 text-slate-100" @click="createNewSession">
           <Plus class="w-4 h-4" />
           New Chat
+        </Button>
+        <Button variant="outline" size="icon" class="bg-white/5 border-white/10 hover:bg-red-500/20 hover:text-red-400 hover:border-red-500/30 text-slate-400" @click="deleteAllSessions" title="Delete all chats">
+          <Trash2 class="w-4 h-4" />
         </Button>
       </div>
 
@@ -210,7 +221,7 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
               <span class="flex-1 truncate text-sm" @dblclick="startRename(session, $event)">{{ session.name }}</span>
             </template>
 
-            <div class="hidden group-hover:flex items-center gap-0.5">
+            <div class="flex items-center gap-0.5 opacity-30 group-hover:opacity-100 transition-opacity">
               <button 
                 class="items-center justify-center p-1 text-slate-400 hover:text-blue-400 transition-colors"
                 @click.stop="startRename(session, $event)"

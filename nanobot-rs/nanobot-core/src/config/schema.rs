@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // Re-export from submodules
-pub use super::agent::{AgentDefaults, AgentsConfig};
+pub use super::agent::AgentsConfig;
 pub use super::channel::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, SlackConfig,
     TelegramConfig,

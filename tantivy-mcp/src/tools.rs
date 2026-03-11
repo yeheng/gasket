@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
+use parking_lot::RwLock;
 use serde_json::{json, Map, Value};
-use tokio::sync::RwLock;
 
 use crate::index::{Document, FieldDef, IndexConfig, IndexManager, SearchQuery};
 use crate::mcp::{McpTool, ToolRegistry, ToolResult};
@@ -99,7 +99,7 @@ fn handle_index_create(
     let schema = tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let mut manager = manager.write().await;
+            let mut manager = manager.write();
             manager.create_index(&name, fields, config)
         })
     })?;
@@ -150,7 +150,7 @@ fn handle_index_drop(
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let mut manager = manager.write().await;
+            let mut manager = manager.write();
             manager.drop_index(name)
         })
     })?;
@@ -185,7 +185,7 @@ fn handle_index_list(manager: Arc<RwLock<IndexManager>>) -> Result<ToolResult> {
     let indexes = tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.list_indexes()
         })
     });
@@ -233,7 +233,7 @@ fn handle_index_stats(
         let stats = tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async {
-                let manager = manager.read().await;
+                let manager = manager.read();
                 manager.get_stats(index_name)
             })
         })?;
@@ -244,7 +244,7 @@ fn handle_index_stats(
         let indexes = tokio::task::block_in_place(|| {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async {
-                let manager = manager.read().await;
+                let manager = manager.read();
                 manager.list_indexes()
             })
         });
@@ -254,7 +254,7 @@ fn handle_index_stats(
             if let Ok(stats) = tokio::task::block_in_place(|| {
                 let rt = tokio::runtime::Handle::current();
                 rt.block_on(async {
-                    let manager = manager.read().await;
+                    let manager = manager.read();
                     manager.get_stats(&index_name)
                 })
             }) {
@@ -332,7 +332,7 @@ fn handle_document_add(
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.add_document(index_name, doc)
         })
     })?;
@@ -390,7 +390,7 @@ fn handle_document_delete(
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.delete_document(index_name, doc_id)
         })
     })?;
@@ -440,7 +440,7 @@ fn handle_document_commit(
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.commit(index_name)
         })
     })?;
@@ -512,7 +512,7 @@ fn handle_search(params: Option<Value>, manager: Arc<RwLock<IndexManager>>) -> R
     let results = tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.search(index_name, &query)
         })
     })?;
@@ -562,7 +562,7 @@ fn handle_index_compact(
     let stats_before = tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.get_stats(index_name)
         })
     })?;
@@ -570,7 +570,7 @@ fn handle_index_compact(
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.compact(index_name)
         })
     })?;
@@ -578,7 +578,7 @@ fn handle_index_compact(
     let stats_after = tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
             manager.get_stats(index_name)
         })
     })?;
@@ -669,7 +669,7 @@ fn handle_index_rebuild(
     let result: RebuildResult = tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let mut manager = manager.write().await;
+            let mut manager = manager.write();
             rebuild_index(&mut manager, index_name, new_fields, batch_size)
         })
     })?;
@@ -748,7 +748,7 @@ fn handle_maintenance_status(
     tokio::task::block_in_place(|| {
         let rt = tokio::runtime::Handle::current();
         rt.block_on(async {
-            let manager = manager.read().await;
+            let manager = manager.read();
 
             if let Some(name) = index_name {
                 // Get status for specific index

@@ -12,6 +12,7 @@ pub mod resource_limits;
 pub mod sandbox;
 mod shell;
 mod spawn;
+mod switch_model;
 mod web_fetch;
 mod web_search;
 
@@ -24,5 +25,6 @@ pub use message::MessageTool;
 pub use registry::ToolRegistry;
 pub use shell::ExecTool;
 pub use spawn::SpawnTool;
+pub use switch_model::SwitchModelTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;

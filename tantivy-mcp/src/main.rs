@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use clap::Parser;
 use directories::UserDirs;
+use parking_lot::RwLock;
 use tantivy_mcp::index::IndexManager;
 use tantivy_mcp::maintenance::{MaintenanceConfig, MaintenanceScheduler};
 use tantivy_mcp::mcp::{McpHandler, ToolRegistry};
 use tantivy_mcp::register_tools;
 use tokio::signal;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::EnvFilter;

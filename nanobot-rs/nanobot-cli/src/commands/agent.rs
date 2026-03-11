@@ -11,7 +11,8 @@ use tracing::{info, Level};
 use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::agent::{AgentLoop, AgentResponse, StreamCallback, StreamEvent};
 use nanobot_core::bus::events::SessionKey;
-use nanobot_core::config::load_config;
+use nanobot_core::config::{load_config, ModelRegistry};
+use nanobot_core::providers::ProviderRegistry;
 
 use crate::cli::AgentOptions;
 
@@ -72,6 +73,19 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     let memory_store = Arc::new(MemoryStore::new().await);
     let sqlite_store = memory_store.sqlite_store().clone();
 
+    // Build model registry and provider registry for switch_model tool
+    let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+
+    // Log available models if any are configured
+    if !model_registry.is_empty() {
+        info!(
+            "Model switching enabled with {} model profiles: {}",
+            model_registry.len(),
+            model_registry.list_available_models().join(", ")
+        );
+    }
+
     let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config,
         workspace: workspace.clone(),
@@ -79,6 +93,8 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         subagent_manager: None,
         extra_tools: vec![],
         sqlite_store: Some(sqlite_store),
+        model_registry: Some(model_registry),
+        provider_registry: Some(provider_registry),
     });
 
     let mut agent = AgentLoop::with_memory_store(

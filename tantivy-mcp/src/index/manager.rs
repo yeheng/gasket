@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tantivy::{
     directory::MmapDirectory,
     schema::{Field, Schema, SchemaBuilder, TextFieldIndexing, TextOptions, Value, STORED, STRING},
     Index, IndexReader, IndexWriter, TantivyDocument, Term,
 };
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use super::document::Document;
@@ -183,7 +183,7 @@ impl IndexManager {
     pub fn get_schema(&self, name: &str) -> Result<Option<IndexSchema>> {
         match self.indexes.get(name) {
             Some(state) => {
-                let state = state.blocking_read();
+                let state = state.read();
                 Ok(Some(state.schema.clone()))
             }
             None => Ok(None),
@@ -194,7 +194,7 @@ impl IndexManager {
     pub fn get_config(&self, name: &str) -> Result<Option<IndexConfig>> {
         match self.indexes.get(name) {
             Some(state) => {
-                let state = state.blocking_read();
+                let state = state.read();
                 Ok(Some(state.config.clone()))
             }
             None => Ok(None),
@@ -204,7 +204,7 @@ impl IndexManager {
     /// Add a document to an index.
     pub fn add_document(&self, index_name: &str, document: Document) -> Result<()> {
         let state = self.get_state(index_name)?;
-        let mut state = state.blocking_write();
+        let mut state = state.write();
 
         // Extract all needed values first
         let id = document.id.clone();
@@ -244,7 +244,7 @@ impl IndexManager {
     /// Delete a document from an index.
     pub fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<()> {
         let state = self.get_state(index_name)?;
-        let mut state = state.blocking_write();
+        let mut state = state.write();
 
         let id_field = state.id_field;
         let writer = state.ensure_writer()?;
@@ -258,7 +258,7 @@ impl IndexManager {
     /// Commit changes to an index.
     pub fn commit(&self, index_name: &str) -> Result<()> {
         let state = self.get_state(index_name)?;
-        let mut state = state.blocking_write();
+        let mut state = state.write();
 
         if let Some(writer) = &mut state.writer {
             writer.commit()?;
@@ -271,7 +271,7 @@ impl IndexManager {
     /// Search an index.
     pub fn search(&self, index_name: &str, query: &SearchQuery) -> Result<Vec<SearchResult>> {
         let state = self.get_state(index_name)?;
-        let state = state.blocking_read();
+        let state = state.read();
 
         let searcher = state.reader.searcher();
         let tantivy_query = build_tantivy_query(&state, query)?;
@@ -343,7 +343,7 @@ impl IndexManager {
     /// Get index statistics.
     pub fn get_stats(&self, index_name: &str) -> Result<IndexStats> {
         let state = self.get_state(index_name)?;
-        let state = state.blocking_read();
+        let state = state.read();
 
         let searcher = state.reader.searcher();
         let segment_readers = searcher.segment_readers();
@@ -382,7 +382,7 @@ impl IndexManager {
     /// Compact an index.
     pub fn compact(&self, index_name: &str) -> Result<()> {
         let state = self.get_state(index_name)?;
-        let mut state = state.blocking_write();
+        let mut state = state.write();
 
         // Commit any pending changes first
         if let Some(writer) = &mut state.writer {
@@ -410,7 +410,7 @@ impl IndexManager {
         offset: usize,
     ) -> Result<Vec<Document>> {
         let state = self.get_state(index_name)?;
-        let state = state.blocking_read();
+        let state = state.read();
 
         let searcher = state.reader.searcher();
         let tantivy_query = tantivy::query::AllQuery;

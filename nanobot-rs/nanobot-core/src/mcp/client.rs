@@ -12,6 +12,16 @@ use tracing::{debug, info};
 use super::types::{McpServerConfig, McpTool};
 use crate::error::McpError;
 
+/// Expand tilde (~) in path to user's home directory
+fn expand_tilde(path: &str) -> String {
+    if let Some(p) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}", home.join(p).display());
+        }
+    }
+    path.to_string()
+}
+
 /// Default timeout for MCP requests in seconds
 const MCP_REQUEST_TIMEOUT_SECS: u64 = 30;
 
@@ -49,8 +59,13 @@ impl McpClient {
     pub async fn start(&mut self) -> Result<(), McpError> {
         info!("Starting MCP server: {}", self.name);
 
-        let mut cmd = Command::new(&self.config.command);
-        cmd.args(&self.config.args)
+        // Expand tilde in command path
+        let command = expand_tilde(&self.config.command);
+        let mut cmd = Command::new(&command);
+
+        // Expand tilde in args as well
+        let args: Vec<String> = self.config.args.iter().map(|a| expand_tilde(a)).collect();
+        cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

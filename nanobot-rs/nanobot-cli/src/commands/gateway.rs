@@ -4,14 +4,16 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use tracing::info;
 
 use nanobot_core::agent::memory::MemoryStore;
 use nanobot_core::agent::{AgentLoop, SubagentManager};
 #[allow(unused_imports)]
 use nanobot_core::channels::Channel;
 use nanobot_core::channels::OutboundSenderRegistry;
-use nanobot_core::config::load_config;
+use nanobot_core::config::{load_config, ModelRegistry};
 use nanobot_core::cron::CronService;
+use nanobot_core::providers::ProviderRegistry;
 use nanobot_core::tools::{CronTool, MessageTool, ToolMetadata};
 
 /// Run the gateway command
@@ -90,6 +92,19 @@ pub async fn cmd_gateway() -> Result<()> {
         agent_config.thinking_enabled = false;
     }
 
+    // Build model registry and provider registry for switch_model tool
+    let model_registry = Arc::new(ModelRegistry::from_config(&config.agents));
+    let provider_registry = Arc::new(ProviderRegistry::from_config(&config));
+
+    // Log available models if any are configured
+    if !model_registry.is_empty() {
+        info!(
+            "Model switching enabled with {} model profiles: {}",
+            model_registry.len(),
+            model_registry.list_available_models().join(", ")
+        );
+    }
+
     // Start MCP servers (if configured)
     let mcp_tools = if !config.tools.mcp_servers.is_empty() {
         println!("Starting MCP servers...");
@@ -108,6 +123,8 @@ pub async fn cmd_gateway() -> Result<()> {
             Arc::new({
                 let cfg = config.clone();
                 let ws = workspace.clone();
+                let model_reg = model_registry.clone();
+                let provider_reg = provider_registry.clone();
                 move || {
                     super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
                         config: cfg.clone(),
@@ -116,6 +133,8 @@ pub async fn cmd_gateway() -> Result<()> {
                         subagent_manager: None,
                         extra_tools: vec![],
                         sqlite_store: None, // Subagent doesn't need history search
+                        model_registry: Some(model_reg.clone()),
+                        provider_registry: Some(provider_reg.clone()),
                     })
                 }
             }),
@@ -159,6 +178,8 @@ pub async fn cmd_gateway() -> Result<()> {
             ext
         },
         sqlite_store: Some(sqlite_store),
+        model_registry: Some(model_registry.clone()),
+        provider_registry: Some(provider_registry.clone()),
     });
 
     let agent = Arc::new(

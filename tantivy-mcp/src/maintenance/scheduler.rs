@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -124,7 +124,7 @@ impl MaintenanceScheduler {
 
     /// Get current maintenance status.
     pub async fn get_status(&self) -> MaintenanceStatus {
-        self.status.read().await.clone()
+        self.status.read().clone()
     }
 }
 
@@ -135,7 +135,7 @@ async fn run_maintenance(
     status: &Arc<RwLock<MaintenanceStatus>>,
 ) -> Result<()> {
     let indexes: Vec<String> = {
-        let manager = manager.read().await;
+        let manager = manager.read();
         manager.list_indexes()
     };
 
@@ -143,7 +143,7 @@ async fn run_maintenance(
         // Check if compaction is needed
         if config.auto_compact {
             let needs_compaction = {
-                let manager = manager.read().await;
+                let manager = manager.read();
                 if let Ok(stats) = manager.get_stats(&index_name) {
                     let deleted_ratio = stats.deleted_count as f32 / (stats.doc_count as f32 + 1.0);
                     deleted_ratio > config.deleted_ratio_threshold
@@ -155,11 +155,11 @@ async fn run_maintenance(
 
             if needs_compaction {
                 info!("Auto-compacting index: {}", index_name);
-                let manager = manager.write().await;
+                let manager = manager.write();
                 if let Err(e) = manager.compact(&index_name) {
                     error!("Compaction failed for {}: {}", index_name, e);
                 } else {
-                    let mut status = status.write().await;
+                    let mut status = status.write();
                     status
                         .last_compaction
                         .insert(index_name.clone(), Utc::now());
@@ -171,7 +171,7 @@ async fn run_maintenance(
         if config.auto_expire {
             info!("Running expiration for index: {}", index_name);
             // TODO: implement expiration
-            let mut status = status.write().await;
+            let mut status = status.write();
             status.last_expiration.insert(index_name, Utc::now());
         }
     }

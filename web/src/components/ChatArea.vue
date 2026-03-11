@@ -184,6 +184,14 @@ const getToolProgress = (toolCalls: any[]) => {
   return { completed, total: toolCalls.length };
 };
 
+const toggleThinkingExpand = (id: string) => {
+  if (expandedThinking.value[id] === undefined) {
+    expandedThinking.value[id] = false;
+  } else {
+    expandedThinking.value[id] = !expandedThinking.value[id];
+  }
+};
+
 // Platform detection
 const isMac = computed(() => navigator.platform.toUpperCase().indexOf('MAC') >= 0);
 const sendShortcut = computed(() => {
@@ -319,22 +327,46 @@ const handleMessage = (data: string) => {
       case 'thinking':
         isThinking.value = true;
         botMsg.thinking = (botMsg.thinking || '') + msg.content;
-        // Keep thinking collapsed during streaming
-        if (expandedThinking.value[botMsg.id] === undefined) {
-          expandedThinking.value[botMsg.id] = false;
+        
+        if (!botMsg.steps) botMsg.steps = [];
+        let lastStep = botMsg.steps[botMsg.steps.length - 1];
+        if (!lastStep || lastStep.type !== 'thinking') {
+          const stepId = 'think_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
+          botMsg.steps.push({
+            id: stepId,
+            type: 'thinking',
+            content: msg.content
+          });
+        } else {
+          lastStep.content += msg.content;
         }
         break;
       case 'tool_start':
         isThinking.value = true;
         if (!botMsg.toolCalls) botMsg.toolCalls = [];
-        const toolId = Date.now().toString();
-        botMsg.toolCalls.push({
+        if (!botMsg.steps) botMsg.steps = [];
+        let lastToolGroup = botMsg.steps[botMsg.steps.length - 1];
+        if (!lastToolGroup || lastToolGroup.type !== 'tool_group') {
+           lastToolGroup = {
+             id: 'tool_group_' + Date.now() + '_' + Math.random().toString(36).substr(2,9),
+             type: 'tool_group',
+             tools: []
+           };
+           botMsg.steps.push(lastToolGroup);
+        }
+
+        const toolId = Date.now().toString() + '_' + Math.random().toString(36).substr(2,9);
+        const newTool = {
           id: toolId,
           name: msg.name,
           arguments: msg.arguments || '',
           status: 'running',
           result: null
-        });
+        };
+        
+        botMsg.toolCalls.push(newTool);
+        lastToolGroup.tools.push(newTool);
+        
         // Record start time
         toolStartTimes.value[toolId] = Date.now();
         break;
@@ -360,8 +392,22 @@ const handleMessage = (data: string) => {
         }
         break;
       case 'content':
-        isThinking.value = true;
+      case 'text':
+        isThinking.value = msg.type === 'content';
         botMsg.content += msg.content;
+        
+        if (!botMsg.steps) botMsg.steps = [];
+        let lastTextStep = botMsg.steps[botMsg.steps.length - 1];
+        if (!lastTextStep || lastTextStep.type !== 'content') {
+           const stepId = 'content_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
+           botMsg.steps.push({
+             id: stepId,
+             type: 'content',
+             content: msg.content
+           });
+        } else {
+           lastTextStep.content += msg.content;
+        }
         break;
       case 'error':
         // Handle error messages from backend
@@ -371,9 +417,6 @@ const handleMessage = (data: string) => {
       case 'done':
         isThinking.value = false;
         isReceiving.value = false;
-        if (botMsg.content || (botMsg.toolCalls && botMsg.toolCalls.length > 0)) {
-          expandedThinking.value[botMsg.id] = false;
-        }
         // Scroll to end
         setTimeout(() => {
           const scrollEl = getScrollElement(scrollAreaRef.value);
@@ -381,10 +424,6 @@ const handleMessage = (data: string) => {
             scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'smooth' });
           }
         }, 150);
-        break;
-      case 'text':
-        isThinking.value = false;
-        botMsg.content += msg.content;
         break;
     }
   } catch (e) {
@@ -476,6 +515,15 @@ const stopGenerating = () => {
     if (lastMsg.toolCalls) {
       lastMsg.toolCalls.forEach(tc => {
         if (tc.status === 'running') tc.status = 'error';
+      });
+    }
+    if (lastMsg.steps) {
+      lastMsg.steps.forEach((step: any) => {
+        if (step.type === 'tool_group' && step.tools) {
+          step.tools.forEach((tc: any) => {
+            if (tc.status === 'running') tc.status = 'error';
+          });
+        }
       });
     }
   }
@@ -653,10 +701,6 @@ const clearHistory = () => {
 const toggleToolExpand = (key: string) => {
   expandedTools.value[key] = !expandedTools.value[key];
 };
-
-const toggleThinkingExpand = (msgId: string) => {
-  expandedThinking.value[msgId] = !expandedThinking.value[msgId];
-};
 </script>
 
 <template>
@@ -776,86 +820,186 @@ const toggleThinkingExpand = (msgId: string) => {
 
               <!-- Bot message structure -->
               <template v-else-if="msg.role === 'bot'">
-                <!-- Thinking section - collapsed by default during streaming -->
-                <div v-if="msg.thinking" class="mb-4 pb-4 border-b border-white/10">
-                  <div
-                    class="flex items-center gap-2 mb-2 cursor-pointer select-none hover:bg-slate-700/30 p-1.5 -ml-1.5 rounded transition-colors"
-                    @click="toggleThinkingExpand(msg.id)"
-                  >
-                    <Brain class="w-4 h-4 text-violet-400" :class="{ 'animate-pulse': isThinking && localMessages[localMessages.length - 1]?.id === msg.id }" />
-                    <span class="text-xs font-medium text-violet-400">
-                      {{ isThinking && localMessages[localMessages.length - 1]?.id === msg.id ? 'Thinking...' : 'Thinking Process' }}
-                    </span>
-                    <ChevronDown v-if="expandedThinking[msg.id]" class="w-4 h-4 text-slate-500 ml-auto" />
-                    <ChevronRight v-else class="w-4 h-4 text-slate-500 ml-auto" />
-                  </div>
-                  <div
-                    v-show="expandedThinking[msg.id]"
-                    class="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50 max-h-60 overflow-y-auto custom-scrollbar"
-                  >
-                    <div class="text-[13px] text-slate-400/80 italic whitespace-pre-wrap leading-relaxed">
-                      {{ msg.thinking }}
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Tool calls section -->
-                <div
-                  v-if="msg.toolCalls && msg.toolCalls.length > 0"
-                  class="mb-3 w-full"
-                >
-                  <!-- Tool progress indicator -->
-                  <div v-if="msg.toolCalls.length > 1" class="text-[11px] text-slate-500 mb-1.5 font-medium">
-                    {{ getToolProgress(msg.toolCalls).completed }}/{{ getToolProgress(msg.toolCalls).total }} tools completed
-                  </div>
-                  <div class="flex flex-wrap gap-2 w-full">
-                    <div
-                      v-for="(tool, index) in msg.toolCalls"
-                      :key="index"
-                      class="flex flex-col border rounded-md overflow-hidden text-sm"
-                      :class="{
-                        'border-slate-700/60 bg-slate-900/60': tool.status !== 'error',
-                        'border-red-500/40 bg-red-950/30': tool.status === 'error',
-                        'w-full': expandedTools[msg.id + '_' + index],
-                        'w-auto max-w-full': !expandedTools[msg.id + '_' + index]
-                      }"
-                    >
-                      <!-- Tool header -->
+                <!-- Steps section (interleaved thinking and tools) -->
+                <template v-if="msg.steps && msg.steps.length > 0">
+                  <div v-for="(step, stepIdx) in msg.steps" :key="step.id" class="mb-4">
+                    <!-- Thinking Step -->
+                    <div v-if="step.type === 'thinking'" class="pb-4" :class="{ 'border-b border-white/10': stepIdx < msg.steps.length - 1 || msg.content }">
                       <div
-                        class="flex items-center gap-2 p-1.5 px-2.5 cursor-pointer hover:bg-slate-700/40 transition-colors select-none"
-                        @click="toggleToolExpand(msg.id + '_' + index)"
+                        class="flex items-center gap-2 mb-2 cursor-pointer select-none hover:bg-slate-700/30 p-1.5 -ml-1.5 rounded transition-colors"
+                        @click="toggleThinkingExpand(step.id)"
                       >
-                        <Loader2 v-if="tool.status === 'running'" class="animate-spin w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <Check v-else-if="tool.status === 'complete'" class="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <AlertCircle v-else class="w-3.5 h-3.5 text-red-400 shrink-0" />
-                        <span class="font-mono text-xs truncate" :class="tool.status === 'error' ? 'text-red-300' : 'text-slate-300'">
-                          <span class="text-slate-500">Call </span>{{ tool.name }}
+                        <Brain class="w-4 h-4 text-violet-400" :class="{ 'animate-pulse': isThinking && localMessages[localMessages.length - 1]?.id === msg.id && stepIdx === msg.steps.length - 1 }" />
+                        <span class="text-xs font-medium text-violet-400">
+                          {{ isThinking && localMessages[localMessages.length - 1]?.id === msg.id && stepIdx === msg.steps.length - 1 ? 'Thinking...' : 'Thinking Process' }}
                         </span>
-                        <span v-if="tool.duration" class="text-[10px] text-slate-500 ml-1 shrink-0">{{ tool.duration }}s</span>
-                        <ChevronDown v-if="expandedTools[msg.id + '_' + index]" class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
+                        <ChevronDown v-if="expandedThinking[step.id] !== false" class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
                         <ChevronRight v-else class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
                       </div>
-                      
-                      <!-- Tool details -->
-                      <div v-if="expandedTools[msg.id + '_' + index]" class="p-2 pt-0 border-t border-slate-700/60 bg-slate-950/50">
-                        <div class="text-[11px] font-semibold text-slate-500 mb-1 mt-2 uppercase tracking-wider">Arguments</div>
-                        <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap break-all border-l-2 border-blue-500/50 custom-scrollbar m-0"><code>{{ tool.arguments || '{}' }}</code></pre>
-
-                        <template v-if="tool.result">
-                          <div class="text-[11px] font-semibold mb-1 mt-2 uppercase tracking-wider" :class="tool.status === 'error' ? 'text-red-400' : 'text-slate-500'">
-                            {{ tool.status === 'error' ? 'Error' : 'Result' }}
+                      <div
+                        v-show="expandedThinking[step.id] !== false"
+                        class="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50"
+                      >
+                        <div class="text-[13px] text-slate-400/80 italic whitespace-pre-wrap leading-relaxed">
+                          {{ step.content }}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <!-- Tool Group Step -->
+                    <div v-else-if="step.type === 'tool_group'" class="w-full">
+                      <div v-if="step.tools.length > 1" class="text-[11px] text-slate-500 mb-1.5 font-medium">
+                        {{ getToolProgress(step.tools).completed }}/{{ getToolProgress(step.tools).total }} tools completed
+                      </div>
+                      <div class="flex flex-wrap gap-2 w-full">
+                        <div
+                          v-for="(tool, index) in step.tools"
+                          :key="tool.id"
+                          class="flex flex-col border rounded-md overflow-hidden text-sm"
+                          :class="{
+                            'border-slate-700/60 bg-slate-900/60': tool.status !== 'error',
+                            'border-red-500/40 bg-red-950/30': tool.status === 'error',
+                            'w-full': expandedTools[msg.id + '_' + stepIdx + '_' + index],
+                            'w-auto max-w-full': !expandedTools[msg.id + '_' + stepIdx + '_' + index]
+                          }"
+                        >
+                          <!-- Tool header -->
+                          <div
+                            class="flex items-center gap-2 p-1.5 px-2.5 cursor-pointer hover:bg-slate-700/40 transition-colors select-none"
+                            @click="toggleToolExpand(msg.id + '_' + stepIdx + '_' + index)"
+                          >
+                            <Loader2 v-if="tool.status === 'running'" class="animate-spin w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <Check v-else-if="tool.status === 'complete'" class="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <AlertCircle v-else class="w-3.5 h-3.5 text-red-400 shrink-0" />
+                            <span class="font-mono text-xs truncate" :class="tool.status === 'error' ? 'text-red-300' : 'text-slate-300'">
+                              <span class="text-slate-500">Call </span>{{ tool.name }}
+                            </span>
+                            <span v-if="tool.duration" class="text-[10px] text-slate-500 ml-1 shrink-0">{{ tool.duration }}s</span>
+                            <ChevronDown v-if="expandedTools[msg.id + '_' + stepIdx + '_' + index]" class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
+                            <ChevronRight v-else class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
                           </div>
-                          <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all border-l-2 m-0"
-                               :class="tool.status === 'error' ? 'text-red-300 border-red-500/50' : 'text-slate-300 border-amber-500/50'"><code>{{ tool.result }}</code></pre>
-                        </template>
+                          
+                          <!-- Tool details -->
+                          <div v-if="expandedTools[msg.id + '_' + stepIdx + '_' + index]" class="p-2 pt-0 border-t border-slate-700/60 bg-slate-950/50">
+                            <div class="text-[11px] font-semibold text-slate-500 mb-1 mt-2 uppercase tracking-wider">Arguments</div>
+                            <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap break-all border-l-2 border-blue-500/50 custom-scrollbar m-0"><code>{{ tool.arguments || '{}' }}</code></pre>
+
+                            <template v-if="tool.result">
+                              <div class="text-[11px] font-semibold mb-1 mt-2 uppercase tracking-wider" :class="tool.status === 'error' ? 'text-red-400' : 'text-slate-500'">
+                                {{ tool.status === 'error' ? 'Error' : 'Result' }}
+                              </div>
+                              <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all border-l-2 m-0"
+                                   :class="tool.status === 'error' ? 'text-red-300 border-red-500/50' : 'text-slate-300 border-amber-500/50'"><code>{{ tool.result }}</code></pre>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <!-- Text Content Step -->
+                    <div v-else-if="step.type === 'content'" class="w-full mb-4">
+                      <div
+                        class="prose prose-invert max-w-none text-sm leading-relaxed transition-all relative group/content"
+                        @click="copyCodeBlock"
+                      >
+                        <!-- Copy entire message button (shown on the last content step) -->
+                        <button
+                          v-if="stepIdx === msg.steps.length - 1 || !msg.steps.slice(stepIdx + 1).some((s: any) => s.type === 'content')"
+                          @click.stop="copyMessage(msg)"
+                          class="absolute -top-1 right-0 p-1.5 rounded-md bg-slate-800/80 border border-white/10 text-slate-400 hover:text-slate-200 hover:bg-slate-700/80 opacity-0 group-hover/msg:opacity-100 transition-all z-10"
+                          title="Copy message"
+                        >
+                          <CheckCheck v-if="copiedMessageId === msg.id" class="w-3.5 h-3.5 text-emerald-400" />
+                          <Copy v-else class="w-3.5 h-3.5" />
+                        </button>
+                        <div v-html="renderMarkdown(step.content)"></div>
+                      </div>
+                    </div>
+                    
+                  </div>
+                </template>
+
+                <!-- Legacy format fallback for old history messages -->
+                <template v-else>
+                  <div v-if="msg.thinking" class="mb-4 pb-4 border-b border-white/10">
+                    <div
+                      class="flex items-center gap-2 mb-2 cursor-pointer select-none hover:bg-slate-700/30 p-1.5 -ml-1.5 rounded transition-colors"
+                      @click="toggleThinkingExpand(msg.id)"
+                    >
+                      <Brain class="w-4 h-4 text-violet-400" :class="{ 'animate-pulse': isThinking && localMessages[localMessages.length - 1]?.id === msg.id }" />
+                      <span class="text-xs font-medium text-violet-400">
+                        {{ isThinking && localMessages[localMessages.length - 1]?.id === msg.id ? 'Thinking...' : 'Thinking Process' }}
+                      </span>
+                      <ChevronDown v-if="expandedThinking[msg.id] !== false" class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
+                      <ChevronRight v-else class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
+                    </div>
+                    <div
+                      v-show="expandedThinking[msg.id] !== false"
+                      class="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50"
+                    >
+                      <div class="text-[13px] text-slate-400/80 italic whitespace-pre-wrap leading-relaxed">
+                        {{ msg.thinking }}
                       </div>
                     </div>
                   </div>
-                </div>
+  
+                  <!-- Tool calls section -->
+                  <div
+                    v-if="msg.toolCalls && msg.toolCalls.length > 0"
+                    class="mb-3 w-full"
+                  >
+                    <!-- Tool progress indicator -->
+                    <div v-if="msg.toolCalls.length > 1" class="text-[11px] text-slate-500 mb-1.5 font-medium">
+                      {{ getToolProgress(msg.toolCalls).completed }}/{{ getToolProgress(msg.toolCalls).total }} tools completed
+                    </div>
+                    <div class="flex flex-wrap gap-2 w-full">
+                      <div
+                        v-for="(tool, index) in msg.toolCalls"
+                        :key="index"
+                        class="flex flex-col border rounded-md overflow-hidden text-sm"
+                        :class="{
+                          'border-slate-700/60 bg-slate-900/60': tool.status !== 'error',
+                          'border-red-500/40 bg-red-950/30': tool.status === 'error',
+                          'w-full': expandedTools[msg.id + '_' + index],
+                          'w-auto max-w-full': !expandedTools[msg.id + '_' + index]
+                        }"
+                      >
+                        <!-- Tool header -->
+                        <div
+                          class="flex items-center gap-2 p-1.5 px-2.5 cursor-pointer hover:bg-slate-700/40 transition-colors select-none"
+                          @click="toggleToolExpand(msg.id + '_' + index)"
+                        >
+                          <Loader2 v-if="tool.status === 'running'" class="animate-spin w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <Check v-else-if="tool.status === 'complete'" class="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <AlertCircle v-else class="w-3.5 h-3.5 text-red-400 shrink-0" />
+                          <span class="font-mono text-xs truncate" :class="tool.status === 'error' ? 'text-red-300' : 'text-slate-300'">
+                            <span class="text-slate-500">Call </span>{{ tool.name }}
+                          </span>
+                          <span v-if="tool.duration" class="text-[10px] text-slate-500 ml-1 shrink-0">{{ tool.duration }}s</span>
+                          <ChevronDown v-if="expandedTools[msg.id + '_' + index]" class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
+                          <ChevronRight v-else class="w-3.5 h-3.5 text-slate-500 shrink-0 ml-1" />
+                        </div>
+                        
+                        <!-- Tool details -->
+                        <div v-if="expandedTools[msg.id + '_' + index]" class="p-2 pt-0 border-t border-slate-700/60 bg-slate-950/50">
+                          <div class="text-[11px] font-semibold text-slate-500 mb-1 mt-2 uppercase tracking-wider">Arguments</div>
+                          <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap break-all border-l-2 border-blue-500/50 custom-scrollbar m-0"><code>{{ tool.arguments || '{}' }}</code></pre>
+  
+                          <template v-if="tool.result">
+                            <div class="text-[11px] font-semibold mb-1 mt-2 uppercase tracking-wider" :class="tool.status === 'error' ? 'text-red-400' : 'text-slate-500'">
+                              {{ tool.status === 'error' ? 'Error' : 'Result' }}
+                            </div>
+                            <pre class="bg-black/60 rounded p-1.5 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all border-l-2 m-0"
+                                 :class="tool.status === 'error' ? 'text-red-300 border-red-500/50' : 'text-slate-300 border-amber-500/50'"><code>{{ tool.result }}</code></pre>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
 
-                <!-- Final response content -->
+                <!-- Final response content (Legacy or fallback) -->
                 <div
-                  v-if="msg.content"
+                  v-if="msg.content && (!msg.steps || !msg.steps.some((s: any) => s.type === 'content'))"
                   class="prose prose-invert max-w-none text-sm leading-relaxed transition-all relative group/content"
                   @click="copyCodeBlock"
                 >

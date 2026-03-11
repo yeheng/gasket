@@ -190,4 +190,77 @@ impl SubagentManager {
         rx.await
             .map_err(|_| anyhow::anyhow!("Subagent task was cancelled"))?
     }
+
+    /// Submit a prompt with a **specific model** and wait for the response.
+    ///
+    /// This method allows switching to a different provider/model for the
+    /// subagent execution. Used by the `switch_model` tool.
+    ///
+    /// # Arguments
+    /// * `prompt_text` - The task description for the subagent
+    /// * `system_prompt` - Optional custom system prompt (uses minimal bootstrap if None)
+    /// * `provider` - The LLM provider to use for this execution
+    /// * `agent_config` - Agent configuration including model, temperature, etc.
+    #[instrument(name = "subagent.submit_and_wait_with_model", skip_all)]
+    pub async fn submit_and_wait_with_model(
+        &self,
+        prompt_text: &str,
+        system_prompt: Option<&str>,
+        provider: Arc<dyn LlmProvider>,
+        agent_config: AgentConfig,
+    ) -> anyhow::Result<AgentResponse> {
+        let workspace = self.workspace.clone();
+        let tool_factory = self.tool_factory.clone();
+        let prompt_text = prompt_text.to_string();
+        let custom_system = system_prompt.map(|s| s.to_string());
+        let model = agent_config.model.clone();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<anyhow::Result<AgentResponse>>();
+
+        tokio::spawn(async move {
+            let result = async {
+                info!(
+                    "Subagent (model switch) started with model '{}': {}",
+                    model,
+                    &prompt_text[..prompt_text.len().min(80)]
+                );
+
+                let tools = tool_factory();
+
+                let mut agent =
+                    AgentLoop::builder(provider, workspace.clone(), agent_config, tools)?;
+
+                // Use custom system prompt if provided, otherwise load default
+                let sys = match custom_system {
+                    Some(s) => s,
+                    None => {
+                        prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_MINIMAL)
+                            .await?
+                    }
+                };
+                agent.set_system_prompt(sys);
+
+                let session_key =
+                    SessionKey::new(crate::bus::ChannelType::Cli, "model_switch_sync");
+                let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
+
+                tokio::time::timeout(
+                    timeout_duration,
+                    agent.process_direct(&prompt_text, &session_key),
+                )
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!("Model switch task timed out after {SUBAGENT_TIMEOUT_SECS}s")
+                })?
+                .map_err(|e| anyhow::anyhow!("{}", e))
+            }
+            .await;
+
+            // Send result back; if the receiver was dropped, discard silently
+            let _ = tx.send(result);
+        });
+
+        rx.await
+            .map_err(|_| anyhow::anyhow!("Model switch task was cancelled"))?
+    }
 }

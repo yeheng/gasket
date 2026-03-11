@@ -240,13 +240,6 @@ impl HistorySearchTool {
                 .map(|dt| dt.with_timezone(&Utc).format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or_else(|_| timestamp_str.clone());
 
-            // Truncate content for preview
-            let preview = if content.len() > 200 {
-                format!("{}...", &content[..200])
-            } else {
-                content.clone()
-            };
-
             output.push_str(&format!(
                 "{}. [{}] **{}** ({}):\n",
                 i + 1,
@@ -254,7 +247,10 @@ impl HistorySearchTool {
                 session_key,
                 timestamp
             ));
-            output.push_str(&format!("   {}\n\n", preview.trim().replace('\n', " ")));
+            output.push_str(&format!(
+                "   {}\n\n",
+                content.clone().trim().replace('\n', " ")
+            ));
         }
 
         Ok(output)

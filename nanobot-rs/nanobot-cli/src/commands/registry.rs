@@ -4,12 +4,15 @@
 
 use std::sync::Arc;
 
+use nanobot_core::agent::subagent::SubagentManager;
 use nanobot_core::agent::AgentConfig;
-use nanobot_core::config::Config;
+use nanobot_core::config::{Config, ModelRegistry};
 use nanobot_core::memory::SqliteStore;
+use nanobot_core::providers::ProviderRegistry;
 use nanobot_core::tools::{
     EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
-    SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool, WriteFileTool,
+    SpawnTool, SwitchModelTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool,
+    WriteFileTool,
 };
 
 /// Resolve the exec workspace directory from config or default to $HOME/.nanobot.
@@ -75,11 +78,15 @@ pub struct ToolRegistryConfig {
     /// MCP tools loaded from external servers
     pub mcp_tools: Vec<Box<dyn nanobot_core::tools::Tool>>,
     /// Optional subagent manager for spawn tool
-    pub subagent_manager: Option<Arc<nanobot_core::agent::SubagentManager>>,
+    pub subagent_manager: Option<Arc<SubagentManager>>,
     /// Extra tools to register (e.g., gateway-specific MessageTool, CronTool)
     pub extra_tools: Vec<(Box<dyn nanobot_core::tools::Tool>, ToolMetadata)>,
     /// SQLite store for history search (optional)
     pub sqlite_store: Option<SqliteStore>,
+    /// Model registry for switch_model tool (optional)
+    pub model_registry: Option<Arc<ModelRegistry>>,
+    /// Provider registry for switch_model tool (optional)
+    pub provider_registry: Option<Arc<ProviderRegistry>>,
 }
 
 /// Build tool registry with common tools shared between CLI and gateway modes.
@@ -100,6 +107,8 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         subagent_manager,
         extra_tools,
         sqlite_store,
+        model_registry,
+        provider_registry,
     } = registry_config;
 
     let restrict = config.tools.restrict_to_workspace;
@@ -201,8 +210,8 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     );
 
     // Spawn tool
-    let spawn_tool = match subagent_manager {
-        Some(mgr) => SpawnTool::with_manager(mgr),
+    let spawn_tool = match &subagent_manager {
+        Some(mgr) => SpawnTool::with_manager(Arc::clone(mgr)),
         None => SpawnTool::new(),
     };
     tools.register_with_metadata(
@@ -215,6 +224,31 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             is_mutating: false,
         },
     );
+
+    // Switch model tool (if model registry is configured)
+    if let (Some(model_reg), Some(provider_reg), Some(subagent_mgr)) =
+        (&model_registry, &provider_registry, &subagent_manager)
+    {
+        let switch_tool = SwitchModelTool::new(
+            Arc::clone(model_reg),
+            Arc::clone(provider_reg),
+            Arc::clone(subagent_mgr),
+        );
+        tools.register_with_metadata(
+            Box::new(switch_tool),
+            ToolMetadata {
+                display_name: "Switch Model".to_string(),
+                category: "agent".to_string(),
+                tags: vec!["model".to_string(), "switch".to_string(), "ai".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
+        tracing::info!(
+            "SwitchModelTool registered with {} model profiles",
+            model_reg.len()
+        );
+    }
 
     // MCP tools (metadata assigned by MCP manager)
     for mcp_tool in mcp_tools {
