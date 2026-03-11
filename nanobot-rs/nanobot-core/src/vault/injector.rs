@@ -8,7 +8,6 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use super::{replace_placeholders, scan_placeholders, VaultStore};
-use crate::agent::interceptor::{InterceptReport, MessageInterceptor};
 use crate::providers::ChatMessage;
 
 /// Report of an injection operation
@@ -141,42 +140,6 @@ impl VaultInjector {
                 false
             }
         })
-    }
-}
-
-// Implement MessageInterceptor trait for integration with the interceptor chain
-impl MessageInterceptor for VaultInjector {
-    fn intercept(&self, messages: &mut Vec<ChatMessage>) -> Option<InterceptReport> {
-        let report = self.inject(messages);
-
-        if report.messages_modified == 0 && report.keys_used.is_empty() {
-            return None;
-        }
-
-        // Return injected_values so the caller can use them for log redaction
-        Some(InterceptReport {
-            name: "vault_injector".to_string(),
-            messages_modified: report.messages_modified,
-            details: if report.missing_keys.is_empty() {
-                format!(
-                    "Injected {} keys: {:?}",
-                    report.keys_used.len(),
-                    report.keys_used
-                )
-            } else {
-                format!(
-                    "Injected {} keys, missing {} keys: {:?}",
-                    report.keys_used.len(),
-                    report.missing_keys.len(),
-                    report.missing_keys
-                )
-            },
-            injected_values: report.injected_values,
-        })
-    }
-
-    fn name(&self) -> &str {
-        "vault_injector"
     }
 }
 
@@ -363,63 +326,6 @@ mod tests {
 
         assert_eq!(report.messages_modified, 1);
         assert!(messages[0].content.as_ref().unwrap().contains("p@ss!word"));
-    }
-
-    #[test]
-    fn test_message_interceptor_trait() {
-        let mut store = VaultStore::new_in_memory();
-        store.unlock("password").unwrap();
-        store.set("api_key", "sk-test-123", None).unwrap();
-        let injector = VaultInjector::new(Arc::new(store));
-
-        // Test name method
-        assert_eq!(injector.name(), "vault_injector");
-
-        // Test intercept method with placeholders
-        let mut messages = vec![ChatMessage::user("Use {{vault:api_key}}")];
-        let report = injector.intercept(&mut messages);
-
-        assert!(report.is_some());
-        let report = report.unwrap();
-        assert_eq!(report.name, "vault_injector");
-        assert_eq!(report.messages_modified, 1);
-        assert!(report.details.contains("api_key"));
-        assert_eq!(report.injected_values, vec!["sk-test-123"]);
-    }
-
-    #[test]
-    fn test_message_interceptor_no_modification() {
-        let mut store = VaultStore::new_in_memory();
-        store.unlock("password").unwrap();
-        let injector = VaultInjector::new(Arc::new(store));
-
-        // Test intercept with no placeholders
-        let mut messages = vec![ChatMessage::user("No placeholders here")];
-        let report = injector.intercept(&mut messages);
-
-        assert!(report.is_none());
-    }
-
-    #[test]
-    fn test_message_interceptor_with_missing_keys() {
-        let mut store = VaultStore::new_in_memory();
-        store.unlock("password").unwrap();
-        let injector = VaultInjector::new(Arc::new(store));
-
-        // Test intercept with only missing keys
-        // When no keys are successfully injected, intercept returns None
-        let mut messages = vec![ChatMessage::user("Use {{vault:missing_key}}")];
-        let report = injector.intercept(&mut messages);
-
-        // intercept returns None when no keys are successfully injected
-        // (messages_modified == 0 && keys_used.is_empty())
-        assert!(report.is_none());
-
-        // Verify placeholder remains unchanged
-        assert_eq!(
-            messages[0].content,
-            Some("Use {{vault:missing_key}}".to_string())
-        );
     }
 
     #[test]

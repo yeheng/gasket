@@ -21,12 +21,14 @@ use crate::memory::SqliteStore;
 /// Supports filtering by session, role, and time range.
 pub struct HistorySearchTool {
     db: SqliteStore,
+    /// Configured default limit for results (from config.yaml or fallback 15)
+    default_limit: usize,
 }
 
 impl HistorySearchTool {
-    /// Create a new history search tool with a SQLite store.
-    pub fn new(db: SqliteStore) -> Self {
-        Self { db }
+    /// Create a new history search tool with a SQLite store and configured limit.
+    pub fn new(db: SqliteStore, default_limit: usize) -> Self {
+        Self { db, default_limit }
     }
 
     /// Create with default SQLite store.
@@ -34,7 +36,7 @@ impl HistorySearchTool {
         let db = SqliteStore::new()
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Failed to open database: {}", e)))?;
-        Ok(Self { db })
+        Ok(Self { db, default_limit: 15 })
     }
 }
 
@@ -57,13 +59,9 @@ struct SearchArgs {
     /// End date filter (ISO 8601 format)
     to_date: Option<String>,
 
-    /// Maximum number of results
-    #[serde(default = "default_limit")]
+    /// Maximum number of results (0 means use configured default)
+    #[serde(default)]
     limit: usize,
-}
-
-fn default_limit() -> usize {
-    15
 }
 
 // ── Tool Implementation ────────────────────────────────────────
@@ -122,8 +120,13 @@ impl Tool for HistorySearchTool {
     }
 
     async fn execute(&self, args: Value) -> ToolResult {
-        let parsed: SearchArgs = serde_json::from_value(args)
+        let mut parsed: SearchArgs = serde_json::from_value(args)
             .map_err(|e| ToolError::InvalidArguments(format!("Invalid arguments: {}", e)))?;
+
+        // Apply configured default when caller doesn't specify a limit
+        if parsed.limit == 0 {
+            parsed.limit = self.default_limit;
+        }
 
         self.search_history(&parsed).await
     }
@@ -210,7 +213,10 @@ impl HistorySearchTool {
 
         if rows.is_empty() {
             let filter_desc = self.describe_filters(parsed);
-            return Ok(format!("No messages found matching criteria: {}", filter_desc));
+            return Ok(format!(
+                "No messages found matching criteria: {}",
+                filter_desc
+            ));
         }
 
         // Format results
@@ -300,7 +306,8 @@ mod tests {
     fn test_search_args_defaults() {
         let args = serde_json::json!({});
         let parsed: SearchArgs = serde_json::from_value(args).unwrap();
-        assert_eq!(parsed.limit, 15);
+        // limit defaults to 0 (meaning "use configured default from ToolsConfig")
+        assert_eq!(parsed.limit, 0);
         assert!(parsed.query.is_none());
     }
 

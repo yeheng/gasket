@@ -27,6 +27,8 @@ pub fn register_tools(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexMana
 
     // Maintenance tools
     register_index_compact(registry, manager.clone());
+    register_index_rebuild(registry, manager.clone());
+    register_maintenance_status(registry, manager.clone());
 }
 
 fn register_index_create(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
@@ -545,6 +547,80 @@ fn handle_index_compact(params: Option<Value>, manager: Arc<RwLock<IndexManager>
     }).to_string()))
 }
 
+fn register_index_rebuild(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+    registry.register(
+        McpTool {
+            name: "index_rebuild".to_string(),
+            description: "Rebuild an index with optional new schema for migration".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "string",
+                        "description": "Index name"
+                    },
+                    "fields": {
+                        "type": "array",
+                        "description": "Optional new field definitions for schema migration",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "type": {
+                                    "type": "string",
+                                    "enum": ["text", "string", "i64", "f64", "datetime", "string_array", "json"]
+                                },
+                                "indexed": { "type": "boolean", "default": true },
+                                "stored": { "type": "boolean", "default": true }
+                            },
+                            "required": ["name", "type"]
+                        }
+                    },
+                    "batch_size": {
+                        "type": "integer",
+                        "description": "Number of documents to process per batch",
+                        "default": 1000
+                    }
+                },
+                "required": ["index"]
+            }),
+        },
+        move |params| {
+            let manager = manager.clone();
+            handle_index_rebuild(params, manager)
+        },
+    );
+}
+
+fn handle_index_rebuild(params: Option<Value>, manager: Arc<RwLock<IndexManager>>) -> Result<ToolResult> {
+    use crate::maintenance::rebuild_index;
+    use crate::maintenance::RebuildResult;
+
+    let params = params.ok_or_else(|| crate::Error::McpError("Missing params".to_string()))?;
+
+    let index_name = params["index"]
+        .as_str()
+        .ok_or_else(|| crate::Error::McpError("Missing index".to_string()))?;
+
+    let new_fields: Option<Vec<crate::index::FieldDef>> = if let Some(fields) = params.get("fields") {
+        Some(serde_json::from_value(fields.clone())?)
+    } else {
+        None
+    };
+
+    let batch_size = params.get("batch_size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1000) as usize;
+
+    let result: RebuildResult = tokio::task::block_in_place(|| {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            let mut manager = manager.write().await;
+            rebuild_index(&mut manager, index_name, new_fields, batch_size)
+        })
+    })?;    Ok(ToolResult::text(json!(result).to_string()))
+}
+
 /// Parse a TTL string into a duration.
 fn parse_ttl(ttl: &str) -> Result<chrono::Duration> {
     let ttl = ttl.trim();
@@ -577,4 +653,68 @@ fn parse_ttl(ttl: &str) -> Result<chrono::Duration> {
     };
 
     Ok(duration)
+}
+
+fn register_maintenance_status(registry: &mut ToolRegistry, manager: Arc<RwLock<IndexManager>>) {
+    registry.register(
+        McpTool {
+            name: "maintenance_status".to_string(),
+            description: "Get maintenance status for all indexes or a specific index".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "string",
+                        "description": "Optional index name (returns all if not specified)"
+                    }
+                }
+            }),
+        },
+        move |params| {
+            let manager = manager.clone();
+            handle_maintenance_status(params, manager)
+        },
+    );
+}
+
+fn handle_maintenance_status(params: Option<Value>, manager: Arc<RwLock<IndexManager>>) -> Result<ToolResult> {
+    let index_name = params.as_ref().and_then(|p| p.get("index")).and_then(|v| v.as_str());
+
+    tokio::task::block_in_place(|| {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            let manager = manager.read().await;
+
+            if let Some(name) = index_name {
+                // Get status for specific index
+                let stats = manager.get_stats(name)?;
+                let config_opt = manager.get_config(name)?;
+
+                Ok(ToolResult::text(json!({
+                    "index": name,
+                    "stats": stats,
+                    "config": config_opt
+                }).to_string()))
+            } else {
+                // Get status for all indexes
+                let indexes = manager.list_indexes();
+                let mut all_status = Vec::new();
+
+                for idx in indexes {
+                    if let Ok(stats) = manager.get_stats(&idx) {
+                        let config_opt = manager.get_config(&idx).ok().flatten();
+                        all_status.push(json!({
+                            "index": idx,
+                            "stats": stats,
+                            "config": config_opt
+                        }));
+                    }
+                }
+
+                Ok(ToolResult::text(json!({
+                    "indexes": all_status
+                }).to_string()))
+            }
+        })
+    })
 }

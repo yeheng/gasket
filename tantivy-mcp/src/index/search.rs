@@ -30,10 +30,53 @@ pub struct SearchQuery {
     /// Sort configuration.
     #[serde(default)]
     pub sort: Option<SortConfig>,
+    /// Highlight configuration.
+    #[serde(default)]
+    pub highlight: Option<HighlightConfig>,
 }
 
 fn default_limit() -> usize {
     10
+}
+
+/// Highlight configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightConfig {
+    /// Fields to highlight (empty = all text fields).
+    #[serde(default)]
+    pub fields: Vec<String>,
+    /// Maximum snippet length in characters.
+    #[serde(default = "default_max_snippet_length")]
+    pub max_length: usize,
+    /// Number of snippets to return per field.
+    #[serde(default = "default_num_snippets")]
+    pub num_snippets: usize,
+    /// HTML tag for highlighting matches (e.g., "mark" produces <mark>...</mark>).
+    #[serde(default = "default_highlight_tag")]
+    pub highlight_tag: String,
+}
+
+fn default_max_snippet_length() -> usize {
+    150
+}
+
+fn default_num_snippets() -> usize {
+    1
+}
+
+fn default_highlight_tag() -> String {
+    "mark".to_string()
+}
+
+impl Default for HighlightConfig {
+    fn default() -> Self {
+        Self {
+            fields: Vec::new(),
+            max_length: default_max_snippet_length(),
+            num_snippets: default_num_snippets(),
+            highlight_tag: default_highlight_tag(),
+        }
+    }
 }
 
 /// Field filter.
@@ -96,7 +139,10 @@ pub struct SearchResult {
     /// Relevance score.
     #[serde(default)]
     pub score: f32,
-    /// Highlighted snippet.
+    /// Highlighted snippets per field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlights: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Legacy highlight field for backward compatibility.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highlight: Option<String>,
 }
@@ -122,6 +168,16 @@ impl SearchQuery {
             field: field.into(),
             op,
             value,
+        });
+        self
+    }
+
+    /// Add highlighting configuration.
+    pub fn with_highlight(mut self, fields: Vec<String>, max_length: usize) -> Self {
+        self.highlight = Some(HighlightConfig {
+            fields,
+            max_length,
+            ..Default::default()
         });
         self
     }

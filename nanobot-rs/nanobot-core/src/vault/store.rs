@@ -28,9 +28,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{debug, warn};
 
 use super::crypto::{KdfParams, VaultCrypto};
@@ -38,6 +39,69 @@ use super::VaultError;
 
 /// Current vault format version
 const VAULT_VERSION: u32 = 2;
+
+// ============================================================================
+// AtomicTimestamp — lock-free interior-mutable timestamp
+// ============================================================================
+
+/// A lock-free timestamp stored as Unix seconds in an `AtomicI64`.
+///
+/// `0` represents "no timestamp" (serialized as JSON `null`).
+/// Allows `&self` updates via `touch()`, eliminating the need for `&mut self`
+/// or `Mutex` wrappers when updating `last_used` on read paths.
+pub struct AtomicTimestamp(AtomicI64);
+
+impl AtomicTimestamp {
+    /// Create an unset timestamp (equivalent to `None`).
+    pub fn none() -> Self {
+        Self(AtomicI64::new(0))
+    }
+
+    /// Create from an existing `Option<DateTime<Utc>>`.
+    pub fn from_option(dt: Option<DateTime<Utc>>) -> Self {
+        Self(AtomicI64::new(dt.map_or(0, |d| d.timestamp())))
+    }
+
+    /// Update to current time (lock-free).
+    pub fn touch(&self) {
+        self.0.store(Utc::now().timestamp(), Ordering::Relaxed);
+    }
+
+    /// Read the current value as `Option<DateTime<Utc>>`.
+    pub fn get(&self) -> Option<DateTime<Utc>> {
+        let ts = self.0.load(Ordering::Relaxed);
+        if ts == 0 {
+            None
+        } else {
+            DateTime::from_timestamp(ts, 0)
+        }
+    }
+}
+
+impl Clone for AtomicTimestamp {
+    fn clone(&self) -> Self {
+        Self(AtomicI64::new(self.0.load(Ordering::Relaxed)))
+    }
+}
+
+impl std::fmt::Debug for AtomicTimestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AtomicTimestamp({:?})", self.get())
+    }
+}
+
+impl Serialize for AtomicTimestamp {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.get().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AtomicTimestamp {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let opt: Option<DateTime<Utc>> = Option::deserialize(deserializer)?;
+        Ok(Self::from_option(opt))
+    }
+}
 
 // ============================================================================
 // Data Structures
@@ -65,9 +129,14 @@ pub struct VaultEntryV2 {
     pub description: Option<String>,
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
-    /// Last usage timestamp
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_used: Option<DateTime<Utc>>,
+    /// Last usage timestamp (lock-free atomic update via `touch()`)
+    #[serde(default = "AtomicTimestamp::none", skip_serializing_if = "atomic_ts_is_none")]
+    pub last_used: AtomicTimestamp,
+}
+
+/// Helper for `#[serde(skip_serializing_if)]` — cannot use a method on `AtomicTimestamp`.
+fn atomic_ts_is_none(ts: &AtomicTimestamp) -> bool {
+    ts.get().is_none()
 }
 
 impl From<&VaultEntryV2> for VaultMetadata {
@@ -76,7 +145,7 @@ impl From<&VaultEntryV2> for VaultMetadata {
             key: entry.key.clone(),
             description: entry.description.clone(),
             created_at: entry.created_at,
-            last_used: entry.last_used,
+            last_used: entry.last_used.get(),
         }
     }
 }
@@ -176,10 +245,7 @@ impl VaultStore {
 
     /// Get a sensitive value by key
     ///
-    /// This is a read-only operation that does NOT update `last_used`.
-    /// If you need to track usage, use the `show` CLI command instead.
-    /// This design avoids requiring `&mut self` which would force
-    /// all concurrent readers to serialize on a global lock.
+    /// Updates `last_used` atomically without requiring `&mut self`.
     ///
     /// # Error Logging
     ///
@@ -208,10 +274,8 @@ impl VaultStore {
 
         match crypto.decrypt_from_base64(&entry.encrypted_value, &entry.nonce) {
             Ok(decrypted) => {
-                // NOTE: We intentionally do NOT update last_used here.
-                // Updating would require &mut self, forcing Arc<Mutex<>> which
-                // creates a global serialization bottleneck for all concurrent sessions.
-                // Usage tracking is a "nice to have" that doesn't justify this cost.
+                // Update last_used atomically — no &mut self needed
+                entry.last_used.touch();
                 Some(decrypted)
             }
             Err(e) => {
@@ -253,7 +317,7 @@ impl VaultStore {
             nonce,
             description: description.map(|s| s.to_string()),
             created_at,
-            last_used: None,
+            last_used: AtomicTimestamp::none(),
         };
 
         self.entries.insert(key.to_string(), entry);
@@ -376,15 +440,6 @@ impl VaultStore {
         Ok(())
     }
 
-    // NOTE: update_last_used has been intentionally removed.
-    // It was only used to update a "last_used" timestamp on get(),
-    // but this required &mut self which created lock contention.
-    // The feature is not worth the performance cost.
-    // If usage tracking is needed, consider:
-    // - Using async background tasks to batch update
-    // - Only tracking when explicitly listing keys
-    // - Using a separate analytics store that doesn't block reads
-
     fn validate_key(key: &str) -> Result<(), VaultError> {
         if key.is_empty() {
             return Err(VaultError::InvalidKey("Key cannot be empty".to_string()));
@@ -490,10 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_last_used_not_updated_on_get() {
-        // NOTE: last_used is NO LONGER updated on get() for concurrency reasons.
-        // Updating last_used would require &mut self, which forces Arc<Mutex<>>.
-        // This test verifies that get() is read-only (no last_used update).
+    fn test_last_used_updated_on_get() {
         let mut store = VaultStore::new_in_memory();
         store.unlock("password").unwrap();
         store.set("key", "value", None).unwrap();
@@ -505,7 +557,7 @@ mod tests {
             .unwrap();
         assert!(before.last_used.is_none());
 
-        // get() is now read-only, so last_used should NOT change
+        // get() now atomically updates last_used
         let _ = store.get("key");
 
         let after = store
@@ -513,8 +565,7 @@ mod tests {
             .into_iter()
             .find(|m| m.key == "key")
             .unwrap();
-        // last_used should still be None because get() doesn't update it anymore
-        assert!(after.last_used.is_none());
+        assert!(after.last_used.is_some());
     }
 
     #[test]

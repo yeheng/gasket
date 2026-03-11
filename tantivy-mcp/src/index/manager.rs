@@ -281,6 +281,17 @@ impl IndexManager {
         let id_field = state.id_field;
         let field_map = &state.field_map;
 
+        // Create snippet generator if highlighting is requested
+        let snippet_generator = if let Some(ref highlight_config) = query.highlight {
+            if let Some(ref query_text) = query.text {
+                Some(create_snippet_generator(&state, query_text, highlight_config)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         for (score, doc_address) in top_docs.into_iter().skip(query.offset) {
             if results.len() >= query.limit {
                 break;
@@ -301,11 +312,19 @@ impl IndexManager {
                     }
                 }
 
+                // Generate highlights if requested
+                let (highlights, legacy_highlight) = if let Some(ref gen) = snippet_generator {
+                    generate_highlights(&doc, gen, &query.highlight.as_ref().unwrap())
+                } else {
+                    (None, None)
+                };
+
                 results.push(SearchResult {
                     id,
                     fields,
                     score,
-                    highlight: None,
+                    highlights,
+                    highlight: legacy_highlight,
                 });
             }
         }
@@ -373,6 +392,58 @@ impl IndexManager {
 
         info!("Compacted index {}", index_name);
         Ok(())
+    }
+
+    /// List all documents in an index (with pagination).
+    pub fn list_documents(&self, index_name: &str, limit: usize, offset: usize) -> Result<Vec<Document>> {
+        let state = self.get_state(index_name)?;
+        let state = state.blocking_read();
+
+        let searcher = state.reader.searcher();
+        let tantivy_query = tantivy::query::AllQuery;
+
+        let top_docs = searcher.search(
+            &tantivy_query,
+            &tantivy::collector::TopDocs::with_limit(limit + offset),
+        )?;
+
+        let mut documents = Vec::new();
+        let id_field = state.id_field;
+        let expires_at_field = state.expires_at_field;
+        let field_map = &state.field_map;
+
+        for (_, doc_address) in top_docs.into_iter().skip(offset) {
+            if documents.len() >= limit {
+                break;
+            }
+
+            if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address) {
+                let id = doc
+                    .get_first(id_field)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+
+                let expires_at = doc
+                    .get_first(expires_at_field)
+                    .and_then(|v| v.as_i64())
+                    .map(|ts| {
+                        chrono::DateTime::from_timestamp(ts, 0).unwrap_or_else(|| Utc::now())
+                    });
+
+                let mut fields = serde_json::Map::new();
+                for (field_name, tantivy_field) in field_map {
+                    if let Some(value) = doc.get_first(*tantivy_field) {
+                        let json_value = tantivy_value_to_json(value);
+                        fields.insert(field_name.clone(), json_value);
+                    }
+                }
+
+                documents.push(Document { id, fields, expires_at });
+            }
+        }
+
+        Ok(documents)
     }
 
     /// Load existing indexes from disk.
@@ -660,4 +731,114 @@ fn calculate_dir_size(path: &Path) -> Result<u64> {
         }
     }
     Ok(size)
+}
+
+/// Snippet generator for highlighting.
+struct SnippetGeneratorEntry {
+    field_name: String,
+    field: Field,
+    generator: tantivy::snippet::SnippetGenerator,
+}
+
+/// Create snippet generators for highlighted fields.
+fn create_snippet_generator(
+    state: &IndexState,
+    query_text: &str,
+    config: &super::search::HighlightConfig,
+) -> Result<Vec<SnippetGeneratorEntry>> {
+    use tantivy::query::QueryParser;
+    use tantivy::snippet::SnippetGenerator;
+
+    let mut generators = Vec::new();
+
+    let fields_to_highlight = if config.fields.is_empty() {
+        // If no fields specified, highlight all text fields
+        state.field_map.keys().cloned().collect::<Vec<_>>()
+    } else {
+        config.fields.clone()
+    };
+
+    // Collect text fields for query parser
+    let text_fields: Vec<Field> = fields_to_highlight
+        .iter()
+        .filter_map(|field_name| {
+            if let Some(&tantivy_field) = state.field_map.get(field_name) {
+                if let Some(field_def) = state.schema.get_field(field_name) {
+                    if field_def.field_type == FieldType::Text {
+                        return Some(tantivy_field);
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+
+    // Create a query parser with text fields
+    let query_parser = QueryParser::for_index(&state.tantivy_index, text_fields.clone());
+
+    let query = query_parser.parse_query(query_text)
+        .map_err(|e| Error::ParseError(format!("Query parse error: {}", e)))?;
+
+    // Create snippet generator for each text field
+    for field_name in fields_to_highlight {
+        if let Some(&tantivy_field) = state.field_map.get(&field_name) {
+            // Check if this is a text field
+            if let Some(field_def) = state.schema.get_field(&field_name) {
+                if field_def.field_type == FieldType::Text {
+                    let generator = SnippetGenerator::create(
+                        &state.reader.searcher(),
+                        &query,
+                        tantivy_field,
+                    )?;
+                    generators.push(SnippetGeneratorEntry {
+                        field_name: field_name.clone(),
+                        field: tantivy_field,
+                        generator,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(generators)
+}
+
+/// Generate highlights for a document.
+fn generate_highlights(
+    doc: &TantivyDocument,
+    generators: &[SnippetGeneratorEntry],
+    config: &super::search::HighlightConfig,
+) -> (Option<serde_json::Map<String, serde_json::Value>>, Option<String>) {
+    let mut highlights = serde_json::Map::new();
+    let mut first_highlight: Option<String> = None;
+
+    let open_tag = format!("<{}>", config.highlight_tag);
+    let close_tag = format!("</{}>", config.highlight_tag);
+
+    for entry in generators {
+        if let Some(value) = doc.get_first(entry.field) {
+            if let Some(text) = value.as_str() {
+                let mut snippet = entry.generator.snippet(text);
+                snippet.set_snippet_prefix_postfix(&open_tag, &close_tag);
+
+                let highlighted = snippet.to_html();
+                highlights.insert(entry.field_name.clone(), serde_json::Value::String(highlighted.clone()));
+
+                // Store first highlight for legacy field
+                if first_highlight.is_none() {
+                    first_highlight = Some(highlighted);
+                }
+
+                if highlights.len() >= config.num_snippets {
+                    break;
+                }
+            }
+        }
+    }
+
+    if highlights.is_empty() {
+        (None, None)
+    } else {
+        (Some(highlights), first_highlight)
+    }
 }

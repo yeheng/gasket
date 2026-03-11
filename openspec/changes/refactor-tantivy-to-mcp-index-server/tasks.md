@@ -41,13 +41,13 @@
 - [x] 5.3 Implement date range filtering
 - [x] 5.4 Implement pagination (offset, limit)
 - [x] 5.5 Implement result sorting (by score or field)
-- [ ] 5.6 Implement snippet highlighting for text fields
+- [x] 5.6 Implement snippet highlighting for text fields
 
 ## 6. Maintenance Operations
 
 - [x] 6.1 Implement `index_compact` tool - merge segments and remove deleted docs (`src/maintenance/compact.rs`)
-- [x] 6.2 Implement `index_expire` tool - remove expired documents (`src/maintenance/expire.rs`) - *Basic implementation*
-- [ ] 6.3 Implement `index_rebuild` tool - recreate index with optional new schema (`src/maintenance/rebuild.rs`)
+- [x] 6.2 Implement `index_expire` tool - remove expired documents (`src/maintenance/expire.rs`)
+- [x] 6.3 Implement `index_rebuild` tool - recreate index with optional new schema (`src/maintenance/rebuild.rs`)
 - [x] 6.4 Implement `index_backup` tool - create consistent snapshot (`src/maintenance/backup.rs`)
 - [x] 6.5 Implement `index_restore` tool - restore from backup (`src/maintenance/backup.rs`)
 - [x] 6.6 Implement `index_stats` tool - return health and usage statistics (`src/maintenance/stats.rs`)
@@ -57,9 +57,9 @@
 - [x] 7.1 Create maintenance scheduler module (`src/maintenance/scheduler.rs`)
 - [x] 7.2 Implement auto-compaction trigger (deleted ratio threshold, segment count)
 - [x] 7.3 Implement auto-expiration background task (periodic cleanup)
-- [ ] 7.4 Implement `index_configure` tool for maintenance settings
-- [ ] 7.5 Implement `maintenance_status` tool
-- [ ] 7.6 Add maintenance task persistence and recovery
+- [x] 7.4 Implement `maintenance_status` tool for runtime status viewing
+- [ ] 7.5 Implement `index_configure` tool for runtime maintenance configuration (deferred)
+- [ ] 7.6 Add maintenance task persistence and recovery (deferred)
 
 ## 8. MCP Tools (Core)
 
@@ -108,7 +108,7 @@
 
 ## Implementation Status Summary
 
-**Completed: 49/55 tasks (89%)**
+**Completed: 51/55 tasks (93%)**
 
 ### Key Completed Features:
 - ✅ Complete MCP protocol implementation (JSON-RPC 2.0 over stdio)
@@ -120,14 +120,15 @@
 - ✅ Graceful shutdown handling (SIGINT/SIGTERM)
 - ✅ Backup and restore operations
 - ✅ Index statistics and health monitoring
+- ✅ Snippet highlighting for search results
+- ✅ Index rebuild tool for schema migration
+- ✅ Maintenance status tool
 
 ### Remaining Work (Low Priority):
-1. **Snippet highlighting** (5.6) - Nice to have for search result display
-2. **Index rebuild tool** (6.3) - Schema migration support
-3. **Configuration tools** (7.4-7.5) - Runtime maintenance configuration
-4. **Maintenance persistence** (7.6) - State recovery after restart
-5. **Unit/Integration tests** (10.1-10.5) - Test coverage
-6. **CI/CD** (11.1-11.4) - Release automation
+1. **Runtime configuration tool** (7.5) - Requires additional API design
+2. **Maintenance persistence** (7.6) - State recovery after restart
+3. **Unit/Integration tests** (10.1-10.5) - Test coverage
+4. **CI/CD** (11.1-11.4) - Release automation
 
 ### Build Output
 - Binary size: ~5.4MB (release mode)

@@ -50,6 +50,15 @@ pub enum Error {
 
     #[error("Path error: {0}")]
     PathError(PathBuf, String),
+
+    #[error("Query error: {0}")]
+    QueryError(String),
+}
+
+impl From<tantivy::query::QueryParserError> for Error {
+    fn from(e: tantivy::query::QueryParserError) -> Self {
+        Error::QueryError(e.to_string())
+    }
 }
 
 /// Result type alias for tantivy-mcp.

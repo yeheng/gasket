@@ -238,13 +238,17 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
     // History search tool using SQLite database
     if let Some(db) = sqlite_store {
-        let history_tool = HistorySearchTool::new(db);
+        let history_tool = HistorySearchTool::new(db, config.tools.history_search_limit);
         tools.register_with_metadata(
             Box::new(history_tool),
             ToolMetadata {
                 display_name: "History Search".to_string(),
                 category: "search".to_string(),
-                tags: vec!["search".to_string(), "history".to_string(), "sqlite".to_string()],
+                tags: vec![
+                    "search".to_string(),
+                    "history".to_string(),
+                    "sqlite".to_string(),
+                ],
                 requires_approval: false,
                 is_mutating: false,
             },

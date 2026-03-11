@@ -3,6 +3,9 @@
 //! This module defines specific error types using `thiserror` for better
 //! error handling and API contracts. Library crates should NOT expose
 //! `anyhow::Error` in their public APIs - it's only for internal use.
+//!
+//! Error chains are preserved through `#[source]` and `#[from]` attributes,
+//! enabling full backtrace traversal with `RUST_BACKTRACE=1`.
 
 use thiserror::Error;
 
@@ -36,6 +39,10 @@ pub enum AgentError {
     /// Generic error with message
     #[error("{0}")]
     Other(String),
+
+    /// Internal error preserving the full error chain
+    #[error(transparent)]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Errors from LLM providers
@@ -72,6 +79,10 @@ pub enum ProviderError {
     /// Generic provider error
     #[error("{0}")]
     Other(String),
+
+    /// Internal error preserving the full error chain
+    #[error(transparent)]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Errors from MCP (Model Context Protocol) operations
@@ -81,9 +92,17 @@ pub enum McpError {
     #[error("MCP server '{0}' not found")]
     ServerNotFound(String),
 
-    /// Connection error
+    /// Connection error (string message, for manually constructed errors)
     #[error("Failed to connect to MCP server: {0}")]
     ConnectionError(String),
+
+    /// I/O error with preserved source chain
+    #[error("MCP I/O error")]
+    IoError(#[from] std::io::Error),
+
+    /// JSON serialization error with preserved source chain
+    #[error("MCP JSON error")]
+    JsonError(#[from] serde_json::Error),
 
     /// Tool call error
     #[error("MCP tool call error: {0}")]
@@ -96,6 +115,10 @@ pub enum McpError {
     /// JSON-RPC error
     #[error("JSON-RPC error (code {code}): {message}")]
     JsonRpcError { code: i64, message: String },
+
+    /// Internal error preserving the full error chain
+    #[error(transparent)]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Errors from channel operations
@@ -120,6 +143,10 @@ pub enum ChannelError {
     /// Invalid message format
     #[error("Invalid message format: {0}")]
     InvalidFormat(String),
+
+    /// Internal error preserving the full error chain
+    #[error(transparent)]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Configuration validation errors
@@ -174,40 +201,30 @@ pub enum PipelineError {
     StoreError(String),
 }
 
-// Implement From for common error types to enable `?` operator
-impl From<std::io::Error> for McpError {
-    fn from(err: std::io::Error) -> Self {
-        McpError::ConnectionError(err.to_string())
-    }
-}
+// ============================================================================
+// From<anyhow::Error> — preserve full error chain via Internal variant
+// ============================================================================
 
-impl From<serde_json::Error> for McpError {
-    fn from(err: serde_json::Error) -> Self {
-        McpError::ToolCallError(format!("JSON error: {}", err))
-    }
-}
-
-// Implement From<anyhow::Error> for conversion at module boundaries
 impl From<anyhow::Error> for AgentError {
     fn from(err: anyhow::Error) -> Self {
-        AgentError::Other(err.to_string())
+        AgentError::Internal(err.into())
     }
 }
 
 impl From<anyhow::Error> for ProviderError {
     fn from(err: anyhow::Error) -> Self {
-        ProviderError::Other(err.to_string())
+        ProviderError::Internal(err.into())
     }
 }
 
 impl From<anyhow::Error> for McpError {
     fn from(err: anyhow::Error) -> Self {
-        McpError::ToolCallError(err.to_string())
+        McpError::Internal(err.into())
     }
 }
 
 impl From<anyhow::Error> for ChannelError {
     fn from(err: anyhow::Error) -> Self {
-        ChannelError::SendError(err.to_string())
+        ChannelError::Internal(err.into())
     }
 }

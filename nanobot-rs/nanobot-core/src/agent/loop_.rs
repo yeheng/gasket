@@ -11,7 +11,7 @@
 //! 5. load_summary + bg_compress  → load existing summary (fast), spawn background compression if messages were evicted (non-blocking)
 //! 6. inject_system_prompts       → direct: bootstrap + skills
 //! 7. assemble_prompt             → pure: build Vec<ChatMessage>
-//!    7.5. run_interceptors          → middleware chain (vault injection, etc.)
+//!    7.5. vault_injection            → inject secrets from vault (optional)
 //! 8. run_agent_loop              → LLM iteration (with inline logging)
 //! 9. external_hook(post_response) → shell script for audit/alerting
 //! 10. save_assistant_msg          → context.save_message() (trait dispatch)
@@ -19,7 +19,7 @@
 //! All steps are **direct method calls** or pure functions — no hidden hook dispatch.
 //! External shell hooks (if present) are called via subprocess at steps 1 and 10.
 //! Step 5's background compression uses `tokio::spawn` — zero user-facing latency.
-//! Step 7.5 uses the interceptor chain for pluggable message transformation.
+//! Step 7.5 injects vault secrets directly via `VaultInjector`.
 //!
 //! ## AgentContext Trait Pattern
 //!
@@ -39,7 +39,6 @@ use tracing::{debug, info, warn};
 use crate::agent::context::AgentContext;
 use crate::agent::executor::ToolExecutor;
 use crate::agent::history_processor::{process_history, HistoryConfig};
-use crate::agent::interceptor::InterceptorChain;
 use crate::agent::prompt;
 use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamCallback, StreamEvent};
@@ -185,7 +184,7 @@ fn log_llm_response(response: &ChatResponse, iteration: u32, vault_values: &[Str
 /// boundaries (pre_request / post_response) via subprocess — UNIX philosophy.
 ///
 /// Message interceptors (e.g., VaultInjector) are called before LLM processing
-/// via the `interceptors` chain — pluggable middleware pattern.
+/// directly — no middleware chain indirection.
 ///
 /// ## Security Note: Vault Values Lifecycle
 ///
@@ -209,8 +208,8 @@ pub struct AgentLoop {
     skills_context: Option<String>,
     /// External shell hook runner (pre_request / post_response).
     external_hooks: ExternalHookRunner,
-    /// Message interceptor chain for pre-LLM processing (vault injection, etc.)
-    interceptors: InterceptorChain,
+    /// Vault injector for pre-LLM secret injection (optional)
+    vault_injector: Option<VaultInjector>,
     /// Token usage tracker for the session
     session_stats: Mutex<crate::token_tracker::SessionTokenStats>,
     /// Model pricing configuration (optional)
@@ -263,14 +262,17 @@ impl AgentLoop {
             });
         let external_hooks = ExternalHookRunner::new(hooks_dir);
 
-        // Initialize interceptor chain with vault injector (optional - for sensitive data isolation)
-        let mut interceptors = InterceptorChain::new();
-        if let Ok(store) = VaultStore::new() {
-            debug!("[Agent] Vault initialized successfully, adding vault interceptor");
-            interceptors.add(Box::new(VaultInjector::new(Arc::new(store))));
-        } else {
-            debug!("[Agent] Vault not available, skipping vault interceptor");
-        }
+        // Initialize vault injector (optional - for sensitive data isolation)
+        let vault_injector = match VaultStore::new() {
+            Ok(store) => {
+                debug!("[Agent] Vault initialized successfully, adding vault injector");
+                Some(VaultInjector::new(Arc::new(store)))
+            }
+            Err(_) => {
+                debug!("[Agent] Vault not available, skipping vault injector");
+                None
+            }
+        };
 
         Ok(Self {
             provider,
@@ -282,7 +284,7 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             external_hooks,
-            interceptors,
+            vault_injector,
             session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
         })
@@ -330,14 +332,17 @@ impl AgentLoop {
             });
         let external_hooks = ExternalHookRunner::new(hooks_dir);
 
-        // Initialize interceptor chain with vault injector (optional - for sensitive data isolation)
-        let mut interceptors = InterceptorChain::new();
-        if let Ok(store) = VaultStore::new() {
-            debug!("[Agent] Vault initialized successfully, adding vault interceptor");
-            interceptors.add(Box::new(VaultInjector::new(Arc::new(store))));
-        } else {
-            debug!("[Agent] Vault not available, skipping vault interceptor");
-        }
+        // Initialize vault injector (optional - for sensitive data isolation)
+        let vault_injector = match VaultStore::new() {
+            Ok(store) => {
+                debug!("[Agent] Vault initialized successfully, adding vault injector");
+                Some(VaultInjector::new(Arc::new(store)))
+            }
+            Err(_) => {
+                debug!("[Agent] Vault not available, skipping vault injector");
+                None
+            }
+        };
 
         Ok(Self {
             provider,
@@ -349,7 +354,7 @@ impl AgentLoop {
             system_prompt,
             skills_context,
             external_hooks,
-            interceptors,
+            vault_injector,
             session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
         })
@@ -380,7 +385,7 @@ impl AgentLoop {
             system_prompt: String::new(),
             skills_context: None,
             external_hooks: ExternalHookRunner::noop(),
-            interceptors: InterceptorChain::new(), // Empty chain for subagents
+            vault_injector: None, // No vault for subagents
             session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
             pricing: None,
         })
@@ -526,17 +531,21 @@ impl AgentLoop {
             summary.as_deref(),
         );
 
-        // ── 7.5. Run interceptor chain (vault injection, etc.) ────────
-        // Interceptors modify messages in-place before sending to LLM.
-        // The vault injector is one such interceptor; others can be added.
+        // ── 7.5. Vault injection ────────────────────────────────────
+        // Inject secrets at the last moment before sending to LLM.
         // CRITICAL: Collect injected values into LOCAL variable for log redaction!
         // This prevents memory leaks by scoping secrets to single requests.
-        let interceptor_reports = self.interceptors.run(&mut messages);
-
-        // Collect all injected values into a LOCAL variable (not global state!)
         let mut local_vault_values = Vec::new();
-        for report in &interceptor_reports {
-            local_vault_values.extend(report.injected_values.iter().cloned());
+        if let Some(ref vault) = self.vault_injector {
+            let report = vault.inject(&mut messages);
+            local_vault_values = report.injected_values;
+            if !report.keys_used.is_empty() {
+                debug!(
+                    "[Agent] Vault injected {} keys into {} messages",
+                    report.keys_used.len(),
+                    report.messages_modified
+                );
+            }
         }
         // Deduplicate
         local_vault_values.sort();
