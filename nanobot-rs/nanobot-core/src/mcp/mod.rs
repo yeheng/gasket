@@ -52,11 +52,13 @@ pub async fn start_mcp_servers(
                     headers: auth.headers.clone(),
                 };
                 match transport {
-                    crate::config::RemoteTransportConfig::Http { url } => types::McpTransport::Http {
-                        url: url.clone(),
-                        auth: mcp_auth,
-                        timeout: *timeout,
-                    },
+                    crate::config::RemoteTransportConfig::Http { url } => {
+                        types::McpTransport::Http {
+                            url: url.clone(),
+                            auth: mcp_auth,
+                            timeout: *timeout,
+                        }
+                    }
                     crate::config::RemoteTransportConfig::Sse { url } => types::McpTransport::Sse {
                         url: url.clone(),
                         auth: mcp_auth,

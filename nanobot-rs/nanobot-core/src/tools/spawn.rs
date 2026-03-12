@@ -24,6 +24,12 @@ impl SpawnTool {
             manager: Some(manager),
         }
     }
+
+    pub fn with_registries(manager: Arc<SubagentManager>) -> Self {
+        Self {
+            manager: Some(manager),
+        }
+    }
 }
 
 impl Default for SpawnTool {
@@ -35,6 +41,7 @@ impl Default for SpawnTool {
 #[derive(Deserialize)]
 struct SpawnArgs {
     task: String,
+    model_id: Option<String>,
     channel: Option<String>,
     chat_id: Option<String>,
 }
@@ -46,7 +53,7 @@ impl Tool for SpawnTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a background task to execute a prompt asynchronously."
+        "Spawn a background subagent to execute a task asynchronously with optional model selection. The subagent runs independently and sends results to the specified channel when complete. Use this for parallel task execution or long-running operations that don't need immediate results."
     }
 
     fn parameters(&self) -> Value {
@@ -56,6 +63,10 @@ impl Tool for SpawnTool {
                 "task": {
                     "type": "string",
                     "description": "Task description / prompt to execute in the background"
+                },
+                "model_id": {
+                    "type": "string",
+                    "description": "Optional model profile ID to use for this subagent. If not specified, uses the default model."
                 },
                 "channel": {
                     "type": "string",
@@ -95,10 +106,24 @@ impl Tool for SpawnTool {
         let channel = args.channel.unwrap_or_else(|| "cli".to_string());
         let chat_id = args.chat_id.unwrap_or_else(|| "internal".to_string());
 
+        // Check if model_id is specified
+        if args.model_id.is_some() {
+            // Model switching with fire-and-forget spawn is not supported
+            return Err(ToolError::ExecutionError(
+                "Fire-and-forget spawn with custom model is not supported. Use spawn_parallel for model switching.".to_string()
+            ));
+        }
+
+        // Fire-and-forget: spawn async task without blocking
         manager
             .submit(&args.task, &channel, &chat_id)
-            .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn task: {}", e)))?;
+            .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
 
-        Ok(format!("Background task started: {}", &args.task))
+        Ok(format!(
+            "Subagent spawned successfully. Task: '{}' will execute in background and send results to {}:{}",
+            args.task,
+            channel,
+            chat_id
+        ))
     }
 }

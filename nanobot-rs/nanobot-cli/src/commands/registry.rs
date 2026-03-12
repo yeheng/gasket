@@ -11,7 +11,7 @@ use nanobot_core::memory::SqliteStore;
 use nanobot_core::providers::ProviderRegistry;
 use nanobot_core::tools::{
     EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
-    SpawnTool, SwitchModelTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool,
+    SpawnParallelTool, SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool,
     WriteFileTool,
 };
 
@@ -210,9 +210,10 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     );
 
     // Spawn tool
-    let spawn_tool = match &subagent_manager {
-        Some(mgr) => SpawnTool::with_manager(Arc::clone(mgr)),
-        None => SpawnTool::new(),
+    let spawn_tool = match (&subagent_manager, &model_registry, &provider_registry) {
+        (Some(mgr), Some(_), Some(_)) => SpawnTool::with_registries(Arc::clone(mgr)),
+        (Some(mgr), _, _) => SpawnTool::with_manager(Arc::clone(mgr)),
+        _ => SpawnTool::new(),
     };
     tools.register_with_metadata(
         Box::new(spawn_tool),
@@ -225,30 +226,30 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         },
     );
 
-    // Switch model tool (if model registry is configured)
-    if let (Some(model_reg), Some(provider_reg), Some(subagent_mgr)) =
-        (&model_registry, &provider_registry, &subagent_manager)
-    {
-        let switch_tool = SwitchModelTool::new(
+    // Spawn parallel tool
+    let spawn_parallel_tool = match (&subagent_manager, &model_registry, &provider_registry) {
+        (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnParallelTool::with_registries(
+            Arc::clone(mgr),
             Arc::clone(model_reg),
             Arc::clone(provider_reg),
-            Arc::clone(subagent_mgr),
-        );
-        tools.register_with_metadata(
-            Box::new(switch_tool),
-            ToolMetadata {
-                display_name: "Switch Model".to_string(),
-                category: "agent".to_string(),
-                tags: vec!["model".to_string(), "switch".to_string(), "ai".to_string()],
-                requires_approval: false,
-                is_mutating: false,
-            },
-        );
-        tracing::info!(
-            "SwitchModelTool registered with {} model profiles",
-            model_reg.len()
-        );
-    }
+        ),
+        (Some(mgr), _, _) => SpawnParallelTool::with_manager(Arc::clone(mgr)),
+        _ => SpawnParallelTool::new(),
+    };
+    tools.register_with_metadata(
+        Box::new(spawn_parallel_tool),
+        ToolMetadata {
+            display_name: "Spawn Parallel".to_string(),
+            category: "system".to_string(),
+            tags: vec![
+                "spawn".to_string(),
+                "parallel".to_string(),
+                "agent".to_string(),
+            ],
+            requires_approval: false,
+            is_mutating: false,
+        },
+    );
 
     // MCP tools (metadata assigned by MCP manager)
     for mcp_tool in mcp_tools {

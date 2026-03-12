@@ -6,12 +6,14 @@ use std::sync::Arc;
 use std::thread;
 
 use tantivy_mcp::index::{FieldDef, FieldType, IndexManager};
+use tantivy_mcp::maintenance::JobRegistry;
 
 /// Test basic index operations.
 #[test]
 fn test_basic_index_operations() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let manager = IndexManager::new(temp_dir.path());
+    let job_registry = Arc::new(JobRegistry::new());
+    let manager = IndexManager::new(temp_dir.path(), job_registry);
 
     // Create index
     let fields = vec![
@@ -66,7 +68,10 @@ fn test_basic_index_operations() {
 #[test]
 fn test_concurrent_index_access() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let manager = Arc::new(IndexManager::new(temp_dir.path()));
+    let manager = Arc::new(IndexManager::new(
+        temp_dir.path(),
+        Arc::new(JobRegistry::new()),
+    ));
 
     // Create indexes first
     for i in 0..5 {
@@ -105,10 +110,11 @@ fn test_concurrent_index_access() {
 }
 
 /// Test document operations.
-#[test]
-fn test_document_operations() {
+#[tokio::test(flavor = "multi_thread")]
+async fn test_document_operations() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let manager = IndexManager::new(temp_dir.path());
+    let job_registry = Arc::new(JobRegistry::new());
+    let manager = IndexManager::new(temp_dir.path(), job_registry.clone());
 
     // Create index
     let fields = vec![FieldDef {
@@ -121,7 +127,7 @@ fn test_document_operations() {
         .create_index("doc_test", fields, None)
         .expect("Failed to create index");
 
-    // Add document
+    // Add document (returns JobId)
     let doc = tantivy_mcp::index::Document::new(
         "doc1".to_string(),
         serde_json::json!({
@@ -131,12 +137,20 @@ fn test_document_operations() {
         .unwrap()
         .clone(),
     );
-    manager
+    let job_id = manager
         .add_document("doc_test", doc)
         .expect("Failed to add document");
 
-    // Commit
-    manager.commit("doc_test").expect("Failed to commit");
+    // Wait for job to complete
+    wait_for_job(&job_registry, &job_id, std::time::Duration::from_secs(5));
+
+    // Commit (returns JobId)
+    let commit_job_id = manager.commit("doc_test").expect("Failed to commit");
+    wait_for_job(
+        &job_registry,
+        &commit_job_id,
+        std::time::Duration::from_secs(5),
+    );
 
     // List documents
     let docs = manager
@@ -145,11 +159,22 @@ fn test_document_operations() {
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].id, "doc1");
 
-    // Delete document
-    manager
+    // Delete document (returns JobId)
+    let delete_job_id = manager
         .delete_document("doc_test", "doc1")
         .expect("Failed to delete document");
-    manager.commit("doc_test").expect("Failed to commit");
+    wait_for_job(
+        &job_registry,
+        &delete_job_id,
+        std::time::Duration::from_secs(5),
+    );
+
+    let commit_job_id = manager.commit("doc_test").expect("Failed to commit");
+    wait_for_job(
+        &job_registry,
+        &commit_job_id,
+        std::time::Duration::from_secs(5),
+    );
 
     // Verify deletion
     let docs = manager
@@ -159,10 +184,11 @@ fn test_document_operations() {
 }
 
 /// Test index compaction.
-#[test]
-fn test_compact() {
+#[tokio::test(flavor = "multi_thread")]
+async fn test_compact() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let manager = IndexManager::new(temp_dir.path());
+    let job_registry = Arc::new(JobRegistry::new());
+    let manager = IndexManager::new(temp_dir.path(), job_registry.clone());
 
     // Create index
     let fields = vec![FieldDef {
@@ -186,26 +212,62 @@ fn test_compact() {
             .unwrap()
             .clone(),
         );
-        manager
+        let job_id = manager
             .add_document("compact_test", doc)
             .expect("Failed to add document");
+        wait_for_job(&job_registry, &job_id, std::time::Duration::from_secs(5));
     }
-    manager.commit("compact_test").expect("Failed to commit");
+    let commit_job_id = manager.commit("compact_test").expect("Failed to commit");
+    wait_for_job(
+        &job_registry,
+        &commit_job_id,
+        std::time::Duration::from_secs(5),
+    );
 
     // Delete half the documents
     for i in 0..5 {
-        manager
+        let job_id = manager
             .delete_document("compact_test", &format!("doc{}", i))
             .expect("Failed to delete document");
+        wait_for_job(&job_registry, &job_id, std::time::Duration::from_secs(5));
     }
-    manager.commit("compact_test").expect("Failed to commit");
+    let commit_job_id = manager.commit("compact_test").expect("Failed to commit");
+    wait_for_job(
+        &job_registry,
+        &commit_job_id,
+        std::time::Duration::from_secs(5),
+    );
 
-    // Compact
-    manager.compact("compact_test").expect("Failed to compact");
+    // Compact (returns JobId)
+    let compact_job_id = manager.compact("compact_test").expect("Failed to compact");
+    wait_for_job(
+        &job_registry,
+        &compact_job_id,
+        std::time::Duration::from_secs(10),
+    );
 
     // Verify
     let stats = manager
         .get_stats("compact_test")
         .expect("Failed to get stats");
     assert_eq!(stats.doc_count, 5);
+}
+
+/// Helper function to wait for a job to complete.
+fn wait_for_job(job_registry: &Arc<JobRegistry>, job_id: &str, timeout: std::time::Duration) {
+    use tantivy_mcp::maintenance::JobStatus;
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(job) = job_registry.get_job(job_id) {
+            match job.status {
+                JobStatus::Completed => return,
+                JobStatus::Failed => panic!("Job {} failed: {:?}", job_id, job.error),
+                _ => {}
+            }
+        }
+        if start.elapsed() > timeout {
+            panic!("Job {} timed out after {:?}", job_id, timeout);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }

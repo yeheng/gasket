@@ -54,7 +54,7 @@ async fn test_agent_initialization() {
     )
     .expect("openai should be known provider");
 
-    let tools = nanobot_core::tools::ToolRegistry::new();
+    let tools = Arc::new(nanobot_core::tools::ToolRegistry::new());
     let agent =
         nanobot_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config, tools)
             .await

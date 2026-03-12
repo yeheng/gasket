@@ -34,6 +34,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::task_local;
 use tracing::{debug, info, warn};
 
 use crate::agent::context::AgentContext;
@@ -54,6 +55,39 @@ use crate::agent::memory::MemoryStore;
 use crate::agent::summarization::SummarizationService;
 use crate::session::SessionManager;
 use std::sync::Mutex;
+
+// Task-local storage for the current session key
+//
+// **PRAGMATIC COMPROMISE (Linus-style "Escape Hatch")**
+//
+// This is the ONLY global escape hatch allowed in the system to avoid polluting
+// every Tool::execute() signature with session_key parameters.
+//
+// ## Why This Exists
+// Tools need access to the session key for side-channel communication (e.g., sending
+// WebSocket messages via OutboundMessage), but passing it through every tool signature
+// would create massive API pollution and coupling.
+//
+// ## Strict Usage Rules
+// 1. ONLY for accessing session context in tools (channel, chat_id)
+// 2. NEVER for storing mutable state or business logic
+// 3. NEVER add more task-local variables without architectural review
+// 4. This is a controlled hack with limited blast radius
+//
+// ## Alternative Considered and Rejected
+// - Passing session_key through Tool::execute() → pollutes all tool signatures
+// - Global Arc<Mutex<SessionKey>> → introduces unnecessary synchronization overhead
+// - Thread-local storage → breaks with async/await task migration
+//
+// If you're tempted to add another task_local!, stop and redesign your API instead.
+task_local! {
+    pub static CURRENT_SESSION_KEY: Option<SessionKey>;
+}
+
+/// Get the current session key from task-local storage
+pub fn get_current_session_key() -> Option<SessionKey> {
+    CURRENT_SESSION_KEY.with(|sk| sk.clone())
+}
 
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -107,6 +141,8 @@ pub struct AgentResponse {
     pub reasoning_content: Option<String>,
     /// Tools used during processing
     pub tools_used: Vec<String>,
+    /// Model name used for this response
+    pub model: Option<String>,
 }
 
 /// Result from the agent loop execution.
@@ -194,7 +230,7 @@ fn log_llm_response(response: &ChatResponse, iteration: u32, vault_values: &[Str
 /// This prevents memory accumulation and limits exposure window.
 pub struct AgentLoop {
     provider: Arc<dyn LlmProvider>,
-    tools: ToolRegistry,
+    tools: Arc<ToolRegistry>,
     config: AgentConfig,
     workspace: PathBuf,
     /// History truncator configuration.
@@ -232,7 +268,7 @@ impl AgentLoop {
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
-        tools: ToolRegistry,
+        tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         let memory_store = Arc::new(MemoryStore::new().await);
         let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
@@ -346,7 +382,7 @@ impl AgentLoop {
 
         Ok(Self {
             provider,
-            tools,
+            tools: Arc::new(tools),
             config,
             workspace,
             history_config: HistoryConfig::default(),
@@ -370,7 +406,7 @@ impl AgentLoop {
         provider: Arc<dyn LlmProvider>,
         workspace: PathBuf,
         config: AgentConfig,
-        tools: ToolRegistry,
+        tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         // Use stateless context for subagents
         let context: Arc<dyn AgentContext> = Arc::new(StatelessContext::new());
@@ -458,6 +494,7 @@ impl AgentLoop {
                         content: error_msg,
                         reasoning_content: None,
                         tools_used: vec![],
+                        model: Some(self.config.model.clone()),
                     });
                 }
                 // Use modified message if provided, otherwise keep original
@@ -584,11 +621,31 @@ impl AgentLoop {
             content: result.content,
             reasoning_content: result.reasoning_content,
             tools_used: result.tools_used,
+            model: Some(self.config.model.clone()),
         })
     }
 
     /// Process a message with streaming callback.
     pub async fn process_direct_streaming<F>(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+        callback: F,
+    ) -> Result<AgentResponse, AgentError>
+    where
+        F: FnMut(stream::StreamEvent) + Send,
+    {
+        let session_key_clone = session_key.clone();
+        CURRENT_SESSION_KEY
+            .scope(Some(session_key_clone), async {
+                self.process_direct_streaming_inner(content, session_key, callback)
+                    .await
+            })
+            .await
+    }
+
+    /// Inner implementation of process_direct_streaming (within CURRENT_SESSION_KEY scope)
+    async fn process_direct_streaming_inner<F>(
         &self,
         content: &str,
         session_key: &SessionKey,
@@ -610,6 +667,7 @@ impl AgentLoop {
                         content: error_msg,
                         reasoning_content: None,
                         tools_used: vec![],
+                        model: Some(self.config.model.clone()),
                     });
                 }
                 output
@@ -694,6 +752,7 @@ impl AgentLoop {
             content: result.content,
             reasoning_content: result.reasoning_content,
             tools_used: result.tools_used,
+            model: Some(self.config.model.clone()),
         })
     }
 
@@ -782,8 +841,9 @@ impl AgentLoop {
             let model = request.model.clone();
             let stream_result = request_handler.send_with_retry(request).await?;
 
-            let (_event_stream, response_future) = stream::stream_events(stream_result);
-            let response = response_future.await?;
+            // Use collect_stream_response to avoid channel deadlock
+            // (stream_events requires the event stream to be consumed)
+            let response = stream::collect_stream_response(stream_result).await?;
 
             // Calculate token usage and cost
             let (token_usage, cost) = self.calculate_token_usage(&response, &model);

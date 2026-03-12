@@ -27,12 +27,15 @@ fn expand_tilde(path: &str) -> String {
 
 /// Expand environment variables in a string (e.g., "${API_KEY}" -> "actual-key")
 fn expand_env_vars(s: &str) -> String {
-    // Simple implementation: look for ${VAR} patterns
-    let mut result = s.to_string();
-    if let Ok(env_value) = std::env::var(&s[2..s.len() - 1]) {
-        result = env_value;
+    // Check if the string matches ${...} pattern (minimum "${X}" is 4 chars)
+    if s.len() >= 4 && s.starts_with("${") && s.ends_with('}') {
+        // Safe slice: we verified the prefix and suffix are ASCII chars
+        let var_name = &s[2..s.len() - 1];
+        if let Ok(env_value) = std::env::var(var_name) {
+            return env_value;
+        }
     }
-    result
+    s.to_string()
 }
 
 /// Apply authentication headers to a request builder
@@ -192,7 +195,7 @@ impl McpClient {
                 debug!(
                     "[MCP:{}] stdout: {}",
                     server_name,
-                    &line[..line.len().min(200)]
+                    &line
                 );
 
                 if let Ok(msg) = serde_json::from_str::<Value>(&line) {
@@ -213,14 +216,29 @@ impl McpClient {
         Ok(())
     }
 
-    async fn start_http(&mut self, url: String, auth: McpAuth, timeout: u64) -> Result<(), McpError> {
+    async fn start_http(
+        &mut self,
+        url: String,
+        auth: McpAuth,
+        timeout: u64,
+    ) -> Result<(), McpError> {
         let client = reqwest::Client::new();
-        self.transport = Some(Transport::Http { url, client, auth, timeout });
+        self.transport = Some(Transport::Http {
+            url,
+            client,
+            auth,
+            timeout,
+        });
         Ok(())
     }
 
     /// Start SSE transport (Server-Sent Events)
-    async fn start_sse(&mut self, url: String, auth: McpAuth, timeout: u64) -> Result<(), McpError> {
+    async fn start_sse(
+        &mut self,
+        url: String,
+        auth: McpAuth,
+        timeout: u64,
+    ) -> Result<(), McpError> {
         let client = reqwest::Client::new();
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -305,7 +323,7 @@ impl McpClient {
 
                                 // Parse the event
                                 if let Some(json) = Self::parse_sse_event(&event_data) {
-                                    debug!("[MCP:{}] SSE event: {}", server_name, &json.to_string()[..json.to_string().len().min(200)]);
+                                    debug!("[MCP:{}] SSE event: {}", server_name, &json.to_string());
                                     let _ = event_tx.send(json).await;
                                 }
                             }
@@ -349,11 +367,13 @@ impl McpClient {
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
         // Build WebSocket URL
-        let ws_url = url.replace("http://", "ws://").replace("https://", "wss://");
+        let ws_url = url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
 
-        let (ws_stream, _) = connect_async(&ws_url)
-            .await
-            .map_err(|e| McpError::ConnectionError(format!("WebSocket connection failed: {}", e)))?;
+        let (ws_stream, _) = connect_async(&ws_url).await.map_err(|e| {
+            McpError::ConnectionError(format!("WebSocket connection failed: {}", e))
+        })?;
 
         let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
@@ -380,7 +400,7 @@ impl McpClient {
                                     debug!(
                                         "[MCP:{}] WS message: {}",
                                         server_name,
-                                        &text[..text.len().min(200)]
+                                        &text
                                     );
                                     let _ = response_tx.send(json).await;
                                 }
@@ -433,15 +453,35 @@ impl McpClient {
             Some(Transport::Stdio { stdin, .. }) => {
                 self.send_request_stdio(id, request, stdin).await
             }
-            Some(Transport::Http { url, client, auth, timeout }) => {
-                self.send_request_http(request, url, client, auth, *timeout).await
+            Some(Transport::Http {
+                url,
+                client,
+                auth,
+                timeout,
+            }) => {
+                self.send_request_http(request, url, client, auth, *timeout)
+                    .await
             }
-            Some(Transport::Sse { url, client, auth, timeout, event_rx, .. }) => {
-                self.send_request_sse(request, url, client, auth, *timeout, event_rx).await
+            Some(Transport::Sse {
+                url,
+                client,
+                auth,
+                timeout,
+                event_rx,
+                ..
+            }) => {
+                self.send_request_sse(request, url, client, auth, *timeout, event_rx)
+                    .await
             }
             #[cfg(feature = "mcp-websocket")]
-            Some(Transport::WebSocket { request_tx, response_rx, timeout, .. }) => {
-                self.send_request_websocket(id, request, request_tx, response_rx, *timeout).await
+            Some(Transport::WebSocket {
+                request_tx,
+                response_rx,
+                timeout,
+                ..
+            }) => {
+                self.send_request_websocket(id, request, request_tx, response_rx, *timeout)
+                    .await
             }
             None => Err(McpError::ConnectionError(
                 "Transport not initialized".into(),
@@ -459,7 +499,7 @@ impl McpClient {
         debug!(
             "[MCP:{}] → {}",
             self.name,
-            &request_str[..request_str.len().min(200)]
+            &request_str
         );
 
         let (tx, rx) = oneshot::channel();
@@ -565,20 +605,19 @@ impl McpClient {
             .map_err(|e| McpError::ConnectionError(format!("SSE POST failed: {}", e)))?;
 
         // Wait for the response from the SSE event stream
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout),
-            async {
-                let mut rx = event_rx.lock().await;
-                while let Some(event) = rx.recv().await {
-                    if event.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                        return Ok(event);
-                    }
+        let response = tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
+            let mut rx = event_rx.lock().await;
+            while let Some(event) = rx.recv().await {
+                if event.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                    return Ok(event);
                 }
-                Err(McpError::ConnectionError("SSE stream closed".into()))
-            },
-        )
+            }
+            Err(McpError::ConnectionError("SSE stream closed".into()))
+        })
         .await
-        .map_err(|_| McpError::TimeoutError(format!("SSE response timed out for request {}", id)))??;
+        .map_err(|_| {
+            McpError::TimeoutError(format!("SSE response timed out for request {}", id))
+        })??;
 
         if let Some(err) = response.get("error") {
             let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
@@ -608,7 +647,7 @@ impl McpClient {
         debug!(
             "[MCP:{}] WS → {}",
             self.name,
-            &request_str[..request_str.len().min(200)]
+            &request_str
         );
 
         // Send the request through the channel
@@ -618,20 +657,19 @@ impl McpClient {
             .map_err(|e| McpError::ConnectionError(format!("WebSocket send failed: {}", e)))?;
 
         // Wait for the response
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout),
-            async {
-                let mut rx = response_rx.lock().await;
-                while let Some(msg) = rx.recv().await {
-                    if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                        return Ok(msg);
-                    }
+        let response = tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
+            let mut rx = response_rx.lock().await;
+            while let Some(msg) = rx.recv().await {
+                if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                    return Ok(msg);
                 }
-                Err(McpError::ConnectionError("WebSocket stream closed".into()))
-            },
-        )
+            }
+            Err(McpError::ConnectionError("WebSocket stream closed".into()))
+        })
         .await
-        .map_err(|_| McpError::TimeoutError(format!("WebSocket response timed out for request {}", id)))??;
+        .map_err(|_| {
+            McpError::TimeoutError(format!("WebSocket response timed out for request {}", id))
+        })??;
 
         if let Some(err) = response.get("error") {
             let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
@@ -672,10 +710,9 @@ impl McpClient {
             #[cfg(feature = "mcp-websocket")]
             Some(Transport::WebSocket { request_tx, .. }) => {
                 let notification_str = serde_json::to_string(&notification)?;
-                request_tx
-                    .send(notification_str)
-                    .await
-                    .map_err(|e| McpError::ConnectionError(format!("WebSocket send failed: {}", e)))?;
+                request_tx.send(notification_str).await.map_err(|e| {
+                    McpError::ConnectionError(format!("WebSocket send failed: {}", e))
+                })?;
                 Ok(())
             }
             None => Err(McpError::ConnectionError(

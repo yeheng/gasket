@@ -10,6 +10,7 @@ pub mod request;
 pub mod skill_loader;
 pub mod stream;
 pub mod subagent;
+pub mod subagent_tracker;
 pub mod summarization;
 
 pub use context::{AgentContext, PersistentContext, StatelessContext};
@@ -19,3 +20,4 @@ pub use loop_::{AgentConfig, AgentLoop, AgentResponse};
 pub use memory::MemoryStore;
 pub use stream::StreamEvent;
 pub use subagent::SubagentManager;
+pub use subagent_tracker::{SubagentResult, SubagentTracker};

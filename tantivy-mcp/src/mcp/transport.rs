@@ -35,7 +35,7 @@ impl StdioTransport {
                         // Skip empty lines and continue reading
                         continue;
                     }
-                    debug!("Received: {}", &line[..line.len().min(200)]);
+                    debug!("Received: {}", &line);
                     match serde_json::from_str::<JsonRpcRequest>(line) {
                         Ok(request) => return Some(request),
                         Err(e) => {
@@ -56,7 +56,7 @@ impl StdioTransport {
     /// Write a JSON-RPC response to stdout.
     pub async fn write_response(&mut self, response: &JsonRpcResponse) -> io::Result<()> {
         let json = serde_json::to_string(response)?;
-        debug!("Sending: {}", &json[..json.len().min(200)]);
+        debug!("Sending: {}", &json);
         use tokio::io::AsyncWriteExt;
         self.stdout
             .write_all(format!("{}\n", json).as_bytes())

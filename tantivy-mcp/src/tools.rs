@@ -31,6 +31,9 @@ pub fn register_tools(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
     register_index_compact(registry, manager.clone());
     register_index_rebuild(registry, manager.clone());
     register_maintenance_status(registry, manager.clone());
+
+    // Job status tool
+    register_job_status(registry, manager);
 }
 
 fn register_index_create(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
@@ -278,12 +281,13 @@ fn handle_document_add(params: Option<Value>, manager: Arc<IndexManager>) -> Res
         doc = doc.with_expiry(expires_at);
     }
 
-    manager.add_document(index_name, doc)?;
+    let job_id = manager.add_document(index_name, doc)?;
 
     Ok(ToolResult::text(
         json!({
-            "success": true,
-            "id": doc_id
+            "status": "queued",
+            "job_id": job_id,
+            "message": format!("Document '{}' add operation queued. Use index_job_status with job_id '{}' to check progress.", doc_id, job_id)
         })
         .to_string(),
     ))
@@ -327,12 +331,13 @@ fn handle_document_delete(params: Option<Value>, manager: Arc<IndexManager>) -> 
         .as_str()
         .ok_or_else(|| crate::Error::McpError("Missing id".to_string()))?;
 
-    manager.delete_document(index_name, doc_id)?;
+    let job_id = manager.delete_document(index_name, doc_id)?;
 
     Ok(ToolResult::text(
         json!({
-            "success": true,
-            "message": format!("Document '{}' deleted", doc_id)
+            "status": "queued",
+            "job_id": job_id,
+            "message": format!("Document '{}' delete operation queued. Use index_job_status with job_id '{}' to check progress.", doc_id, job_id)
         })
         .to_string(),
     ))
@@ -368,12 +373,13 @@ fn handle_document_commit(params: Option<Value>, manager: Arc<IndexManager>) -> 
         .as_str()
         .ok_or_else(|| crate::Error::McpError("Missing index".to_string()))?;
 
-    manager.commit(index_name)?;
+    let job_id = manager.commit(index_name)?;
 
     Ok(ToolResult::text(
         json!({
-            "success": true,
-            "message": format!("Index '{}' committed", index_name)
+            "status": "queued",
+            "job_id": job_id,
+            "message": format!("Commit operation for index '{}' queued. Use index_job_status with job_id '{}' to check progress.", index_name, job_id)
         })
         .to_string(),
     ))
@@ -476,17 +482,19 @@ fn handle_index_compact(params: Option<Value>, manager: Arc<IndexManager>) -> Re
         .ok_or_else(|| crate::Error::McpError("Missing index".to_string()))?;
 
     let stats_before = manager.get_stats(index_name)?;
-    manager.compact(index_name)?;
-    let stats_after = manager.get_stats(index_name)?;
+    let job_id = manager.compact(index_name)?;
 
     Ok(ToolResult::text(
         json!({
-            "success": true,
-            "segments_before": stats_before.segment_count,
-            "segments_after": stats_after.segment_count,
-            "deleted_before": stats_before.deleted_count,
-            "deleted_after": stats_after.deleted_count,
-            "bytes_saved": stats_before.size_bytes.saturating_sub(stats_after.size_bytes)
+            "status": "queued",
+            "job_id": job_id,
+            "index": index_name,
+            "stats_before": {
+                "segments": stats_before.segment_count,
+                "deleted_count": stats_before.deleted_count,
+                "size_bytes": stats_before.size_bytes
+            },
+            "message": format!("Compact operation for index '{}' queued. Use index_job_status with job_id '{}' to check progress.", index_name, job_id)
         })
         .to_string(),
     ))
@@ -661,6 +669,88 @@ fn handle_maintenance_status(
         Ok(ToolResult::text(
             json!({
                 "indexes": all_status
+            })
+            .to_string(),
+        ))
+    }
+}
+
+fn register_job_status(registry: &mut ToolRegistry, manager: Arc<IndexManager>) {
+    registry.register(
+        McpTool {
+            name: "index_job_status".to_string(),
+            description: "Check the status of background jobs (e.g., document add, commit, compact, rebuild). Returns job details including progress and any errors.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "Specific job ID to check (optional, returns all jobs if not specified)"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "running", "completed", "failed"],
+                        "description": "Filter by job status (optional)"
+                    },
+                    "index": {
+                        "type": "string",
+                        "description": "Filter by index name (optional)"
+                    }
+                }
+            }),
+        },
+        move |params| {
+            let manager = manager.clone();
+            handle_job_status(params, manager)
+        },
+    );
+}
+
+fn handle_job_status(params: Option<Value>, manager: Arc<IndexManager>) -> Result<ToolResult> {
+    use crate::maintenance::JobStatus;
+
+    // Check if a specific job_id is requested
+    if let Some(job_id) = params
+        .as_ref()
+        .and_then(|p| p.get("job_id"))
+        .and_then(|v| v.as_str())
+    {
+        match manager.job_registry().get_job(job_id) {
+            Some(job) => Ok(ToolResult::text(json!(job).to_string())),
+            None => Ok(ToolResult::text(
+                json!({
+                    "error": format!("Job not found: {}", job_id)
+                })
+                .to_string(),
+            )),
+        }
+    } else {
+        // List jobs with optional filters
+        let status_filter = params
+            .as_ref()
+            .and_then(|p| p.get("status"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "pending" => Some(JobStatus::Pending),
+                "running" => Some(JobStatus::Running),
+                "completed" => Some(JobStatus::Completed),
+                "failed" => Some(JobStatus::Failed),
+                _ => None,
+            });
+
+        let index_filter = params
+            .as_ref()
+            .and_then(|p| p.get("index"))
+            .and_then(|v| v.as_str());
+
+        let jobs = manager
+            .job_registry()
+            .list_jobs(status_filter, index_filter);
+
+        Ok(ToolResult::text(
+            json!({
+                "jobs": jobs,
+                "count": jobs.len()
             })
             .to_string(),
         ))

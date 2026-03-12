@@ -113,6 +113,10 @@ impl Default for ToolCallAccumulator {
 /// Convert LLM stream to event stream with backpressure support.
 ///
 /// Returns (event_stream, final_response_future).
+///
+/// **IMPORTANT**: The event_stream MUST be consumed (e.g., in a separate task)
+/// to prevent channel deadlock. If you don't need streaming events,
+/// use `collect_stream_response()` instead.
 pub fn stream_events(
     mut llm_stream: crate::providers::ChatStream,
 ) -> (
@@ -133,14 +137,16 @@ pub fn stream_events(
             if let Some(ref text) = chunk.delta.content {
                 if !text.is_empty() {
                     content.push_str(text);
-                    let _ = tx.send(StreamEvent::Content(text.clone())).await;
+                    // Use try_send to avoid blocking if receiver is not being consumed
+                    // If channel is full or closed, we just skip sending the event
+                    let _ = tx.try_send(StreamEvent::Content(text.clone()));
                 }
             }
 
             if let Some(ref reasoning) = chunk.delta.reasoning_content {
                 if !reasoning.is_empty() {
                     reasoning_content.push_str(reasoning);
-                    let _ = tx.send(StreamEvent::Reasoning(reasoning.clone())).await;
+                    let _ = tx.try_send(StreamEvent::Reasoning(reasoning.clone()));
                 }
             }
 
@@ -153,7 +159,7 @@ pub fn stream_events(
             }
         }
 
-        let _ = tx.send(StreamEvent::Done).await;
+        let _ = tx.try_send(StreamEvent::Done);
 
         Ok(ChatResponse {
             content: if content.is_empty() {
@@ -175,6 +181,58 @@ pub fn stream_events(
         tokio_stream::wrappers::ReceiverStream::new(rx),
         response_future,
     )
+}
+
+/// Collect LLM stream into a response without emitting events.
+///
+/// Use this instead of `stream_events()` when you don't need streaming callbacks.
+/// This avoids the channel overhead and potential deadlock issues.
+pub async fn collect_stream_response(
+    mut llm_stream: crate::providers::ChatStream,
+) -> Result<ChatResponse> {
+    let mut content = String::new();
+    let mut reasoning_content = String::new();
+    let mut tool_acc = ToolCallAccumulator::new();
+    let mut accumulated_usage = None;
+
+    while let Some(chunk_result) = llm_stream.next().await {
+        let chunk = chunk_result?;
+
+        if let Some(ref text) = chunk.delta.content {
+            if !text.is_empty() {
+                content.push_str(text);
+            }
+        }
+
+        if let Some(ref reasoning) = chunk.delta.reasoning_content {
+            if !reasoning.is_empty() {
+                reasoning_content.push_str(reasoning);
+            }
+        }
+
+        for tc_delta in &chunk.delta.tool_calls {
+            tool_acc.feed(tc_delta);
+        }
+
+        if let Some(ref usage) = chunk.usage {
+            accumulated_usage = Some(usage.clone());
+        }
+    }
+
+    Ok(ChatResponse {
+        content: if content.is_empty() {
+            None
+        } else {
+            Some(content)
+        },
+        tool_calls: tool_acc.finalize(),
+        reasoning_content: if reasoning_content.is_empty() {
+            None
+        } else {
+            Some(reasoning_content)
+        },
+        usage: accumulated_usage,
+    })
 }
 
 #[cfg(test)]

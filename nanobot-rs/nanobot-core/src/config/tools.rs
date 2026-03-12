@@ -756,10 +756,7 @@ auth:
         let config: RemoteMcpConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.url(), "https://events.example.com/mcp");
         assert_eq!(config.transport_type(), "sse");
-        assert_eq!(
-            config.auth().bearer_token,
-            Some("test-token".to_string())
-        );
+        assert_eq!(config.auth().bearer_token, Some("test-token".to_string()));
     }
 
     #[test]

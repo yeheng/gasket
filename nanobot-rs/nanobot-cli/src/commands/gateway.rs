@@ -118,28 +118,24 @@ pub async fn cmd_gateway() -> Result<()> {
         Vec::new()
     };
 
+    let subagent_tools = Arc::new(super::registry::build_tool_registry(
+        super::registry::ToolRegistryConfig {
+            config: config.clone(),
+            workspace: workspace.clone(),
+            mcp_tools: vec![],
+            subagent_manager: None,
+            extra_tools: vec![],
+            sqlite_store: None, // Subagent doesn't need history search
+            model_registry: Some(model_registry.clone()),
+            provider_registry: Some(provider_registry.clone()),
+        },
+    ));
+
     let subagent_manager = Arc::new(
         SubagentManager::new(
             provider_info.provider.clone(),
             workspace.clone(),
-            Arc::new({
-                let cfg = config.clone();
-                let ws = workspace.clone();
-                let model_reg = model_registry.clone();
-                let provider_reg = provider_registry.clone();
-                move || {
-                    super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
-                        config: cfg.clone(),
-                        workspace: ws.clone(),
-                        mcp_tools: vec![],
-                        subagent_manager: None,
-                        extra_tools: vec![],
-                        sqlite_store: None, // Subagent doesn't need history search
-                        model_registry: Some(model_reg.clone()),
-                        provider_registry: Some(provider_reg.clone()),
-                    })
-                }
-            }),
+            subagent_tools,
             bus.outbound_sender(),
         )
         .await,
