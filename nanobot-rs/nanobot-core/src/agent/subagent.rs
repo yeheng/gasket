@@ -5,17 +5,35 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 
+use crate::agent::executor_core::{AgentExecutor, ExecutionResult};
+use crate::agent::loop_::AgentConfig;
 use crate::agent::prompt;
 use crate::agent::stream::StreamEvent;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentResult};
 use crate::bus::events::{OutboundMessage, SessionKey};
-use crate::providers::LlmProvider;
+use crate::providers::{ChatMessage, LlmProvider};
 use crate::tools::ToolRegistry;
 
-use super::loop_::{AgentConfig, AgentLoop, AgentResponse};
+use super::loop_::{AgentLoop, AgentResponse};
 
 /// Default timeout for subagent execution (10 minutes)
 const SUBAGENT_TIMEOUT_SECS: u64 = 600;
+
+/// Run a subagent with minimal overhead - pure function
+pub async fn run_subagent(
+    task: &str,
+    system_prompt: &str,
+    provider: Arc<dyn LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    config: &AgentConfig,
+) -> Result<ExecutionResult, anyhow::Error> {
+    let messages = vec![ChatMessage::system(system_prompt), ChatMessage::user(task)];
+    let executor = AgentExecutor::new(provider, tools, config);
+    executor
+        .execute(messages)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))
+}
 
 pub struct SubagentManager {
     provider: Arc<dyn LlmProvider>,
@@ -168,10 +186,7 @@ impl SubagentManager {
         channel: &str,
         chat_id: &str,
     ) -> anyhow::Result<AgentResponse> {
-        info!(
-            "Subagent (sync) started: {}",
-            &prompt_text
-        );
+        info!("Subagent (sync) started: {}", &prompt_text);
 
         let agent_config = AgentConfig {
             model: self.provider.default_model().to_string(),
@@ -228,8 +243,7 @@ impl SubagentManager {
     ) -> anyhow::Result<AgentResponse> {
         info!(
             "Subagent (model switch) started with model '{}': {}",
-            agent_config.model,
-            &prompt_text
+            agent_config.model, &prompt_text
         );
 
         let mut agent = AgentLoop::builder(
@@ -413,9 +427,7 @@ impl SubagentManager {
         tokio::spawn(async move {
             info!(
                 "[Subagent {}] Task started with model '{}': {}",
-                &subagent_id,
-                &agent_config.model,
-                &task
+                &subagent_id, &agent_config.model, &task
             );
 
             // Send started event

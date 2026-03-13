@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use serde::Deserialize;
 use serde_json::Value;
-use tracing::{info, instrument, warn};
+use tracing::{info, instrument, trace, warn};
 
 use super::base::{Tool, ToolError};
 use crate::agent::subagent::SubagentManager;
@@ -191,17 +191,30 @@ impl Tool for SpawnParallelTool {
         let event_tx = tracker.event_sender();
         let task_count = task_specs.len();
 
+        info!(
+            "Preparing {} parallel subagent tasks with streaming support",
+            task_count
+        );
+
         // Prepare spawn configurations for all tasks first (sequential but fast)
         // Use Box<dyn Future> to unify different async block types
         let mut spawn_futures: Vec<
             std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>>,
         > = Vec::with_capacity(task_count);
 
-        for spec in task_specs {
+        // Clone senders for each task BEFORE the loop to avoid shadowing issues
+        let result_senders: Vec<_> = (0..task_count).map(|_| result_tx.clone()).collect();
+        let event_senders: Vec<_> = (0..task_count).map(|_| event_tx.clone()).collect();
+
+        // Drop the original senders after cloning - the clones will keep the channel alive
+        drop(result_tx);
+        drop(event_tx);
+
+        for (idx, spec) in task_specs.into_iter().enumerate() {
             let subagent_id = SubagentTracker::generate_id();
             let task = spec.task;
-            let result_tx = result_tx.clone();
-            let event_tx_clone = event_tx.clone();
+            let result_tx = result_senders[idx].clone();
+            let event_tx_clone = event_senders[idx].clone();
 
             if let Some(model_id) = spec.model_id {
                 // Model switching requested
@@ -285,13 +298,13 @@ impl Tool for SpawnParallelTool {
                         info!("[Subagent {}] Started: {}", id, task);
                     }
                     SubagentEvent::Thinking { id, content } => {
-                        info!("[Subagent {}] Thinking: {}", id, content);
+                        trace!("[Subagent {}] Thinking: {}", id, content);
                     }
                     SubagentEvent::ToolStart { id, tool_name, .. } => {
-                        info!("[Subagent {}] Tool: {} started", id, tool_name);
+                        trace!("[Subagent {}] Tool: {} started", id, tool_name);
                     }
                     SubagentEvent::ToolEnd { id, tool_name, .. } => {
-                        info!("[Subagent {}] Tool: {} done", id, tool_name);
+                        trace!("[Subagent {}] Tool: {} done", id, tool_name);
                     }
                     SubagentEvent::Completed { id, result } => {
                         info!(
@@ -308,30 +321,26 @@ impl Tool for SpawnParallelTool {
                 // Forward event to WebSocket/channel if session key is available
                 if let Some(ref key) = session_key {
                     let ws_msg = match &event {
-                        SubagentEvent::Thinking { content, .. } => {
-                            Some(WebSocketMessage::thinking(format!(
-                                "[Subagent] {}",
-                                content
-                            )))
-                        }
-                        SubagentEvent::ToolStart { tool_name, arguments, .. } => {
-                            Some(WebSocketMessage::tool_start(
-                                format!("[Subagent] {}", tool_name),
-                                arguments.clone(),
-                            ))
-                        }
-                        SubagentEvent::ToolEnd { tool_name, output, .. } => {
-                            Some(WebSocketMessage::tool_end(
-                                format!("[Subagent] {}", tool_name),
-                                Some(output.clone()),
-                            ))
-                        }
-                        SubagentEvent::Error { error, .. } => {
-                            Some(WebSocketMessage::text(format!(
-                                "[Subagent Error] {}",
-                                error
-                            )))
-                        }
+                        SubagentEvent::Thinking { content, .. } => Some(
+                            WebSocketMessage::thinking(format!("[Subagent] {}", content)),
+                        ),
+                        SubagentEvent::ToolStart {
+                            tool_name,
+                            arguments,
+                            ..
+                        } => Some(WebSocketMessage::tool_start(
+                            format!("[Subagent] {}", tool_name),
+                            arguments.clone(),
+                        )),
+                        SubagentEvent::ToolEnd {
+                            tool_name, output, ..
+                        } => Some(WebSocketMessage::tool_end(
+                            format!("[Subagent] {}", tool_name),
+                            Some(output.clone()),
+                        )),
+                        SubagentEvent::Error { error, .. } => Some(WebSocketMessage::text(
+                            format!("[Subagent Error] {}", error),
+                        )),
                         _ => None, // Started, Completed - don't send to WS
                     };
 
@@ -353,18 +362,44 @@ impl Tool for SpawnParallelTool {
         // Wait for spawn results
         let spawn_results = join_all(spawn_futures).await;
 
-        info!("All {} subagents spawned", spawn_results.len());
+        info!(
+            "All {} subagent spawn requests submitted (results pending)",
+            spawn_results.len()
+        );
 
         // Check for spawn failures
+        let mut spawn_failures = 0;
         for (idx, result) in spawn_results.into_iter().enumerate() {
             if let Err(e) = result {
-                tracing::warn!("Task {} failed to spawn: {}", idx + 1, e);
+                warn!("Task {} failed to spawn: {}", idx + 1, e);
+                spawn_failures += 1;
             }
         }
 
+        if spawn_failures > 0 {
+            warn!(
+                "{} subagent(s) failed to spawn, expecting {} results",
+                spawn_failures,
+                task_count - spawn_failures
+            );
+        }
+
         // Wait for all results
+        info!("Waiting for {} subagent results...", task_count);
         let results = tracker.wait_for_all(task_count).await;
-        info!("All {} subagents completed", results.len());
+
+        if results.len() < task_count {
+            warn!(
+                "Only received {}/{} subagent results. Missing results may be due to: \
+                 1) Subagent task crashed before sending result, \
+                 2) Channel closed unexpectedly, \
+                 3) Timeout waiting for results",
+                results.len(),
+                task_count
+            );
+        } else {
+            info!("All {} subagents completed successfully", results.len());
+        }
 
         // Aggregate results
         let mut output = format!("Completed {} parallel tasks:\n\n", task_count);

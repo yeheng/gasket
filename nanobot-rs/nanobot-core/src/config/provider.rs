@@ -5,6 +5,28 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Provider type enumeration
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderType {
+    /// Built-in provider with known defaults (OpenAI, Anthropic, Gemini, etc.)
+    #[default]
+    Builtin,
+    /// Custom provider with OpenAI or Anthropic compatible API
+    Custom,
+}
+
+/// API compatibility mode for custom providers
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiCompatibility {
+    /// OpenAI-compatible API format
+    #[default]
+    Openai,
+    /// Anthropic-compatible API format
+    Anthropic,
+}
+
 /// Model-specific configuration including pricing
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelConfig {
@@ -69,6 +91,13 @@ pub struct ProviderConfig {
 
     /// Model-specific configurations (including pricing)
     pub models: HashMap<String, ModelConfig>,
+
+    /// Provider type: builtin (default) or custom
+    pub provider_type: ProviderType,
+
+    /// API compatibility mode for custom providers (openai or anthropic)
+    /// Only relevant when provider_type is Custom
+    pub api_compatibility: ApiCompatibility,
 }
 
 impl std::fmt::Debug for ProviderConfig {
@@ -83,6 +112,8 @@ impl std::fmt::Debug for ProviderConfig {
             )
             .field("default_currency", &self.default_currency)
             .field("models", &self.models)
+            .field("provider_type", &self.provider_type)
+            .field("api_compatibility", &self.api_compatibility)
             .finish()
     }
 }
@@ -168,6 +199,14 @@ struct LegacyProviderConfig {
 
     #[serde(default)]
     models: HashMap<String, ModelConfig>,
+
+    /// Provider type: builtin (default) or custom
+    #[serde(default, alias = "type")]
+    provider_type: ProviderType,
+
+    /// API compatibility mode for custom providers (openai or anthropic)
+    #[serde(default, alias = "apiCompatibility")]
+    api_compatibility: ApiCompatibility,
 }
 
 impl From<LegacyProviderConfig> for ProviderConfig {
@@ -199,6 +238,8 @@ impl From<LegacyProviderConfig> for ProviderConfig {
             client_id: legacy.client_id,
             default_currency,
             models,
+            provider_type: legacy.provider_type,
+            api_compatibility: legacy.api_compatibility,
         }
     }
 }
@@ -220,13 +261,15 @@ impl Serialize for ProviderConfig {
     {
         use serde::ser::SerializeStruct;
 
-        let mut s = serializer.serialize_struct("ProviderConfig", 6)?;
+        let mut s = serializer.serialize_struct("ProviderConfig", 8)?;
         s.serialize_field("apiKey", &self.api_key)?;
         s.serialize_field("apiBase", &self.api_base)?;
         s.serialize_field("supportsThinking", &self.supports_thinking)?;
         s.serialize_field("clientId", &self.client_id)?;
         s.serialize_field("defaultCurrency", &self.default_currency)?;
         s.serialize_field("models", &self.models)?;
+        s.serialize_field("type", &self.provider_type)?;
+        s.serialize_field("apiCompatibility", &self.api_compatibility)?;
         s.end()
     }
 }
@@ -460,6 +503,8 @@ models:
                 );
                 m
             },
+            provider_type: ProviderType::Builtin,
+            api_compatibility: ApiCompatibility::Openai,
         };
 
         let yaml = serde_yaml::to_string(&provider).unwrap();
@@ -479,5 +524,81 @@ models:
         assert!(provider.client_id.is_none());
         assert!(provider.default_currency.is_none());
         assert!(provider.models.is_empty());
+        assert_eq!(provider.provider_type, ProviderType::Builtin);
+        assert_eq!(provider.api_compatibility, ApiCompatibility::Openai);
+    }
+
+    #[test]
+    fn test_custom_provider_type() {
+        // Test custom provider with OpenAI compatibility
+        let yaml = r#"
+type: custom
+apiCompatibility: openai
+api_key: sk-custom
+api_base: https://custom.api.com/v1
+"#;
+        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(provider.provider_type, ProviderType::Custom);
+        assert_eq!(provider.api_compatibility, ApiCompatibility::Openai);
+        assert_eq!(provider.api_key, Some("sk-custom".to_string()));
+        assert_eq!(
+            provider.api_base,
+            Some("https://custom.api.com/v1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_custom_provider_anthropic_compatibility() {
+        // Test custom provider with Anthropic compatibility
+        let yaml = r#"
+type: custom
+apiCompatibility: anthropic
+api_key: sk-ant-custom
+api_base: https://anthropic-compatible.api.com/v1
+"#;
+        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(provider.provider_type, ProviderType::Custom);
+        assert_eq!(provider.api_compatibility, ApiCompatibility::Anthropic);
+    }
+
+    #[test]
+    fn test_builtin_provider_default() {
+        // Builtin is the default
+        let yaml = r#"
+api_key: sk-xxx
+"#;
+        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(provider.provider_type, ProviderType::Builtin);
+        assert_eq!(provider.api_compatibility, ApiCompatibility::Openai);
+    }
+
+    #[test]
+    fn test_provider_type_serialization() {
+        assert_eq!(
+            serde_yaml::to_string(&ProviderType::Builtin)
+                .unwrap()
+                .trim(),
+            "builtin"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&ProviderType::Custom).unwrap().trim(),
+            "custom"
+        );
+    }
+
+    #[test]
+    fn test_api_compatibility_serialization() {
+        assert_eq!(
+            serde_yaml::to_string(&ApiCompatibility::Openai)
+                .unwrap()
+                .trim(),
+            "openai"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&ApiCompatibility::Anthropic)
+                .unwrap()
+                .trim(),
+            "anthropic"
+        );
     }
 }

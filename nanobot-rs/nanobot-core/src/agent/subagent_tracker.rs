@@ -131,9 +131,15 @@ impl SubagentTracker {
         // Use tokio::select to implement overall timeout
         let collect_future = async {
             let mut rx = self.result_rx.lock().await;
-            for _ in 0..count {
+            for i in 0..count {
                 match rx.recv().await {
                     Some(result) => {
+                        tracing::debug!(
+                            "[Tracker] Received result {}/{} from subagent {}",
+                            i + 1,
+                            count,
+                            result.id
+                        );
                         self.results
                             .write()
                             .await
@@ -142,6 +148,12 @@ impl SubagentTracker {
                     }
                     None => {
                         // Channel closed, no more results coming
+                        tracing::warn!(
+                            "[Tracker] Channel closed unexpectedly after receiving {}/{} results. \
+                             This usually means all result senders were dropped before tasks completed.",
+                            collected.len(),
+                            count
+                        );
                         break;
                     }
                 }
@@ -150,10 +162,21 @@ impl SubagentTracker {
 
         // Wrap with timeout
         match tokio::time::timeout(timeout, collect_future).await {
-            Ok(()) => collected,
+            Ok(()) => {
+                if collected.len() < count {
+                    tracing::warn!(
+                        "[Tracker] Only collected {}/{} results (channel closed)",
+                        collected.len(),
+                        count
+                    );
+                } else {
+                    tracing::debug!("[Tracker] Successfully collected all {} results", count);
+                }
+                collected
+            }
             Err(_) => {
                 tracing::warn!(
-                    "wait_for_all timed out after {:?}, collected {} of {} results",
+                    "[Tracker] wait_for_all timed out after {:?}, collected {} of {} results",
                     timeout,
                     collected.len(),
                     count

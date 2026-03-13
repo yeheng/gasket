@@ -192,11 +192,7 @@ impl McpClient {
                     continue;
                 }
 
-                debug!(
-                    "[MCP:{}] stdout: {}",
-                    server_name,
-                    &line
-                );
+                debug!("[MCP:{}] stdout: {}", server_name, &line);
 
                 if let Ok(msg) = serde_json::from_str::<Value>(&line) {
                     if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
@@ -496,11 +492,7 @@ impl McpClient {
         stdin: &Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
     ) -> Result<Value, McpError> {
         let request_str = serde_json::to_string(&request)?;
-        debug!(
-            "[MCP:{}] → {}",
-            self.name,
-            &request_str
-        );
+        debug!("[MCP:{}] → {}", self.name, &request_str);
 
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -644,11 +636,7 @@ impl McpClient {
         timeout: u64,
     ) -> Result<Value, McpError> {
         let request_str = serde_json::to_string(&request)?;
-        debug!(
-            "[MCP:{}] WS → {}",
-            self.name,
-            &request_str
-        );
+        debug!("[MCP:{}] WS → {}", self.name, &request_str);
 
         // Send the request through the channel
         request_tx
