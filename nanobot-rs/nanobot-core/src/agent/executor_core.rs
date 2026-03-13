@@ -1,16 +1,17 @@
-//! Pure agent executor - the minimal LLM loop
+//! Agent executor - the core LLM loop with optional enhancements
 //!
 //! This is the core execution engine that handles:
 //! - LLM request/response cycle
 //! - Tool call detection and execution
 //! - Iteration control
+//! - Token usage and cost calculation (optional)
+//! - Log redaction (optional)
 //!
 //! It does NOT handle:
 //! - Session persistence
 //! - History management
-//! - Hooks
+//! - External hooks
 //! - Vault injection
-//! - Token tracking (returns raw usage data)
 
 use futures::StreamExt;
 use std::sync::Arc;
@@ -25,17 +26,136 @@ use crate::error::AgentError;
 use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
 use crate::token_tracker::TokenUsage;
 use crate::tools::ToolRegistry;
+use crate::vault::redact_secrets;
 
-/// Pure agent execution result
+/// Default response when no content is available
+const DEFAULT_NO_RESPONSE: &str = "I've completed processing but have no response to give.";
+/// Default response when max iterations reached
+const DEFAULT_MAX_ITERATIONS: &str = "Maximum iterations reached.";
+
+// ── Configuration Types ─────────────────────────────────────
+
+/// Pricing configuration for cost calculation
+#[derive(Debug, Clone)]
+pub struct PricingConfig {
+    pub price_input_per_million: f64,
+    pub price_output_per_million: f64,
+    pub currency: String,
+}
+
+impl PricingConfig {
+    pub fn new(price_input: f64, price_output: f64, currency: &str) -> Self {
+        Self {
+            price_input_per_million: price_input,
+            price_output_per_million: price_output,
+            currency: currency.to_string(),
+        }
+    }
+
+    /// Calculate cost for given token usage
+    pub fn calculate_cost(&self, input_tokens: usize, output_tokens: usize) -> f64 {
+        let input_cost = (input_tokens as f64) * self.price_input_per_million / 1_000_000.0;
+        let output_cost = (output_tokens as f64) * self.price_output_per_million / 1_000_000.0;
+        input_cost + output_cost
+    }
+}
+
+/// Options for executor behavior
+pub struct ExecutorOptions<'a> {
+    /// Pricing configuration for cost calculation
+    pub pricing: Option<PricingConfig>,
+    /// Vault values for log redaction
+    pub vault_values: &'a [String],
+}
+
+impl<'a> Default for ExecutorOptions<'a> {
+    fn default() -> Self {
+        Self {
+            pricing: None,
+            vault_values: &[],
+        }
+    }
+}
+
+impl<'a> ExecutorOptions<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_pricing(mut self, pricing: PricingConfig) -> Self {
+        self.pricing = Some(pricing);
+        self
+    }
+
+    pub fn with_vault_values(mut self, values: &'a [String]) -> Self {
+        self.vault_values = values;
+        self
+    }
+}
+
+// ── Execution Result ─────────────────────────────────────────
+
+/// Agent execution result
 #[derive(Debug)]
 pub struct ExecutionResult {
     pub content: String,
     pub reasoning_content: Option<String>,
     pub tools_used: Vec<String>,
     pub token_usage: Option<TokenUsage>,
+    pub cost: f64,
 }
 
-/// Pure agent executor - minimal LLM loop
+// ── Internal State ──────────────────────────────────────────
+
+/// Accumulated execution state
+struct ExecutionState {
+    messages: Vec<ChatMessage>,
+    tools_used: Vec<String>,
+    total_usage: Option<TokenUsage>,
+    total_cost: f64,
+}
+
+impl ExecutionState {
+    fn new(messages: Vec<ChatMessage>) -> Self {
+        Self {
+            messages,
+            tools_used: Vec::new(),
+            total_usage: None,
+            total_cost: 0.0,
+        }
+    }
+
+    fn accumulate_usage(&mut self, usage: &TokenUsage, pricing: Option<&PricingConfig>) {
+        let cost = pricing
+            .map(|p| p.calculate_cost(usage.input_tokens, usage.output_tokens))
+            .unwrap_or(0.0);
+
+        self.total_usage = Some(match self.total_usage.take() {
+            Some(mut acc) => {
+                acc.input_tokens += usage.input_tokens;
+                acc.output_tokens += usage.output_tokens;
+                acc.total_tokens += usage.total_tokens;
+                acc
+            }
+            None => usage.clone(),
+        });
+        self.total_cost += cost;
+    }
+
+    fn into_result(self, content: String, reasoning_content: Option<String>) -> ExecutionResult {
+        ExecutionResult {
+            content,
+            reasoning_content,
+            tools_used: self.tools_used,
+            token_usage: self.total_usage,
+            cost: self.total_cost,
+        }
+    }
+}
+
+// ── Agent Executor ──────────────────────────────────────────
+
+/// Agent executor - core LLM loop
 pub struct AgentExecutor<'a> {
     provider: Arc<dyn LlmProvider>,
     tools: Arc<ToolRegistry>,
@@ -55,145 +175,335 @@ impl<'a> AgentExecutor<'a> {
         }
     }
 
-    /// Execute agent loop - pure function
+    /// Execute agent loop - pure function with default options
     pub async fn execute(
         &self,
-        mut messages: Vec<ChatMessage>,
+        messages: Vec<ChatMessage>,
     ) -> Result<ExecutionResult, AgentError> {
-        let mut tools_used = Vec::new();
+        self.execute_with_options(messages, &ExecutorOptions::new()).await
+    }
+
+    /// Execute with options (cost calculation, log redaction)
+    pub async fn execute_with_options(
+        &self,
+        messages: Vec<ChatMessage>,
+        options: &ExecutorOptions<'_>,
+    ) -> Result<ExecutionResult, AgentError> {
+        let mut state = ExecutionState::new(messages);
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
         let request_handler = RequestHandler::new(&self.provider, &self.tools, self.config);
-        let mut total_usage: Option<TokenUsage> = None;
 
         for iteration in 1..=self.config.max_iterations {
             debug!("[Executor] iteration {}", iteration);
 
-            let request = request_handler.build_chat_request(&messages);
+            let request = request_handler.build_chat_request(&state.messages);
             let stream_result = request_handler.send_with_retry(request).await?;
             let response = stream::collect_stream_response(stream_result).await?;
 
-            // Accumulate token usage
-            if let Some(usage) = response.token_usage() {
-                total_usage = Some(match total_usage {
-                    Some(mut acc) => {
-                        acc.input_tokens += usage.input_tokens;
-                        acc.output_tokens += usage.output_tokens;
-                        acc.total_tokens += usage.total_tokens;
-                        acc
-                    }
-                    None => usage.clone(),
-                });
+            // Accumulate token usage and cost
+            if let Some(ref usage) = response.token_usage() {
+                state.accumulate_usage(usage, options.pricing.as_ref());
+
+                // Log token usage
+                Self::log_token_usage(&state, &options.pricing, iteration);
             }
 
+            // Log response (with redaction)
+            Self::log_response(&response, iteration, options.vault_values);
+
             if !response.has_tool_calls() {
-                let content = response.content.unwrap_or_else(|| {
-                    "I've completed processing but have no response to give.".to_string()
-                });
-                return Ok(ExecutionResult {
-                    content,
-                    reasoning_content: response.reasoning_content,
-                    tools_used,
-                    token_usage: total_usage,
-                });
+                info!(
+                    "[Executor] No tool calls at iteration {}, returning response",
+                    iteration
+                );
+
+                return Ok(state.into_result(
+                    response.content.unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
+                    response.reasoning_content,
+                ));
             }
 
             // Execute tool calls
-            self.handle_tool_calls(&response, &executor, &mut messages, &mut tools_used)
+            self.handle_tool_calls(&response, &executor, &mut state)
                 .await;
         }
 
-        Ok(ExecutionResult {
-            content: "Maximum iterations reached.".to_string(),
-            reasoning_content: None,
-            tools_used,
-            token_usage: total_usage,
-        })
+        // Max iterations reached
+        info!(
+            "[Executor] Max iterations ({}) reached",
+            self.config.max_iterations
+        );
+        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None))
     }
 
     /// Execute with streaming - sends events to provided channel
     pub async fn execute_stream(
         &self,
-        mut messages: Vec<ChatMessage>,
+        messages: Vec<ChatMessage>,
         event_tx: mpsc::Sender<StreamEvent>,
     ) -> Result<ExecutionResult, AgentError> {
-        let mut tools_used = Vec::new();
+        self.execute_stream_with_options(messages, event_tx, &ExecutorOptions::new())
+            .await
+    }
+
+    /// Execute with streaming and options
+    pub async fn execute_stream_with_options(
+        &self,
+        messages: Vec<ChatMessage>,
+        event_tx: mpsc::Sender<StreamEvent>,
+        options: &ExecutorOptions<'_>,
+    ) -> Result<ExecutionResult, AgentError> {
+        let mut state = ExecutionState::new(messages);
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
         let request_handler = RequestHandler::new(&self.provider, &self.tools, self.config);
-        let mut total_usage: Option<TokenUsage> = None;
 
         for iteration in 1..=self.config.max_iterations {
             debug!("[Executor] iteration {}", iteration);
 
-            let request = request_handler.build_chat_request(&messages);
+            let request = request_handler.build_chat_request(&state.messages);
             let stream_result = request_handler.send_with_retry(request).await?;
 
             let (mut event_stream, response_future) = stream::stream_events(stream_result);
 
-            // Forward events
+            // Forward events to channel
             while let Some(event) = event_stream.next().await {
                 let _ = event_tx.send(event).await;
             }
 
             let response = response_future.await?;
 
-            if let Some(usage) = response.token_usage() {
-                total_usage = Some(match total_usage {
-                    Some(mut acc) => {
-                        acc.input_tokens += usage.input_tokens;
-                        acc.output_tokens += usage.output_tokens;
-                        acc.total_tokens += usage.total_tokens;
-                        acc
-                    }
-                    None => usage.clone(),
-                });
+            // Accumulate token usage and cost
+            if let Some(ref usage) = response.token_usage() {
+                state.accumulate_usage(usage, options.pricing.as_ref());
+
+                // Send TokenStats event
+                if let Some(ref usage) = state.total_usage {
+                    let currency = options
+                        .pricing
+                        .as_ref()
+                        .map(|p| p.currency.as_str())
+                        .unwrap_or("USD");
+                    let _ = event_tx
+                        .send(StreamEvent::TokenStats {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            total_tokens: usage.total_tokens,
+                            cost: state.total_cost,
+                            currency: currency.to_string(),
+                        })
+                        .await;
+                }
+
+                Self::log_token_usage(&state, &options.pricing, iteration);
             }
+
+            Self::log_response(&response, iteration, options.vault_values);
 
             if !response.has_tool_calls() {
-                let content = response.content.unwrap_or_else(|| {
-                    "I've completed processing but have no response to give.".to_string()
-                });
-                return Ok(ExecutionResult {
-                    content,
-                    reasoning_content: response.reasoning_content,
-                    tools_used,
-                    token_usage: total_usage,
-                });
+                // Send Done event
+                let _ = event_tx.send(StreamEvent::Done).await;
+                info!(
+                    "[Executor] No tool calls at iteration {}, returning response",
+                    iteration
+                );
+
+                return Ok(state.into_result(
+                    response.content.unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
+                    response.reasoning_content,
+                ));
             }
 
-            self.handle_tool_calls(&response, &executor, &mut messages, &mut tools_used)
+            self.handle_tool_calls(&response, &executor, &mut state)
                 .await;
         }
 
-        Ok(ExecutionResult {
-            content: "Maximum iterations reached.".to_string(),
-            reasoning_content: None,
-            tools_used,
-            token_usage: total_usage,
-        })
+        // Max iterations reached
+        let _ = event_tx.send(StreamEvent::Done).await;
+        info!(
+            "[Executor] Max iterations ({}) reached",
+            self.config.max_iterations
+        );
+        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None))
     }
 
+    // ── Internal Helpers ────────────────────────────────────
+
+    /// Log token usage if available
+    fn log_token_usage(
+        state: &ExecutionState,
+        pricing: &Option<PricingConfig>,
+        iteration: u32,
+    ) {
+        if let Some(ref usage) = state.total_usage {
+            let currency = pricing
+                .as_ref()
+                .map(|p| p.currency.as_str())
+                .unwrap_or("USD");
+            let pricing_ref = pricing.as_ref().map(|p| {
+                crate::token_tracker::ModelPricing::new(
+                    p.price_input_per_million,
+                    p.price_output_per_million,
+                    &p.currency,
+                )
+            });
+            info!(
+                "[Token] iter={} {}",
+                iteration,
+                crate::token_tracker::format_request_stats(
+                    usage,
+                    state.total_cost,
+                    currency,
+                    pricing_ref.as_ref()
+                )
+            );
+        }
+    }
+
+    /// Log LLM response with optional redaction
+    fn log_response(response: &ChatResponse, iteration: u32, vault_values: &[String]) {
+        // Log reasoning if present
+        if let Some(ref reasoning) = response.reasoning_content {
+            if !reasoning.is_empty() {
+                let safe = redact_secrets(reasoning, vault_values);
+                debug!("[Executor] Reasoning (iter {}): {}", iteration, safe);
+            }
+        }
+
+        // Log content if present
+        if let Some(ref content) = response.content {
+            if !content.is_empty() {
+                let safe = redact_secrets(content, vault_values);
+                info!("[Executor] Response (iter {}): {}", iteration, safe);
+            }
+        }
+
+        // Log tool call info
+        info!(
+            "[Executor] iter {} has_tool_calls={}, tool_count={}",
+            iteration,
+            response.has_tool_calls(),
+            response.tool_calls.len()
+        );
+    }
+
+    /// Execute tool calls and update state
     async fn handle_tool_calls(
         &self,
         response: &ChatResponse,
         executor: &ToolExecutor<'_>,
-        messages: &mut Vec<ChatMessage>,
-        tools_used: &mut Vec<String>,
+        state: &mut ExecutionState,
     ) {
-        messages.push(ChatMessage::assistant_with_tools(
+        if response.tool_calls.is_empty() {
+            if let Some(ref c) = response.content {
+                state.messages.push(ChatMessage::assistant(c));
+            }
+            return;
+        }
+
+        info!(
+            "[Executor] Executing {} tool call(s): {}",
+            response.tool_calls.len(),
+            response
+                .tool_calls
+                .iter()
+                .map(|tc| tc.function.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        // Add assistant message with tool calls
+        state.messages.push(ChatMessage::assistant_with_tools(
             response.content.clone(),
             response.tool_calls.clone(),
         ));
 
-        for tool_call in &response.tool_calls {
-            info!("[Executor] Executing tool: {}", tool_call.function.name);
-            tools_used.push(tool_call.function.name.clone());
+        // Execute tool calls in parallel
+        let futures: Vec<_> = response
+            .tool_calls
+            .iter()
+            .map(|tc| async move {
+                let start = std::time::Instant::now();
+                let result = executor.execute_one(tc).await;
+                (tc, result, start.elapsed())
+            })
+            .collect();
 
-            let result = executor.execute_one(tool_call).await;
-            messages.push(ChatMessage::tool_result(
-                &tool_call.id,
-                &tool_call.function.name,
-                &result.output,
+        let results = futures::future::join_all(futures).await;
+
+        for (tool_call, result, duration) in results {
+            let tool_name = tool_call.function.name.clone();
+            debug!(
+                "[Executor] Tool {} -> done ({}ms)",
+                tool_name,
+                duration.as_millis()
+            );
+
+            state.tools_used.push(tool_name.clone());
+            state.messages.push(ChatMessage::tool_result(
+                tool_call.id.clone(),
+                tool_name,
+                result.output,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pricing_config_calculate_cost() {
+        let pricing = PricingConfig::new(3.0, 15.0, "USD");
+
+        // 1000 input tokens, 500 output tokens
+        let cost = pricing.calculate_cost(1000, 500);
+        // Expected: (1000 * 3 / 1_000_000) + (500 * 15 / 1_000_000)
+        // = 0.003 + 0.0075 = 0.0105
+        assert!((cost - 0.0105).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_execution_state_accumulate_usage() {
+        let mut state = ExecutionState::new(vec![]);
+        let pricing = PricingConfig::new(1.0, 2.0, "USD");
+
+        let usage1 = TokenUsage::new(100, 50);
+        state.accumulate_usage(&usage1, Some(&pricing));
+
+        assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 100);
+        assert!((state.total_cost - 0.0002).abs() < 0.00001);
+
+        let usage2 = TokenUsage::new(200, 100);
+        state.accumulate_usage(&usage2, Some(&pricing));
+
+        assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 300);
+        assert_eq!(state.total_usage.as_ref().unwrap().output_tokens, 150);
+        // Total cost: (100+200) * 1.0/1M + (50+100) * 2.0/1M = 0.0003 + 0.0003 = 0.0006
+        assert!((state.total_cost - 0.0006).abs() < 0.00001);
+    }
+
+    #[test]
+    fn test_execution_state_no_pricing() {
+        let mut state = ExecutionState::new(vec![]);
+        let usage = TokenUsage::new(100, 50);
+
+        state.accumulate_usage(&usage, None);
+
+        assert_eq!(state.total_usage.as_ref().unwrap().input_tokens, 100);
+        assert_eq!(state.total_cost, 0.0);
+    }
+
+    #[test]
+    fn test_executor_options_builder() {
+        let pricing = PricingConfig::new(1.0, 2.0, "USD");
+        let vault = vec!["secret".to_string()];
+
+        let opts = ExecutorOptions::new()
+            .with_pricing(pricing.clone())
+            .with_vault_values(&vault);
+
+        assert!(opts.pricing.is_some());
+        assert_eq!(opts.vault_values.len(), 1);
     }
 }

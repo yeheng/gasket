@@ -295,7 +295,7 @@ impl SubagentManager {
         mut stream_callback: F,
     ) -> anyhow::Result<AgentResponse>
     where
-        F: FnMut(StreamEvent) + Send,
+        F: FnMut(StreamEvent) + Send + 'static,
     {
         info!(
             "Subagent (model switch streaming) started with model '{}': {}",

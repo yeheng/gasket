@@ -38,15 +38,13 @@ use tokio::task_local;
 use tracing::{debug, info, warn};
 
 use crate::agent::context::AgentContext;
-use crate::agent::executor::ToolExecutor;
 use crate::agent::history_processor::{process_history, HistoryConfig};
 use crate::agent::prompt;
-use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self};
 use crate::bus::events::SessionKey;
 use crate::error::AgentError;
 use crate::hooks::ExternalHookRunner;
-use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
+use crate::providers::{ChatMessage, LlmProvider};
 use crate::tools::ToolRegistry;
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 
@@ -161,15 +159,11 @@ struct AgentLoopResult {
     cost: f64,
 }
 
-/// Mutable state for tool call handling.
-struct ToolCallState<'a> {
-    /// Conversation messages
-    messages: &'a mut Vec<ChatMessage>,
-    /// List of tools used so far
-    tools_used: &'a mut Vec<String>,
-}
+// Note: ToolCallState, log_llm_response, and handle_tool_calls were moved to executor_core.rs
+// as part of the AgentExecutor refactoring. These types and functions are now
+// handled internally by the executor.
 
-/// Model pricing configuration for cost calculation
+/// Model pricing configuration for cost calculation (used by AgentLoop::set_pricing)
 #[derive(Debug, Clone)]
 struct ModelPricingInfo {
     /// Price per million input tokens
@@ -178,25 +172,6 @@ struct ModelPricingInfo {
     price_output_per_million: f64,
     /// Currency code
     currency: String,
-}
-
-// ── Inline logging functions (replaces LoggingHook) ─────────
-
-/// Log an LLM response — reasoning and content.
-/// Redacts sensitive values if provided.
-fn log_llm_response(response: &ChatResponse, iteration: u32, vault_values: &[String]) {
-    if let Some(ref reasoning) = response.reasoning_content {
-        if !reasoning.is_empty() {
-            let safe_reasoning = redact_secrets(reasoning, vault_values);
-            debug!("[Agent] Reasoning (iter {}): {}", iteration, safe_reasoning);
-        }
-    }
-    if let Some(ref content) = response.content {
-        if !content.is_empty() {
-            let safe_content = redact_secrets(content, vault_values);
-            info!("[Agent] Response (iter {}): {}", iteration, safe_content);
-        }
-    }
 }
 
 // ── AgentLoop ───────────────────────────────────────────────
@@ -633,7 +608,7 @@ impl AgentLoop {
         callback: F,
     ) -> Result<AgentResponse, AgentError>
     where
-        F: FnMut(stream::StreamEvent) + Send,
+        F: FnMut(stream::StreamEvent) + Send + 'static,
     {
         let session_key_clone = session_key.clone();
         CURRENT_SESSION_KEY
@@ -649,10 +624,10 @@ impl AgentLoop {
         &self,
         content: &str,
         session_key: &SessionKey,
-        mut callback: F,
+        callback: F,
     ) -> Result<AgentResponse, AgentError>
     where
-        F: FnMut(stream::StreamEvent) + Send,
+        F: FnMut(stream::StreamEvent) + Send + 'static,
     {
         let session_key_str = session_key.to_string();
         let content = match self
@@ -719,7 +694,7 @@ impl AgentLoop {
         local_vault_values.dedup();
 
         let result = self
-            .run_agent_loop_streaming(messages, &local_vault_values, &mut callback)
+            .run_agent_loop_streaming(messages, &local_vault_values, callback)
             .await?;
 
         let tools_used_str = result.tools_used.join(", ");
@@ -757,67 +732,13 @@ impl AgentLoop {
     }
 
     // ── Agent Loop Internals ────────────────────────────────
-
-    /// Calculate token usage and cost for a response.
-    ///
-    /// Uses API-provided usage when available, falls back to tiktoken-rs estimation.
-    fn calculate_token_usage(
-        &self,
-        response: &ChatResponse,
-        _model: &str,
-    ) -> (Option<crate::token_tracker::TokenUsage>, f64) {
-        // Try to get usage from API response first
-        if let Some(usage) = &response.usage {
-            let token_usage = crate::token_tracker::TokenUsage::from_api_fields(
-                usage.input_tokens,
-                usage.output_tokens,
-            );
-            // Calculate cost if pricing is configured
-            let cost = if let Some(ref pricing) = self.pricing {
-                let input_cost =
-                    (usage.input_tokens as f64) * pricing.price_input_per_million / 1_000_000.0;
-                let output_cost =
-                    (usage.output_tokens as f64) * pricing.price_output_per_million / 1_000_000.0;
-                input_cost + output_cost
-            } else {
-                0.0
-            };
-            return (Some(token_usage), cost);
-        }
-
-        // Fallback: estimate tokens using tiktoken-rs
-        let mut output_tokens = 0;
-
-        // Estimate output from response content
-        if let Some(ref content) = response.content {
-            output_tokens = crate::token_tracker::estimate_tokens(content);
-        }
-
-        // We can't accurately estimate input tokens without access to the full request
-        // For now, use a rough heuristic based on output tokens
-        let input_tokens = output_tokens * 2; // Rough estimate: input is typically 2x output
-
-        let token_usage = crate::token_tracker::TokenUsage::new(input_tokens, output_tokens);
-
-        // Calculate cost for estimated tokens if pricing is configured
-        let cost = if let Some(ref pricing) = self.pricing {
-            let input_cost = (input_tokens as f64) * pricing.price_input_per_million / 1_000_000.0;
-            let output_cost =
-                (output_tokens as f64) * pricing.price_output_per_million / 1_000_000.0;
-            input_cost + output_cost
-        } else {
-            0.0
-        };
-
-        (Some(token_usage), cost)
-    }
+    // Note: calculate_token_usage and handle_tool_calls were moved to executor_core.rs
+    // as part of the AgentExecutor refactoring.
 
     /// Unified agent iteration loop.
     ///
-    /// Always uses 'chat_stream' — for non-streaming providers the default
-    /// trait impl wraps the response in a single-chunk stream, so both paths
-    /// converge here.  When 'callback' is 'None', stream events are silently
-    /// discarded.
+    /// Delegates to `AgentExecutor` for the core LLM loop.
+    /// Handles session stats tracking after execution completes.
     ///
     /// # Security: Vault Values Scoping
     ///
@@ -826,258 +747,101 @@ impl AgentLoop {
     /// accumulation and limits the exposure window for sensitive data.
     async fn run_agent_loop(
         &self,
-        initial_messages: Vec<ChatMessage>,
+        messages: Vec<ChatMessage>,
         vault_values: &[String],
     ) -> Result<AgentLoopResult, AgentError> {
-        let mut messages = initial_messages;
-        let mut tools_used = Vec::new();
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
-        let request_handler = RequestHandler::new(&self.provider, &self.tools, &self.config);
+        use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-        for iteration in 1..=self.config.max_iterations {
-            debug!("Agent loop iteration {}", iteration);
-
-            let request = request_handler.build_chat_request(&messages);
-            let model = request.model.clone();
-            let stream_result = request_handler.send_with_retry(request).await?;
-
-            // Use collect_stream_response to avoid channel deadlock
-            // (stream_events requires the event stream to be consumed)
-            let response = stream::collect_stream_response(stream_result).await?;
-
-            // Calculate token usage and cost
-            let (token_usage, cost) = self.calculate_token_usage(&response, &model);
-
-            // Log token/cost info
-            if let Some(ref usage) = token_usage {
-                let currency = self
-                    .pricing
-                    .as_ref()
-                    .map(|p| p.currency.as_str())
-                    .unwrap_or("USD");
-                let pricing_ref = self.pricing.as_ref().map(|p| {
-                    crate::token_tracker::ModelPricing::new(
-                        p.price_input_per_million,
-                        p.price_output_per_million,
-                        &p.currency,
-                    )
-                });
-                info!(
-                    "[Token] {}",
-                    crate::token_tracker::format_request_stats(
-                        usage,
-                        cost,
-                        currency,
-                        pricing_ref.as_ref()
-                    )
-                );
-            }
-
-            // Inline logging (replaces LoggingHook::on_llm_response)
-            log_llm_response(&response, iteration, vault_values);
-
-            let has_tools = response.has_tool_calls();
-            info!(
-                "[Agent] iter {} has_tool_calls={}, tool_count={}",
-                iteration,
-                has_tools,
-                response.tool_calls.len()
-            );
-
-            if !has_tools {
-                info!("[Agent] No tool calls, sending Done event and returning response");
-                let content = response.content.unwrap_or_else(|| {
-                    "I've completed processing but have no response to give.".to_string()
-                });
-
-                // Track session stats
-                if let Some(ref usage) = token_usage {
-                    if let Ok(mut stats) = self.session_stats.lock() {
-                        stats.add_usage(usage, cost);
-                    }
-                }
-
-                return Ok(AgentLoopResult {
-                    content,
-                    reasoning_content: response.reasoning_content,
-                    tools_used,
-                    token_usage,
-                    cost,
-                });
-            }
-
-            // Has tool calls — execute them and continue the loop
-            let mut state = ToolCallState {
-                messages: &mut messages,
-                tools_used: &mut tools_used,
-            };
-            self.handle_tool_calls(&response, &executor, &mut state)
-                .await;
-        }
-
-        // Exhausted max iterations without a final response
-
-        Ok(AgentLoopResult {
-            content: "I've completed processing but have no response to give.".to_string(),
-            reasoning_content: None,
-            tools_used,
-            token_usage: None,
-            cost: 0.0,
-        })
-    }
-
-    async fn run_agent_loop_streaming<F>(
-        &self,
-        initial_messages: Vec<ChatMessage>,
-        vault_values: &[String],
-        callback: &mut F,
-    ) -> Result<AgentLoopResult, AgentError>
-    where
-        F: FnMut(stream::StreamEvent) + Send,
-    {
-        use futures::StreamExt;
-
-        let mut messages = initial_messages;
-        let mut tools_used = Vec::new();
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
-        let request_handler = RequestHandler::new(&self.provider, &self.tools, &self.config);
-
-        for iteration in 1..=self.config.max_iterations {
-            debug!("Agent loop iteration {}", iteration);
-
-            let request = request_handler.build_chat_request(&messages);
-            let model = request.model.clone();
-            let stream_result = request_handler.send_with_retry(request).await?;
-
-            let (mut event_stream, response_future) = stream::stream_events(stream_result);
-
-            // Consume stream events while waiting for response
-            // Wrap response_future in a task so we can poll both concurrently
-            let response_handle = tokio::spawn(response_future);
-
-            // Process all stream events
-            while let Some(event) = event_stream.next().await {
-                callback(event);
-            }
-
-            // Now get the response (stream is exhausted)
-            let response = response_handle.await.map_err(|e| {
-                AgentError::ProviderError(anyhow::anyhow!("Response task failed: {}", e).into())
-            })??;
-
-            let (token_usage, cost) = self.calculate_token_usage(&response, &model);
-
-            if let Some(ref usage) = token_usage {
-                let currency = self
-                    .pricing
-                    .as_ref()
-                    .map(|p| p.currency.as_str())
-                    .unwrap_or("USD");
-                callback(stream::StreamEvent::TokenStats {
-                    input_tokens: usage.input_tokens,
-                    output_tokens: usage.output_tokens,
-                    total_tokens: usage.total_tokens,
-                    cost,
-                    currency: currency.to_string(),
-                });
-            }
-
-            log_llm_response(&response, iteration, vault_values);
-
-            if !response.has_tool_calls() {
-                callback(stream::StreamEvent::Done);
-                let content = response.content.unwrap_or_else(|| {
-                    "I've completed processing but have no response to give.".to_string()
-                });
-
-                if let Some(ref usage) = token_usage {
-                    if let Ok(mut stats) = self.session_stats.lock() {
-                        stats.add_usage(usage, cost);
-                    }
-                }
-
-                return Ok(AgentLoopResult {
-                    content,
-                    reasoning_content: response.reasoning_content,
-                    tools_used,
-                    token_usage,
-                    cost,
-                });
-            }
-
-            let mut state = ToolCallState {
-                messages: &mut messages,
-                tools_used: &mut tools_used,
-            };
-            self.handle_tool_calls(&response, &executor, &mut state)
-                .await;
-        }
-
-        callback(stream::StreamEvent::Done);
-        Ok(AgentLoopResult {
-            content: "I've completed processing but have no response to give.".to_string(),
-            reasoning_content: None,
-            tools_used,
-            token_usage: None,
-            cost: 0.0,
-        })
-    }
-
-    /// Execute tool calls, append results to messages, and update tracking.
-    async fn handle_tool_calls(
-        &self,
-        response: &ChatResponse,
-        executor: &ToolExecutor<'_>,
-        state: &mut ToolCallState<'_>,
-    ) {
-        info!(
-            "[Agent] Executing {} tool call(s): {}",
-            response.tool_calls.len(),
-            response
-                .tool_calls
-                .iter()
-                .map(|tc| tc.function.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+        let executor = AgentExecutor::new(
+            self.provider.clone(),
+            self.tools.clone(),
+            &self.config,
         );
 
-        // Add assistant message with tool calls to the conversation
-        if response.tool_calls.is_empty() {
-            if let Some(ref c) = response.content {
-                state.messages.push(ChatMessage::assistant(c));
+        let options = ExecutorOptions::new()
+            .with_vault_values(vault_values);
+
+        let result = executor.execute_with_options(messages, &options).await?;
+
+        // Update session stats
+        if let Some(ref usage) = result.token_usage {
+            if let Ok(mut stats) = self.session_stats.lock() {
+                stats.add_usage(usage, result.cost);
             }
-        } else {
-            state.messages.push(ChatMessage::assistant_with_tools(
-                response.content.clone(),
-                response.tool_calls.clone(),
-            ));
         }
 
-        // Execute tool calls in parallel
-        let futures: Vec<_> = response
-            .tool_calls
-            .iter()
-            .map(|tc| async move {
-                let start = std::time::Instant::now();
-                let result = executor.execute_one(tc).await;
-                (tc, result, start.elapsed())
-            })
-            .collect();
-
-        let results = futures::future::join_all(futures).await;
-
-        for (tool_call, result, duration) in results {
-            let tool_name = tool_call.function.name.clone();
-            debug!("[Tool] {} -> done ({}ms)", tool_name, duration.as_millis());
-
-            state.tools_used.push(tool_name.clone());
-            state.messages.push(ChatMessage::tool_result(
-                tool_call.id.clone(),
-                tool_name,
-                result.output,
-            ));
-        }
+        Ok(AgentLoopResult {
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
+            token_usage: result.token_usage,
+            cost: result.cost,
+        })
     }
+
+    /// Execute with streaming callback.
+    ///
+    /// Delegates to `AgentExecutor` for the core LLM loop with streaming.
+    /// Handles session stats tracking after execution completes.
+    ///
+    /// # Security: Vault Values Scoping
+    ///
+    /// `vault_values` is passed as a parameter (not stored in self) to ensure
+    /// plaintext secrets are scoped to single requests.
+    async fn run_agent_loop_streaming<F>(
+        &self,
+        messages: Vec<ChatMessage>,
+        vault_values: &[String],
+        mut callback: F,
+    ) -> Result<AgentLoopResult, AgentError>
+    where
+        F: FnMut(stream::StreamEvent) + Send + 'static,
+    {
+        use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
+        use tokio::sync::mpsc;
+
+        let executor = AgentExecutor::new(
+            self.provider.clone(),
+            self.tools.clone(),
+            &self.config,
+        );
+
+        let options = ExecutorOptions::new()
+            .with_vault_values(vault_values);
+
+        // Create channel for stream events
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+
+        // Spawn task to forward events to callback
+        let forward_handle = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                callback(event);
+            }
+        });
+
+        // Execute with streaming
+        let result = executor.execute_stream_with_options(messages, event_tx, &options).await?;
+
+        // Wait for event forwarding to complete
+        let _ = forward_handle.await;
+
+        // Update session stats
+        if let Some(ref usage) = result.token_usage {
+            if let Ok(mut stats) = self.session_stats.lock() {
+                stats.add_usage(usage, result.cost);
+            }
+        }
+
+        Ok(AgentLoopResult {
+            content: result.content,
+            reasoning_content: result.reasoning_content,
+            tools_used: result.tools_used,
+            token_usage: result.token_usage,
+            cost: result.cost,
+        })
+    }
+
+    // Note: handle_tool_calls was moved to executor_core.rs as part of the AgentExecutor refactoring.
 }
 
 // ── Helpers ─────────────────────────────────────────────────
