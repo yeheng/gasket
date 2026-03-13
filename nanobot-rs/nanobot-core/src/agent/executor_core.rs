@@ -192,7 +192,8 @@ impl<'a> AgentExecutor<'a> {
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, AgentError> {
         // With streaming - pass Some for event sender
-        self.execute_internal(messages, Some(event_tx), options).await
+        self.execute_internal(messages, Some(event_tx), options)
+            .await
     }
 
     /// Unified internal implementation for both streaming and non-streaming.

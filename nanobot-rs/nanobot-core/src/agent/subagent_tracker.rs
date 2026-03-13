@@ -140,7 +140,10 @@ impl SubagentTracker {
         let mut collected = Vec::with_capacity(count);
 
         // Get the receiver - we own it exclusively
-        let rx = self.result_rx.as_mut().expect("result_rx should be available");
+        let rx = self
+            .result_rx
+            .as_mut()
+            .expect("result_rx should be available");
 
         // Use tokio::select to implement overall timeout
         let collect_future = async {

@@ -1,5 +1,6 @@
 //! Parallel spawn tool for concurrent subagent execution with result aggregation
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -202,19 +203,18 @@ impl Tool for SpawnParallelTool {
             std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>>,
         > = Vec::with_capacity(task_count);
 
-        // Clone senders for each task BEFORE the loop to avoid shadowing issues
-        let result_senders: Vec<_> = (0..task_count).map(|_| result_tx.clone()).collect();
-        let event_senders: Vec<_> = (0..task_count).map(|_| event_tx.clone()).collect();
-
-        // Drop the original senders after cloning - the clones will keep the channel alive
-        drop(result_tx);
-        drop(event_tx);
+        // Track subagent_id -> task_index mapping for [Task N] labeling
+        let mut task_id_map: HashMap<String, usize> = HashMap::with_capacity(task_count);
 
         for (idx, spec) in task_specs.into_iter().enumerate() {
             let subagent_id = SubagentTracker::generate_id();
+            // Record mapping for [Task N] labeling in WebSocket messages
+            task_id_map.insert(subagent_id.clone(), idx + 1); // 1-indexed for user display
             let task = spec.task;
-            let result_tx = result_senders[idx].clone();
-            let event_tx_clone = event_senders[idx].clone();
+            // Clone sender inside the loop - each task gets its own sender
+            // The original sender will be dropped after all futures are created
+            let result_tx = result_tx.clone();
+            let event_tx_clone = event_tx.clone();
 
             if let Some(model_id) = spec.model_id {
                 // Model switching requested
@@ -275,6 +275,15 @@ impl Tool for SpawnParallelTool {
             }
         }
 
+        // CRITICAL: Drop the original senders now that all futures have been created.
+        // Each future owns its own cloned sender. Once all subagents complete,
+        // these cloned senders will be dropped, and the channel will close naturally,
+        // allowing event_rx.recv() to return None.
+        // Without this drop, the channel would never close because the original
+        // sender would keep it alive indefinitely.
+        drop(result_tx);
+        drop(event_tx);
+
         // Spawn all subagents in parallel - this is the key change!
         info!(
             "Spawning {} subagents in parallel with streaming",
@@ -289,32 +298,50 @@ impl Tool for SpawnParallelTool {
         let session_key = manager.session_key().cloned();
 
         // Spawn a background task to collect events and forward to WebSocket/channel
+        // Move task_id_map into the task for [Task N] labeling
         tokio::spawn(async move {
             // Direct ownership - no lock needed
             while let Some(event) = event_rx.recv().await {
-                // Log the event
+                // Extract subagent ID for task index lookup
+                let subagent_id = match &event {
+                    SubagentEvent::Started { id, .. } => id,
+                    SubagentEvent::Thinking { id, .. } => id,
+                    SubagentEvent::ToolStart { id, .. } => id,
+                    SubagentEvent::ToolEnd { id, .. } => id,
+                    SubagentEvent::Completed { id, .. } => id,
+                    SubagentEvent::Error { id, .. } => id,
+                };
+
+                // Get task index for [Task N] labeling (1-indexed for display)
+                let task_label = task_id_map
+                    .get(subagent_id)
+                    .map(|idx| format!("[Task {}]", idx))
+                    .unwrap_or_else(|| "[Subagent]".to_string());
+
+                // Log the event with task label
                 match &event {
                     SubagentEvent::Started { id, task } => {
-                        info!("[Subagent {}] Started: {}", id, task);
+                        info!("{} Started: {} (ID: {})", task_label, task, id);
                     }
                     SubagentEvent::Thinking { id, content } => {
-                        trace!("[Subagent {}] Thinking: {}", id, content);
+                        trace!("{} Thinking: {} (ID: {})", task_label, content, id);
                     }
                     SubagentEvent::ToolStart { id, tool_name, .. } => {
-                        trace!("[Subagent {}] Tool: {} started", id, tool_name);
+                        trace!("{} Tool: {} started (ID: {})", task_label, tool_name, id);
                     }
                     SubagentEvent::ToolEnd { id, tool_name, .. } => {
-                        trace!("[Subagent {}] Tool: {} done", id, tool_name);
+                        trace!("{} Tool: {} done (ID: {})", task_label, tool_name, id);
                     }
                     SubagentEvent::Completed { id, result } => {
                         info!(
-                            "[Subagent {}] Completed, model={}",
-                            id,
-                            result.model.as_deref().unwrap_or("unknown")
+                            "{} Completed, model={} (ID: {})",
+                            task_label,
+                            result.model.as_deref().unwrap_or("unknown"),
+                            id
                         );
                     }
                     SubagentEvent::Error { id, error } => {
-                        warn!("[Subagent {}] Error: {}", id, error);
+                        warn!("{} Error: {} (ID: {})", task_label, error, id);
                     }
                 }
 
@@ -322,24 +349,24 @@ impl Tool for SpawnParallelTool {
                 if let Some(ref key) = session_key {
                     let ws_msg = match &event {
                         SubagentEvent::Thinking { content, .. } => Some(
-                            WebSocketMessage::thinking(format!("[Subagent] {}", content)),
+                            WebSocketMessage::thinking(format!("{} {}", task_label, content)),
                         ),
                         SubagentEvent::ToolStart {
                             tool_name,
                             arguments,
                             ..
                         } => Some(WebSocketMessage::tool_start(
-                            format!("[Subagent] {}", tool_name),
+                            format!("{} {}", task_label, tool_name),
                             arguments.clone(),
                         )),
                         SubagentEvent::ToolEnd {
                             tool_name, output, ..
                         } => Some(WebSocketMessage::tool_end(
-                            format!("[Subagent] {}", tool_name),
+                            format!("{} {}", task_label, tool_name),
                             Some(output.clone()),
                         )),
                         SubagentEvent::Error { error, .. } => Some(WebSocketMessage::text(
-                            format!("[Subagent Error] {}", error),
+                            format!("{} Error: {}", task_label, error),
                         )),
                         _ => None, // Started, Completed - don't send to WS
                     };

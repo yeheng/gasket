@@ -211,7 +211,11 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
     // Spawn tool
     let spawn_tool = match (&subagent_manager, &model_registry, &provider_registry) {
-        (Some(mgr), Some(_), Some(_)) => SpawnTool::with_registries(Arc::clone(mgr)),
+        (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnTool::with_registries(
+            Arc::clone(mgr),
+            Arc::clone(model_reg),
+            Arc::clone(provider_reg),
+        ),
         (Some(mgr), _, _) => SpawnTool::with_manager(Arc::clone(mgr)),
         _ => SpawnTool::new(),
     };
