@@ -34,7 +34,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::task_local;
 use tracing::{debug, info, warn};
 
 use crate::agent::context::AgentContext;
@@ -53,39 +52,6 @@ use crate::agent::memory::MemoryStore;
 use crate::agent::summarization::SummarizationService;
 use crate::session::SessionManager;
 use std::sync::Mutex;
-
-// Task-local storage for the current session key
-//
-// **PRAGMATIC COMPROMISE (Linus-style "Escape Hatch")**
-//
-// This is the ONLY global escape hatch allowed in the system to avoid polluting
-// every Tool::execute() signature with session_key parameters.
-//
-// ## Why This Exists
-// Tools need access to the session key for side-channel communication (e.g., sending
-// WebSocket messages via OutboundMessage), but passing it through every tool signature
-// would create massive API pollution and coupling.
-//
-// ## Strict Usage Rules
-// 1. ONLY for accessing session context in tools (channel, chat_id)
-// 2. NEVER for storing mutable state or business logic
-// 3. NEVER add more task-local variables without architectural review
-// 4. This is a controlled hack with limited blast radius
-//
-// ## Alternative Considered and Rejected
-// - Passing session_key through Tool::execute() → pollutes all tool signatures
-// - Global Arc<Mutex<SessionKey>> → introduces unnecessary synchronization overhead
-// - Thread-local storage → breaks with async/await task migration
-//
-// If you're tempted to add another task_local!, stop and redesign your API instead.
-task_local! {
-    pub static CURRENT_SESSION_KEY: Option<SessionKey>;
-}
-
-/// Get the current session key from task-local storage
-pub fn get_current_session_key() -> Option<SessionKey> {
-    CURRENT_SESSION_KEY.with(|sk| sk.clone())
-}
 
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -589,25 +555,6 @@ impl AgentLoop {
 
     /// Process a message with streaming callback.
     pub async fn process_direct_streaming<F>(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-        callback: F,
-    ) -> Result<AgentResponse, AgentError>
-    where
-        F: FnMut(stream::StreamEvent) + Send + 'static,
-    {
-        let session_key_clone = session_key.clone();
-        CURRENT_SESSION_KEY
-            .scope(Some(session_key_clone), async {
-                self.process_direct_streaming_inner(content, session_key, callback)
-                    .await
-            })
-            .await
-    }
-
-    /// Inner implementation of process_direct_streaming (within CURRENT_SESSION_KEY scope)
-    async fn process_direct_streaming_inner<F>(
         &self,
         content: &str,
         session_key: &SessionKey,

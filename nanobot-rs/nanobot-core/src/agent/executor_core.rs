@@ -6,6 +6,7 @@
 //! - Iteration control
 //! - Token usage and cost calculation (optional)
 //! - Log redaction (optional)
+//! - Optional streaming via event channel
 //!
 //! It does NOT handle:
 //! - Session persistence
@@ -120,6 +121,21 @@ impl ExecutionState {
     }
 }
 
+// ── Iteration Result ────────────────────────────────────────
+
+/// Result of a single LLM iteration
+enum IterationOutcome {
+    /// LLM returned final response (no tool calls)
+    FinalResponse {
+        content: String,
+        reasoning_content: Option<String>,
+    },
+    /// LLM made tool calls, continue iteration
+    ContinueWithTools,
+    /// Max iterations reached
+    MaxIterationsReached,
+}
+
 // ── Agent Executor ──────────────────────────────────────────
 
 /// Agent executor - core LLM loop
@@ -154,53 +170,8 @@ impl<'a> AgentExecutor<'a> {
         messages: Vec<ChatMessage>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, AgentError> {
-        let mut state = ExecutionState::new(messages);
-        let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
-        let request_handler = RequestHandler::new(&self.provider, &self.tools, self.config);
-
-        for iteration in 1..=self.config.max_iterations {
-            debug!("[Executor] iteration {}", iteration);
-
-            let request = request_handler.build_chat_request(&state.messages);
-            let stream_result = request_handler.send_with_retry(request).await?;
-            let response = stream::collect_stream_response(stream_result).await?;
-
-            // Accumulate token usage and cost
-            if let Some(ref usage) = response.token_usage() {
-                state.accumulate_usage(usage, options.pricing.as_ref());
-
-                // Log token usage
-                Self::log_token_usage(&state, &options.pricing, iteration);
-            }
-
-            // Log response (with redaction)
-            Self::log_response(&response, iteration, options.vault_values);
-
-            if !response.has_tool_calls() {
-                info!(
-                    "[Executor] No tool calls at iteration {}, returning response",
-                    iteration
-                );
-
-                return Ok(state.into_result(
-                    response
-                        .content
-                        .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
-                    response.reasoning_content,
-                ));
-            }
-
-            // Execute tool calls
-            self.handle_tool_calls(&response, &executor, &mut state)
-                .await;
-        }
-
-        // Max iterations reached
-        info!(
-            "[Executor] Max iterations ({}) reached",
-            self.config.max_iterations
-        );
-        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None))
+        // No streaming - pass None for event sender
+        self.execute_internal(messages, None, options).await
     }
 
     /// Execute with streaming - sends events to provided channel
@@ -220,6 +191,20 @@ impl<'a> AgentExecutor<'a> {
         event_tx: mpsc::Sender<StreamEvent>,
         options: &ExecutorOptions<'_>,
     ) -> Result<ExecutionResult, AgentError> {
+        // With streaming - pass Some for event sender
+        self.execute_internal(messages, Some(event_tx), options).await
+    }
+
+    /// Unified internal implementation for both streaming and non-streaming.
+    ///
+    /// If `event_tx` is Some, events are forwarded to the channel.
+    /// If `event_tx` is None, streaming is disabled (non-streaming mode).
+    async fn execute_internal(
+        &self,
+        messages: Vec<ChatMessage>,
+        event_tx: Option<mpsc::Sender<StreamEvent>>,
+        options: &ExecutorOptions<'_>,
+    ) -> Result<ExecutionResult, AgentError> {
         let mut state = ExecutionState::new(messages);
         let executor = ToolExecutor::new(&self.tools, self.config.max_tool_result_chars);
         let request_handler = RequestHandler::new(&self.provider, &self.tools, self.config);
@@ -227,72 +212,140 @@ impl<'a> AgentExecutor<'a> {
         for iteration in 1..=self.config.max_iterations {
             debug!("[Executor] iteration {}", iteration);
 
-            let request = request_handler.build_chat_request(&state.messages);
-            let stream_result = request_handler.send_with_retry(request).await?;
+            let outcome = self
+                .process_iteration(
+                    iteration,
+                    &mut state,
+                    &executor,
+                    &request_handler,
+                    event_tx.as_ref(),
+                    options,
+                )
+                .await?;
 
+            match outcome {
+                IterationOutcome::FinalResponse {
+                    content,
+                    reasoning_content,
+                } => {
+                    // Send Done event if streaming
+                    if let Some(ref tx) = event_tx {
+                        let _ = tx.send(StreamEvent::Done).await;
+                    }
+                    return Ok(state.into_result(content, reasoning_content));
+                }
+                IterationOutcome::ContinueWithTools => {
+                    // Continue to next iteration
+                }
+                IterationOutcome::MaxIterationsReached => {
+                    // Send Done event if streaming
+                    if let Some(ref tx) = event_tx {
+                        let _ = tx.send(StreamEvent::Done).await;
+                    }
+                    return Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None));
+                }
+            }
+        }
+
+        // This shouldn't be reached due to MaxIterationsReached, but just in case
+        if let Some(ref tx) = event_tx {
+            let _ = tx.send(StreamEvent::Done).await;
+        }
+        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None))
+    }
+
+    /// Process a single iteration of the agent loop.
+    ///
+    /// Returns the outcome of this iteration:
+    /// - FinalResponse if LLM returned content without tool calls
+    /// - ContinueWithTools if tool calls were made
+    /// - MaxIterationsReached if this was the last allowed iteration
+    async fn process_iteration(
+        &self,
+        iteration: u32,
+        state: &mut ExecutionState,
+        executor: &ToolExecutor<'_>,
+        request_handler: &RequestHandler<'_>,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        options: &ExecutorOptions<'_>,
+    ) -> Result<IterationOutcome, AgentError> {
+        let request = request_handler.build_chat_request(&state.messages);
+        let stream_result = request_handler.send_with_retry(request).await?;
+
+        // Get response based on streaming mode
+        let response = if let Some(tx) = event_tx {
+            // Streaming mode: forward events to channel
             let (mut event_stream, response_future) = stream::stream_events(stream_result);
 
-            // Forward events to channel
             while let Some(event) = event_stream.next().await {
-                let _ = event_tx.send(event).await;
+                let _ = tx.send(event).await;
             }
 
-            let response = response_future.await?;
+            response_future.await?
+        } else {
+            // Non-streaming mode: collect directly
+            stream::collect_stream_response(stream_result).await?
+        };
 
-            // Accumulate token usage and cost
-            if let Some(ref usage) = response.token_usage() {
-                state.accumulate_usage(usage, options.pricing.as_ref());
+        // Accumulate token usage and cost
+        if let Some(ref usage) = response.token_usage() {
+            state.accumulate_usage(usage, options.pricing.as_ref());
 
-                // Send TokenStats event
-                if let Some(ref usage) = state.total_usage {
+            // Send TokenStats event if streaming
+            if let Some(tx) = event_tx {
+                if let Some(ref total_usage) = state.total_usage {
                     let currency = options
                         .pricing
                         .as_ref()
                         .map(|p| p.currency.as_str())
                         .unwrap_or("USD");
-                    let _ = event_tx
+                    let _ = tx
                         .send(StreamEvent::TokenStats {
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            total_tokens: usage.total_tokens,
+                            input_tokens: total_usage.input_tokens,
+                            output_tokens: total_usage.output_tokens,
+                            total_tokens: total_usage.total_tokens,
                             cost: state.total_cost,
                             currency: currency.to_string(),
                         })
                         .await;
                 }
-
-                Self::log_token_usage(&state, &options.pricing, iteration);
             }
 
-            Self::log_response(&response, iteration, options.vault_values);
-
-            if !response.has_tool_calls() {
-                // Send Done event
-                let _ = event_tx.send(StreamEvent::Done).await;
-                info!(
-                    "[Executor] No tool calls at iteration {}, returning response",
-                    iteration
-                );
-
-                return Ok(state.into_result(
-                    response
-                        .content
-                        .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
-                    response.reasoning_content,
-                ));
-            }
-
-            self.handle_tool_calls(&response, &executor, &mut state)
-                .await;
+            // Log token usage
+            Self::log_token_usage(state, &options.pricing, iteration);
         }
 
-        // Max iterations reached
-        let _ = event_tx.send(StreamEvent::Done).await;
-        info!(
-            "[Executor] Max iterations ({}) reached",
-            self.config.max_iterations
-        );
-        Ok(state.into_result(DEFAULT_MAX_ITERATIONS.to_string(), None))
+        // Log response (with redaction)
+        Self::log_response(&response, iteration, options.vault_values);
+
+        // Check if we have tool calls
+        if !response.has_tool_calls() {
+            info!(
+                "[Executor] No tool calls at iteration {}, returning response",
+                iteration
+            );
+
+            return Ok(IterationOutcome::FinalResponse {
+                content: response
+                    .content
+                    .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
+                reasoning_content: response.reasoning_content,
+            });
+        }
+
+        // Execute tool calls and update state
+        self.handle_tool_calls(&response, executor, state).await;
+
+        // Check if we've reached max iterations
+        if iteration >= self.config.max_iterations {
+            info!(
+                "[Executor] Max iterations ({}) reached",
+                self.config.max_iterations
+            );
+            return Ok(IterationOutcome::MaxIterationsReached);
+        }
+
+        Ok(IterationOutcome::ContinueWithTools)
     }
 
     // ── Internal Helpers ────────────────────────────────────

@@ -255,7 +255,7 @@ trait MemoryStore: Send + Sync {
 | `request.rs` | 请求构建与重试逻辑 |
 | `memory.rs` | Agent 工作空间内存管理 |
 | `skill_loader.rs` | 技能文件加载器 (Markdown + YAML frontmatter) |
-| `subagent.rs` | 子代理管理 (`submit()` 异步 + `submit_and_wait()` 同步) |
+| `subagent.rs` | 子代理管理 (`submit()` 异步 + `submit_and_wait()` 同步 + `submit_tracked()` 追踪 + `submit_tracked_streaming()` 流式) |
 
 ### ContextCompressionHook
 
@@ -273,6 +273,8 @@ trait ContextCompressionHook: Send + Sync {
 ```
 
 当前实现 `SummarizationService`：当历史消息被驱逐时，调用 LLM 生成摘要并持久化到 SQLite。
+
+> **注意**: `ContextCompressionHook` 已简化为 `SummarizationService` 的 `compress()` 方法，不再作为独立 trait。`AgentContext::compress_context()` 直接调用此方法。
 
 ---
 

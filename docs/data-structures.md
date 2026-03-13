@@ -31,7 +31,15 @@ OutboundMessage {
     content: String,
     metadata: Option<serde_json::Value>,
     trace_id: Option<String>,
+    ws_message: Option<WebSocketMessage>,  // WebSocket 实时消息
 }
+
+WebSocketMessage {
+    msg_type: WebSocketMessageType,  // Text | Thinking | ToolStart | ToolEnd | TokenStats | Error | Done
+    content: String,
+    metadata: Option<serde_json::Value>,
+}
+```
 ```
 
 ### 1.3 会话标识
@@ -127,7 +135,15 @@ ChatResponse {
     content: Option<String>,              // 文本回复
     tool_calls: Vec<ToolCall>,            // 工具调用请求
     reasoning_content: Option<String>,    // 推理/思考内容 (DeepSeek R1 等)
+    token_usage: Option<TokenUsage>,      // Token 使用量统计
 }
+
+TokenUsage {
+    input_tokens: u32,
+    output_tokens: u32,
+    total_tokens: u32,
+}
+```
 ```
 
 ### 2.4 ToolCall / ToolDefinition

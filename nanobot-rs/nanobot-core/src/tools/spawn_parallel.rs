@@ -186,7 +186,7 @@ impl Tool for SpawnParallelTool {
             ));
         }
 
-        let tracker = SubagentTracker::new();
+        let mut tracker = SubagentTracker::new();
         let result_tx = tracker.result_sender();
         let event_tx = tracker.event_sender();
         let task_count = task_specs.len();
@@ -281,8 +281,8 @@ impl Tool for SpawnParallelTool {
             spawn_futures.len()
         );
 
-        // Get event receiver before spawning background task
-        let event_rx = tracker.event_receiver();
+        // Take event receiver - we own it now, no Arc<Mutex> needed
+        let mut event_rx = tracker.take_event_receiver();
 
         // Get outbound channel and session key from manager for WebSocket streaming
         let outbound_tx = manager.outbound_sender();
@@ -290,8 +290,8 @@ impl Tool for SpawnParallelTool {
 
         // Spawn a background task to collect events and forward to WebSocket/channel
         tokio::spawn(async move {
-            let mut rx = event_rx.lock().await;
-            while let Some(event) = rx.recv().await {
+            // Direct ownership - no lock needed
+            while let Some(event) = event_rx.recv().await {
                 // Log the event
                 match &event {
                     SubagentEvent::Started { id, task } => {
