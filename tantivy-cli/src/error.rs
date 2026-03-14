@@ -1,9 +1,9 @@
-//! Error types for tantivy-mcp.
+//! Error types for tantivy-cli.
 
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Main error type for tantivy-mcp.
+/// Error types for tantivy-cli.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("Index not found: {0}")]
@@ -33,29 +33,20 @@ pub enum Error {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
-    #[error("MCP error: {0}")]
-    McpError(String),
+    #[error("Query error: {0}")]
+    QueryError(String),
+
+    #[error("Writer not initialized")]
+    WriterNotInitialized,
 
     #[error("Parse error: {0}")]
     ParseError(String),
-
-    #[error("Lock error: {0}")]
-    LockError(String),
-
-    #[error("Backup error: {0}")]
-    BackupError(String),
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
     #[error("Path error: {0}")]
     PathError(PathBuf, String),
-
-    #[error("Query error: {0}")]
-    QueryError(String),
-
-    #[error("Writer not initialized")]
-    WriterNotInitialized,
 }
 
 impl From<tantivy::query::QueryParserError> for Error {
@@ -64,5 +55,5 @@ impl From<tantivy::query::QueryParserError> for Error {
     }
 }
 
-/// Result type alias for tantivy-mcp.
+/// Result type alias for tantivy-cli.
 pub type Result<T> = std::result::Result<T, Error>;

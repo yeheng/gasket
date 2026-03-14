@@ -1,16 +1,16 @@
 [package]
-name = "tantivy-mcp"
+name = "tantivy-cli"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["nanobot contributors"]
-description = "Standalone MCP index server with Tantivy full-text search"
+description = "Tantivy full-text search CLI tool"
 repository = "https://github.com/yeheng/nanobot"
-keywords = ["mcp", "search", "tantivy", "index", "full-text"]
+keywords = ["search", "tantivy", "index", "full-text", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 
 [[bin]]
-name = "tantivy-mcp"
+name = "tantivy-cli"
 path = "src/main.rs"
 
 [dependencies]
@@ -18,19 +18,13 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
-# HTTP server
-axum = { version = "0.8", features = ["json"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
-
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Error handling
 thiserror = "2"
