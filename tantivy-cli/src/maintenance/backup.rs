@@ -19,7 +19,7 @@ pub fn backup_index(
     let stats = manager.get_stats(index_name)?;
 
     // Get index directory
-    let index_dir = get_index_directory(manager, index_name)?;
+    let index_dir = manager.index_path(index_name);
 
     // Create backup directory
     let backup_dir = backup_path.join(index_name);
@@ -40,10 +40,7 @@ pub fn backup_index(
 }
 
 /// Restore an index from a backup.
-///
-/// Uses `&IndexManager` (not `&mut`) as all internal operations
-/// manage their own locking via DashMap and per-index RwLock.
-pub fn restore_index(manager: &IndexManager, backup_path: &Path) -> Result<RestoreResult> {
+pub fn restore_index(manager: &mut IndexManager, backup_path: &Path) -> Result<RestoreResult> {
     // Read metadata to get index name
     let metadata_path = backup_path.join("metadata.json");
     let metadata_json = fs::read_to_string(&metadata_path)?;
@@ -57,7 +54,7 @@ pub fn restore_index(manager: &IndexManager, backup_path: &Path) -> Result<Resto
     }
 
     // Copy backup to index directory
-    let index_dir = get_index_directory(manager, &index_name)?;
+    let index_dir = manager.index_path(&index_name);
     fs::create_dir_all(&index_dir)?;
     copy_dir_all(backup_path, &index_dir)?;
 
@@ -71,6 +68,26 @@ pub fn restore_index(manager: &IndexManager, backup_path: &Path) -> Result<Resto
         restore_path: backup_path.to_path_buf(),
         timestamp: Utc::now(),
     })
+}
+
+/// Copy directory recursively.
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)?;
+
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if ty.is_dir() {
+            copy_dir_all(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Result of backup operation.
@@ -104,29 +121,4 @@ pub struct RestoreResult {
 struct IndexMetadata {
     schema: crate::index::IndexSchema,
     config: crate::index::IndexConfig,
-}
-
-/// Get index directory path (helper function).
-fn get_index_directory(manager: &IndexManager, index_name: &str) -> Result<std::path::PathBuf> {
-    Ok(manager.index_path(index_name))
-}
-
-/// Copy directory recursively.
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if ty.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path)?;
-        }
-    }
-
-    Ok(())
 }

@@ -4,7 +4,7 @@ use crate::index::IndexManager;
 use crate::Result;
 
 /// Compact an index by merging segments and removing deleted documents.
-pub fn compact_index(manager: &IndexManager, index_name: &str) -> Result<CompactionResult> {
+pub fn compact_index(manager: &mut IndexManager, index_name: &str) -> Result<CompactionResult> {
     let stats_before = manager.get_stats(index_name)?;
 
     manager.compact(index_name)?;

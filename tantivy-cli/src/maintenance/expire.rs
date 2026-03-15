@@ -7,7 +7,7 @@ use crate::index::IndexManager;
 use crate::Result;
 
 /// Expire documents that have passed their TTL.
-pub fn expire_documents(manager: &IndexManager, index_name: &str) -> Result<ExpirationResult> {
+pub fn expire_documents(manager: &mut IndexManager, index_name: &str) -> Result<ExpirationResult> {
     // For now, we'll use a simple approach - search for expired documents
     // and delete them one by one. A more efficient approach would be to
     // use a range query on the _expires_at field.

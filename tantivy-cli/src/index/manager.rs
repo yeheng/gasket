@@ -1,30 +1,23 @@
 //! Index manager for managing multiple indexes.
 //!
-//! ## Background Job Architecture
+//! ## Simplified CLI Architecture
 //!
-//! This module uses a **background job queue** pattern for all write operations:
+//! This module uses a simple synchronous design suitable for CLI tools:
 //!
-//! 1. **DashMap for index registry**: Uses `DashMap<String, Arc<IndexState>>` for
-//!    concurrent read access to index metadata.
+//! 1. **HashMap for index registry**: Uses `HashMap<String, IndexState>` since CLI
+//!    processes one command at a time.
 //!
-//! 2. **Background Write Jobs**: All write operations (add_document, delete_document,
-//!    commit, compact) are submitted as background jobs. The caller receives a JobId
-//!    immediately and can query status via JobRegistry.
+//! 2. **File locking for process safety**: Uses `IndexLock` to prevent multiple
+//!    CLI processes from accessing the same index simultaneously.
 //!
-//! 3. **RwLock for Writer**: A short-lived RwLock protects the IndexWriter during
-//!    actual write operations. Since writes happen in background tasks, callers
-//!    are never blocked.
-//!
-//! 4. **Job-based tracking**: Every write operation returns a JobId for status tracking.
+//! 3. **Synchronous operations**: All operations execute synchronously and
+//!    return `Result<()>` directly.
 
 use std::collections::HashMap;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use dashmap::DashMap;
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tantivy::{
     directory::MmapDirectory,
@@ -34,16 +27,15 @@ use tantivy::{
 use tracing::{debug, info, warn};
 
 use super::document::{BatchDocumentInput, Document};
+use super::lock::IndexLock;
 use super::schema::{FieldDef, FieldType, IndexConfig, IndexSchema};
 use super::search::{SearchQuery, SearchResult};
-use crate::maintenance::{JobId, JobRegistry, JobType};
 use crate::{Error, Result};
 
 /// Internal index state.
 ///
-/// Each index has its own state with:
-/// - Immutable data (schema, config, tantivy_index, reader, field_map)
-/// - Mutable writer protected by RwLock
+/// Each index has its own state with all fields stored directly
+/// (no locking needed for single-threaded CLI).
 struct IndexState {
     // Immutable fields (set at creation, never changed)
     schema: IndexSchema,
@@ -55,19 +47,15 @@ struct IndexState {
     id_field: Field,
     expires_at_field: Field,
 
-    // Mutable field (protected by RwLock)
-    /// Index writer with lazy initialization.
-    /// Uses RwLock to allow multiple readers (for read-heavy operations)
-    /// while still allowing writer recreation during compact.
-    writer: RwLock<Option<IndexWriter>>,
+    // Mutable field - no lock needed for single-threaded CLI
+    writer: Option<IndexWriter>,
 }
 
 impl IndexState {
     /// Ensure the writer is initialized.
-    fn ensure_writer(&self) -> Result<()> {
-        let mut guard = self.writer.write();
-        if guard.is_none() {
-            *guard = Some(self.tantivy_index.writer(50_000_000)?);
+    fn ensure_writer(&mut self) -> Result<()> {
+        if self.writer.is_none() {
+            self.writer = Some(self.tantivy_index.writer(50_000_000)?);
         }
         Ok(())
     }
@@ -75,22 +63,21 @@ impl IndexState {
 
 /// Index manager handling multiple indexes.
 ///
-/// Uses `DashMap` for concurrent access to the index registry.
-/// All write operations are background jobs tracked via JobRegistry.
-#[derive(Clone)]
+/// Uses `HashMap` for simple single-threaded access.
+/// Uses file locking for process-level safety.
 pub struct IndexManager {
     base_path: PathBuf,
-    /// Concurrent index registry using DashMap.
-    /// Each index is wrapped in Arc for shared ownership.
-    indexes: DashMap<String, Arc<IndexState>>,
-    /// Job registry for tracking background operations.
-    job_registry: Arc<JobRegistry>,
+    /// Index registry (no concurrency primitives needed for CLI).
+    indexes: HashMap<String, IndexState>,
 }
 
 impl IndexManager {
-    /// Get the job registry.
-    pub fn job_registry(&self) -> &Arc<JobRegistry> {
-        &self.job_registry
+    /// Create a new index manager.
+    pub fn new(base_path: impl AsRef<Path>) -> Self {
+        Self {
+            base_path: base_path.as_ref().to_path_buf(),
+            indexes: HashMap::new(),
+        }
     }
 
     /// Get the base path for index storage.
@@ -108,9 +95,15 @@ impl IndexManager {
         self.base_path.join("indexes")
     }
 
-    /// Unload an index from memory (remove from DashMap).
+    /// Acquire an exclusive lock for an index.
+    pub fn acquire_index_lock(&self, index_name: &str) -> Result<IndexLock> {
+        let index_path = self.index_path(index_name);
+        IndexLock::acquire(&index_path)
+    }
+
+    /// Unload an index from memory.
     /// The index files remain on disk.
-    pub fn unload_index(&self, name: &str) -> Result<()> {
+    pub fn unload_index(&mut self, name: &str) -> Result<()> {
         if self.indexes.remove(name).is_some() {
             info!("Unloaded index: {}", name);
         }
@@ -118,7 +111,7 @@ impl IndexManager {
     }
 
     /// Load an index by name (public wrapper for the private load_index).
-    pub fn load_index_by_name(&self, name: &str) -> Result<()> {
+    pub fn load_index_by_name(&mut self, name: &str) -> Result<()> {
         let metadata_path = self.index_path(name).join("metadata.json");
         if !metadata_path.exists() {
             return Err(Error::IndexNotFound(name.to_string()));
@@ -157,31 +150,18 @@ pub enum IndexHealth {
 }
 
 impl IndexManager {
-    /// Create a new index manager with a shared JobRegistry.
-    pub fn new(base_path: impl AsRef<Path>, job_registry: Arc<JobRegistry>) -> Self {
-        Self {
-            base_path: base_path.as_ref().to_path_buf(),
-            indexes: DashMap::new(),
-            job_registry,
-        }
-    }
-
     /// Create a new index.
-    ///
-    /// This operation atomically inserts the new index into the registry.
-    /// If an index with the same name already exists, returns an error.
     pub fn create_index(
-        &self,
+        &mut self,
         name: &str,
         fields: Vec<FieldDef>,
         config: Option<IndexConfig>,
     ) -> Result<IndexSchema> {
-        // Quick check without holding any lock
+        // Check if already exists
         if self.indexes.contains_key(name) {
             return Err(Error::IndexAlreadyExists(name.to_string()));
         }
 
-        // Build index state outside of any lock
         let index_path = self.base_path.join("indexes").join(name);
         std::fs::create_dir_all(&index_path)?;
 
@@ -205,42 +185,32 @@ impl IndexManager {
         let metadata_json = serde_json::to_string_pretty(&metadata)?;
         std::fs::write(&metadata_path, metadata_json)?;
 
-        let state = Arc::new(IndexState {
+        let state = IndexState {
             schema: schema.clone(),
             config,
             _tantivy_schema: tantivy_schema,
             tantivy_index,
             reader,
-            writer: RwLock::new(None),
+            writer: None,
             field_map,
             id_field,
             expires_at_field,
-        });
+        };
 
-        // Atomic insert with race condition check
-        if self.indexes.insert(name.to_string(), state).is_some() {
-            // Race condition: another thread created the same index
-            // Rollback by removing the directory we just created
-            let _ = std::fs::remove_dir_all(&index_path);
-            return Err(Error::IndexAlreadyExists(name.to_string()));
-        }
+        self.indexes.insert(name.to_string(), state);
 
         info!("Created index: {}", name);
         Ok(schema)
     }
 
     /// Drop an index.
-    ///
-    /// Atomically removes the index from the registry and deletes its directory.
-    pub fn drop_index(&self, name: &str) -> Result<()> {
-        // Atomically remove and get the old value
-        let state = self
-            .indexes
+    pub fn drop_index(&mut self, name: &str) -> Result<()> {
+        let _lock = self.acquire_index_lock(name)?;
+
+        // Remove from memory
+        self.indexes
             .remove(name)
             .ok_or_else(|| Error::IndexNotFound(name.to_string()))?;
-
-        // Drop the state (this will wait for any in-progress operations)
-        drop(state);
 
         // Delete index directory
         let index_path = self.index_path(name);
@@ -254,77 +224,38 @@ impl IndexManager {
 
     /// List all indexes.
     pub fn list_indexes(&self) -> Vec<String> {
-        self.indexes
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
+        self.indexes.keys().cloned().collect()
     }
 
     /// Get index schema.
     pub fn get_schema(&self, name: &str) -> Result<Option<IndexSchema>> {
-        Ok(self.indexes.get(name).map(|entry| entry.schema.clone()))
+        Ok(self.indexes.get(name).map(|s| s.schema.clone()))
     }
 
     /// Get index config.
     pub fn get_config(&self, name: &str) -> Result<Option<IndexConfig>> {
-        Ok(self.indexes.get(name).map(|entry| entry.config.clone()))
+        Ok(self.indexes.get(name).map(|s| s.config.clone()))
     }
 
-    /// Add a document to an index as a background job.
-    ///
-    /// Returns a JobId for tracking the operation.
-    /// Use `job_registry().get_job(job_id)` to check status.
-    pub fn add_document(&self, index_name: &str, document: Document) -> Result<JobId> {
-        // Create job entry for API compatibility
-        let job_id = self
-            .job_registry
-            .create_job(JobType::BulkImport, Some(index_name.to_string()));
+    /// Add a document to an index.
+    pub fn add_document(&mut self, index_name: &str, document: Document) -> Result<()> {
+        let _lock = self.acquire_index_lock(index_name)?;
 
-        // Execute synchronously - CLI doesn't need async job queue
-        self.job_registry.start_job(&job_id);
-
-        let id = document.id.clone();
-        match self.add_document_sync(index_name, document) {
-            Ok(_) => {
-                debug!("Added document {} to index {}", id, index_name);
-                self.job_registry.complete_job(
-                    &job_id,
-                    format!("Document '{}' added successfully", id),
-                );
-            }
-            Err(e) => {
-                self.job_registry.fail_job(&job_id, e.to_string());
-            }
-        }
-
-        Ok(job_id)
-    }
-
-    /// Add a document synchronously (for batch operations).
-    ///
-    /// This is a synchronous version for use in batch operations.
-    /// Returns Ok(()) if the document was added successfully.
-    pub fn add_document_sync(&self, index_name: &str, document: Document) -> Result<()> {
-        let state = self.get_index(index_name)?;
+        let state = self
+            .indexes
+            .get_mut(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let id = document.id.clone();
         let expires_at_ts = document
             .expires_at
             .map(|t| t.timestamp())
             .unwrap_or(i64::MAX);
-        let field_values: Vec<(String, serde_json::Value)> =
-            document.fields.into_iter().collect();
+        let field_values: Vec<(String, serde_json::Value)> = document.fields.into_iter().collect();
 
-        // Acquire write lock for the operation
         state.ensure_writer()?;
 
-        let mut guard = state.writer.write();
-        let writer = match guard.as_mut() {
-            Some(w) => w,
-            None => {
-                return Err(Error::WriterNotInitialized);
-            }
-        };
+        let writer = state.writer.as_mut().ok_or(Error::WriterNotInitialized)?;
 
         // Delete existing document with same ID
         let delete_term = Term::from_field_text(state.id_field, &id);
@@ -347,42 +278,18 @@ impl IndexManager {
         Ok(())
     }
 
-    /// Delete a document from an index (synchronous execution).
-    ///
-    /// Returns a JobId for API compatibility, but executes synchronously.
-    pub fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<JobId> {
-        let job_id = self.job_registry.create_job(
-            JobType::Custom("delete_document".to_string()),
-            Some(index_name.to_string()),
-        );
+    /// Delete a document from an index.
+    pub fn delete_document(&mut self, index_name: &str, doc_id: &str) -> Result<()> {
+        let _lock = self.acquire_index_lock(index_name)?;
 
-        self.job_registry.start_job(&job_id);
-
-        match self.delete_document_sync(index_name, doc_id) {
-            Ok(_) => {
-                self.job_registry.complete_job(
-                    &job_id,
-                    format!("Document '{}' deleted successfully", doc_id),
-                );
-            }
-            Err(e) => {
-                self.job_registry.fail_job(&job_id, e.to_string());
-            }
-        }
-
-        Ok(job_id)
-    }
-
-    /// Delete a document synchronously (internal implementation).
-    fn delete_document_sync(&self, index_name: &str, doc_id: &str) -> Result<()> {
-        let state = self.get_index(index_name)?;
+        let state = self
+            .indexes
+            .get_mut(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         state.ensure_writer()?;
 
-        let mut guard = state.writer.write();
-        let writer = guard
-            .as_mut()
-            .ok_or(Error::WriterNotInitialized)?;
+        let writer = state.writer.as_mut().ok_or(Error::WriterNotInitialized)?;
 
         let delete_term = Term::from_field_text(state.id_field, doc_id);
         writer.delete_term(delete_term);
@@ -391,42 +298,18 @@ impl IndexManager {
         Ok(())
     }
 
-    /// Commit changes to an index (synchronous execution).
-    ///
-    /// Returns a JobId for API compatibility, but executes synchronously.
-    pub fn commit(&self, index_name: &str) -> Result<JobId> {
-        let job_id = self.job_registry.create_job(
-            JobType::Custom("commit".to_string()),
-            Some(index_name.to_string()),
-        );
+    /// Commit changes to an index.
+    pub fn commit(&mut self, index_name: &str) -> Result<()> {
+        let _lock = self.acquire_index_lock(index_name)?;
 
-        self.job_registry.start_job(&job_id);
-
-        match self.commit_sync(index_name) {
-            Ok(_) => {
-                self.job_registry.complete_job(
-                    &job_id,
-                    format!("Index '{}' committed successfully", index_name),
-                );
-            }
-            Err(e) => {
-                self.job_registry.fail_job(&job_id, e.to_string());
-            }
-        }
-
-        Ok(job_id)
-    }
-
-    /// Commit changes synchronously (internal implementation).
-    fn commit_sync(&self, index_name: &str) -> Result<()> {
-        let state = self.get_index(index_name)?;
+        let state = self
+            .indexes
+            .get_mut(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         state.ensure_writer()?;
 
-        let mut guard = state.writer.write();
-        let writer = guard
-            .as_mut()
-            .ok_or(Error::WriterNotInitialized)?;
+        let writer = state.writer.as_mut().ok_or(Error::WriterNotInitialized)?;
 
         writer.commit()?;
         state.reader.reload()?;
@@ -436,13 +319,14 @@ impl IndexManager {
     }
 
     /// Search an index.
-    ///
-    /// This is a read-only operation and doesn't acquire the writer lock.
     pub fn search(&self, index_name: &str, query: &SearchQuery) -> Result<Vec<SearchResult>> {
-        let state = self.get_index(index_name)?;
+        let state = self
+            .indexes
+            .get(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let searcher = state.reader.searcher();
-        let tantivy_query = build_tantivy_query(&state, query)?;
+        let tantivy_query = build_tantivy_query(state, query)?;
 
         let top_docs = searcher.search(
             &tantivy_query,
@@ -457,7 +341,7 @@ impl IndexManager {
         let snippet_generator = if let Some(ref highlight_config) = query.highlight {
             if let Some(ref query_text) = query.text {
                 Some(create_snippet_generator(
-                    &state,
+                    state,
                     query_text,
                     highlight_config,
                 )?)
@@ -510,7 +394,10 @@ impl IndexManager {
 
     /// Get index statistics.
     pub fn get_stats(&self, index_name: &str) -> Result<IndexStats> {
-        let state = self.get_index(index_name)?;
+        let state = self
+            .indexes
+            .get(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let searcher = state.reader.searcher();
         let segment_readers = searcher.segment_readers();
@@ -543,80 +430,38 @@ impl IndexManager {
         })
     }
 
-    /// Compact an index as a background job.
+    /// Compact an index.
     ///
     /// This commits any pending changes, waits for merging threads, and recreates the writer.
-    /// Returns a JobId for tracking the operation.
-    pub fn compact(&self, index_name: &str) -> Result<JobId> {
-        let state = self.get_index(index_name)?;
-        let index_name_owned = index_name.to_string();
+    pub fn compact(&mut self, index_name: &str) -> Result<()> {
+        let _lock = self.acquire_index_lock(index_name)?;
 
-        let job_id = self
-            .job_registry
-            .create_job(JobType::IndexCompact, Some(index_name_owned.clone()));
+        let state = self
+            .indexes
+            .get_mut(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
-        let rt_handle = tokio::runtime::Handle::current();
-        let job_id_clone = job_id.clone();
-        let job_registry = self.job_registry.clone();
-
-        rt_handle.spawn(async move {
-            job_registry.start_job(&job_id_clone);
-            job_registry.update_progress(&job_id_clone, 10, "Starting compaction".to_string());
-
-            // Commit and wait for merges
-            {
-                let mut guard = state.writer.write();
-                if let Some(writer) = guard.as_mut() {
-                    if let Err(e) = writer.commit() {
-                        job_registry.fail_job(&job_id_clone, format!("Commit failed: {}", e));
-                        return;
-                    }
-                }
-                job_registry.update_progress(&job_id_clone, 30, "Commit completed".to_string());
-
-                if let Some(writer) = guard.take() {
-                    if let Err(e) = writer.wait_merging_threads() {
-                        warn!("Failed to wait for merging threads: {}", e);
-                    }
-                }
+        // Commit and wait for merges
+        {
+            let writer = state.writer.as_mut();
+            if let Some(writer) = writer {
+                writer.commit()?;
             }
+        }
 
-            job_registry.update_progress(
-                &job_id_clone,
-                60,
-                "Merging threads completed".to_string(),
-            );
-
-            // Recreate writer
-            {
-                let mut guard = state.writer.write();
-                match state.tantivy_index.writer(50_000_000) {
-                    Ok(new_writer) => {
-                        *guard = Some(new_writer);
-                    }
-                    Err(e) => {
-                        job_registry
-                            .fail_job(&job_id_clone, format!("Failed to recreate writer: {}", e));
-                        return;
-                    }
-                }
+        // Take and wait for merging threads
+        if let Some(writer) = state.writer.take() {
+            if let Err(e) = writer.wait_merging_threads() {
+                warn!("Failed to wait for merging threads: {}", e);
             }
+        }
 
-            job_registry.update_progress(&job_id_clone, 80, "Reloading reader".to_string());
+        // Recreate writer
+        state.writer = Some(state.tantivy_index.writer(50_000_000)?);
+        state.reader.reload()?;
 
-            if let Err(e) = state.reader.reload() {
-                job_registry.fail_job(&job_id_clone, format!("Failed to reload reader: {}", e));
-                return;
-            }
-
-            info!("Compacted index {}", index_name_owned);
-            job_registry.complete_job(
-                &job_id_clone,
-                format!("Index '{}' compacted successfully", index_name_owned),
-            );
-        });
-
-        Ok(job_id)
+        info!("Compacted index {}", index_name);
+        Ok(())
     }
 
     /// List all documents in an index (with pagination).
@@ -626,7 +471,10 @@ impl IndexManager {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Document>> {
-        let state = self.get_index(index_name)?;
+        let state = self
+            .indexes
+            .get(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
 
         let searcher = state.reader.searcher();
         let tantivy_query = tantivy::query::AllQuery;
@@ -678,7 +526,7 @@ impl IndexManager {
     }
 
     /// Load existing indexes from disk.
-    pub fn load_indexes(&self) -> Result<()> {
+    pub fn load_indexes(&mut self) -> Result<()> {
         let indexes_path = self.base_path.join("indexes");
         if !indexes_path.exists() {
             return Ok(());
@@ -703,7 +551,7 @@ impl IndexManager {
         Ok(())
     }
 
-    fn load_index(&self, name: &str, metadata_path: &Path) -> Result<()> {
+    fn load_index(&mut self, name: &str, metadata_path: &Path) -> Result<()> {
         let metadata_json = std::fs::read_to_string(metadata_path)?;
         let metadata: IndexMetadata = serde_json::from_str(&metadata_json)?;
 
@@ -716,29 +564,20 @@ impl IndexManager {
         let tantivy_index = Index::open(directory)?;
         let reader = tantivy_index.reader()?;
 
-        let state = Arc::new(IndexState {
+        let state = IndexState {
             schema: metadata.schema,
             config: metadata.config,
             _tantivy_schema: tantivy_schema,
             tantivy_index,
             reader,
-            writer: RwLock::new(None),
+            writer: None,
             field_map,
             id_field,
             expires_at_field,
-        });
+        };
 
-        // Insert into DashMap
         self.indexes.insert(name.to_string(), state);
         Ok(())
-    }
-
-    /// Get a reference to an index state.
-    fn get_index(&self, name: &str) -> Result<Arc<IndexState>> {
-        self.indexes
-            .get(name)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| Error::IndexNotFound(name.to_string()))
     }
 }
 
@@ -846,21 +685,51 @@ fn build_tantivy_query(
     state: &IndexState,
     query: &SearchQuery,
 ) -> Result<Box<dyn tantivy::query::Query>> {
-    use tantivy::query::{BooleanQuery, Occur, TermQuery};
-    use tantivy::schema::IndexRecordOption;
+    use tantivy::query::{BooleanQuery, Occur, QueryParser};
 
     let mut queries: Vec<(Occur, Box<dyn tantivy::query::Query>)> = Vec::new();
 
     if let Some(ref text) = query.text {
-        for (field_name, tantivy_field) in &state.field_map {
-            if let Some(field_def) = state.schema.get_field(field_name) {
-                if field_def.field_type == FieldType::Text && field_def.indexed {
-                    let term = tantivy::Term::from_field_text(*tantivy_field, text);
-                    let term_query: Box<dyn tantivy::query::Query> = Box::new(TermQuery::new(
-                        term,
-                        IndexRecordOption::WithFreqsAndPositions,
-                    ));
-                    queries.push((Occur::Should, term_query));
+        // Collect all indexed text fields
+        let text_fields: Vec<Field> = state
+            .field_map
+            .iter()
+            .filter_map(|(field_name, tantivy_field)| {
+                if let Some(field_def) = state.schema.get_field(field_name) {
+                    if field_def.field_type == FieldType::Text && field_def.indexed {
+                        return Some(*tantivy_field);
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if !text_fields.is_empty() {
+            // Use QueryParser for proper full-text search with tokenization
+            let query_parser = QueryParser::for_index(&state.tantivy_index, text_fields);
+
+            match query_parser.parse_query(text) {
+                Ok(parsed_query) => {
+                    queries.push((Occur::Must, parsed_query));
+                }
+                Err(e) => {
+                    // If parsing fails, fall back to term queries for each word
+                    debug!("Query parse failed, falling back to term search: {}", e);
+                    for word in text.split_whitespace() {
+                        for (field_name, tantivy_field) in &state.field_map {
+                            if let Some(field_def) = state.schema.get_field(field_name) {
+                                if field_def.field_type == FieldType::Text && field_def.indexed {
+                                    let term = tantivy::Term::from_field_text(*tantivy_field, word);
+                                    let term_query: Box<dyn tantivy::query::Query> =
+                                        Box::new(tantivy::query::TermQuery::new(
+                                            term,
+                                            tantivy::schema::IndexRecordOption::WithFreqsAndPositions,
+                                        ));
+                                    queries.push((Occur::Should, term_query));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1055,17 +924,15 @@ impl IndexManager {
     ///
     /// Returns a BatchResult with success/failure counts.
     pub fn add_documents_batch(
-        &self,
+        &mut self,
         index_name: &str,
         documents: Vec<BatchDocumentInput>,
         default_ttl: Option<String>,
-        parallel: usize,
+        _parallel: usize,
     ) -> crate::Result<super::document::BatchResult> {
-        use std::sync::{Arc, Mutex};
-
         let total = documents.len();
-        let errors = Arc::new(Mutex::new(Vec::new()));
-        let success_count = Arc::new(Mutex::new(0usize));
+        let mut errors = Vec::new();
+        let mut success_count = 0usize;
 
         // Parse default TTL if provided
         let default_expires_at = if let Some(ref ttl_str) = default_ttl {
@@ -1074,85 +941,99 @@ impl IndexManager {
             None
         };
 
-        // Process documents in parallel batches
-        let chunk_size = (documents.len() + parallel - 1) / parallel;
-        let chunks: Vec<Vec<BatchDocumentInput>> = documents
-            .chunks(chunk_size.max(1))
-            .map(|c| c.to_vec())
-            .collect();
+        // Acquire lock once for the entire batch
+        let _lock = self.acquire_index_lock(index_name)?;
 
-        let mut handles = Vec::new();
+        for doc_input in documents {
+            let mut doc = Document::new(doc_input.id.clone(), doc_input.fields);
 
-        for chunk in chunks {
-            let index_name = index_name.to_string();
-            let manager = self.clone();
-            let errors = Arc::clone(&errors);
-            let success_count = Arc::clone(&success_count);
-            let default_expires_at = default_expires_at.map(|d| d.num_seconds());
-
-            let handle = std::thread::spawn(move || {
-                for doc_input in chunk {
-                    let mut doc = Document::new(doc_input.id.clone(), doc_input.fields);
-
-                    // Apply TTL: document-specific first, then default
-                    let ttl = doc_input.ttl.or_else(|| default_expires_at.map(|_| String::new()));
-                    if let Some(ttl_str) = ttl {
-                        let duration = if ttl_str.is_empty() {
-                            chrono::Duration::seconds(default_expires_at.unwrap_or(0))
-                        } else {
-                            match parse_ttl(&ttl_str) {
-                                Ok(d) => d,
-                                Err(e) => {
-                                    errors
-                                        .lock()
-                                        .unwrap()
-                                        .push(super::document::BatchError {
-                                            id: doc_input.id.clone(),
-                                            error: format!("Invalid TTL: {}", e),
-                                        });
-                                    continue;
-                                }
-                            }
-                        };
-                        doc = doc.with_expiry(chrono::Utc::now() + duration);
-                    }
-
-                    // Add document synchronously
-                    match manager.add_document_sync(&index_name, doc) {
-                        Ok(_) => {
-                            *success_count.lock().unwrap() += 1;
-                        }
+            // Apply TTL: document-specific first, then default
+            let ttl = doc_input
+                .ttl
+                .or_else(|| default_expires_at.map(|_| String::new()));
+            if let Some(ttl_str) = ttl {
+                let duration = if ttl_str.is_empty() {
+                    chrono::Duration::seconds(
+                        default_expires_at.map(|d| d.num_seconds()).unwrap_or(0),
+                    )
+                } else {
+                    match parse_ttl(&ttl_str) {
+                        Ok(d) => d,
                         Err(e) => {
-                            errors.lock().unwrap().push(super::document::BatchError {
+                            errors.push(super::document::BatchError {
                                 id: doc_input.id.clone(),
-                                error: e.to_string(),
+                                error: format!("Invalid TTL: {}", e),
                             });
+                            continue;
                         }
                     }
+                };
+                doc = doc.with_expiry(chrono::Utc::now() + duration);
+            }
+
+            // Add document directly (lock already held)
+            match self.add_document_internal(index_name, doc) {
+                Ok(_) => {
+                    success_count += 1;
                 }
-            });
-
-            handles.push(handle);
+                Err(e) => {
+                    errors.push(super::document::BatchError {
+                        id: doc_input.id.clone(),
+                        error: e.to_string(),
+                    });
+                }
+            }
         }
-
-        // Wait for all workers to complete
-        for handle in handles {
-            handle.join().expect("Worker thread panicked");
-        }
-
-        let errors_vec = std::mem::take(&mut *errors.lock().unwrap());
-        let success = *success_count.lock().unwrap();
 
         Ok(super::document::BatchResult {
             total,
-            success,
-            failed: errors_vec.len(),
-            errors: errors_vec,
+            success: success_count,
+            failed: errors.len(),
+            errors,
         })
+    }
+
+    /// Internal add document without lock (for batch operations).
+    fn add_document_internal(&mut self, index_name: &str, document: Document) -> Result<()> {
+        let state = self
+            .indexes
+            .get_mut(index_name)
+            .ok_or_else(|| Error::IndexNotFound(index_name.to_string()))?;
+
+        let id = document.id.clone();
+        let expires_at_ts = document
+            .expires_at
+            .map(|t| t.timestamp())
+            .unwrap_or(i64::MAX);
+        let field_values: Vec<(String, serde_json::Value)> = document.fields.into_iter().collect();
+
+        state.ensure_writer()?;
+
+        let writer = state.writer.as_mut().ok_or(Error::WriterNotInitialized)?;
+
+        // Delete existing document with same ID
+        let delete_term = Term::from_field_text(state.id_field, &id);
+        writer.delete_term(delete_term);
+
+        // Build new document
+        let mut doc = TantivyDocument::new();
+        doc.add_text(state.id_field, &id);
+        doc.add_i64(state.expires_at_field, expires_at_ts);
+
+        for (field_name, value) in field_values {
+            if let Some(tantivy_field) = state.field_map.get(&field_name) {
+                let _ = add_field_value(&mut doc, *tantivy_field, &value);
+            }
+        }
+
+        writer.add_document(doc)?;
+        debug!("Added document {} to index {}", id, index_name);
+
+        Ok(())
     }
 }
 
-/// Parse a TTL string into a duration (moved from main.rs for reuse).
+/// Parse a TTL string into a duration.
 fn parse_ttl(ttl: &str) -> crate::Result<chrono::Duration> {
     let ttl = ttl.trim();
 
@@ -1163,17 +1044,12 @@ fn parse_ttl(ttl: &str) -> crate::Result<chrono::Duration> {
     let numeric_end = ttl.find(|c: char| !c.is_ascii_digit()).unwrap_or(ttl.len());
 
     if numeric_end == 0 {
-        return Err(crate::Error::ParseError(format!(
-            "Invalid TTL: {}",
-            ttl
-        )));
+        return Err(crate::Error::ParseError(format!("Invalid TTL: {}", ttl)));
     }
 
     let number: i64 = ttl[..numeric_end]
         .parse()
-        .map_err(|_| {
-            crate::Error::ParseError(format!("Invalid TTL number: {}", ttl))
-        })?;
+        .map_err(|_| crate::Error::ParseError(format!("Invalid TTL number: {}", ttl)))?;
 
     let unit = &ttl[numeric_end..];
 

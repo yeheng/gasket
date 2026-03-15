@@ -47,6 +47,9 @@ pub enum Error {
 
     #[error("Path error: {0}")]
     PathError(PathBuf, String),
+
+    #[error("Lock error: {0}")]
+    LockError(String),
 }
 
 impl From<tantivy::query::QueryParserError> for Error {

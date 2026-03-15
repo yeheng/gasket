@@ -3,12 +3,11 @@
 //! A command-line interface for managing Tantivy full-text search indexes.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use directories::UserDirs;
 use tantivy_cli::index::{Document, FieldDef, IndexConfig, IndexManager, SearchQuery};
-use tantivy_cli::maintenance::{JobRegistry, MaintenanceConfig, MaintenanceScheduler};
+use tantivy_cli::maintenance::rebuild_index;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -23,14 +22,6 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, default_value = "info")]
     log_level: String,
-
-    /// Enable automatic maintenance (compaction, expiration)
-    #[arg(long, default_value = "true")]
-    auto_maintain: bool,
-
-    /// Maintenance interval in seconds
-    #[arg(long, default_value = "3600")]
-    maintenance_interval: u64,
 
     #[command(subcommand)]
     command: Commands,
@@ -149,21 +140,18 @@ enum DocCommands {
         index: String,
 
         /// Path to JSON file containing array of documents
-        /// Each document should have: { "id": "...", "fields": {...}, "ttl": "..." (optional) }
         #[arg(short, long)]
         file: Option<PathBuf>,
 
         /// Documents as JSON array string (alternative to --file)
-        /// Format: [{"id": "1", "fields": {...}}, {"id": "2", "fields": {...}}]
         #[arg(short, long, conflicts_with = "file")]
         documents: Option<String>,
 
         /// Optional default TTL for all documents (e.g., "7d")
-        /// Individual document TTL in JSON takes precedence
         #[arg(short, long)]
         ttl: Option<String>,
 
-        /// Number of parallel workers (default: 4)
+        /// Number of parallel workers (default: 4, ignored in sync mode)
         #[arg(short, long, default_value = "4")]
         parallel: usize,
     },
@@ -195,17 +183,9 @@ enum MaintainCommands {
         #[arg(short, long)]
         index: Option<String>,
     },
-
-    /// Get job status
-    JobStatus {
-        /// Specific job ID to check
-        #[arg(short, long)]
-        job_id: Option<String>,
-    },
 }
 
-#[tokio::main]
-async fn main() -> tantivy_cli::Result<()> {
+fn main() -> tantivy_cli::Result<()> {
     let cli = Cli::parse();
 
     // Initialize logging
@@ -220,46 +200,16 @@ async fn main() -> tantivy_cli::Result<()> {
 
     info!("Index directory: {:?}", index_dir);
 
-    // Create job registry
-    let job_registry = Arc::new(JobRegistry::new());
-
     // Create index manager
-    let manager = IndexManager::new(&index_dir, job_registry.clone());
+    let mut manager = IndexManager::new(&index_dir);
     manager.load_indexes()?;
-
-    // Wrap in Arc for shared ownership
-    let manager = Arc::new(manager);
-
-    // Start maintenance scheduler if enabled
-    let _scheduler_handle = if cli.auto_maintain {
-        let config = MaintenanceConfig {
-            auto_compact: true,
-            deleted_ratio_threshold: 0.2,
-            max_segments: 10,
-            auto_expire: true,
-            expire_interval_secs: cli.maintenance_interval,
-        };
-        let scheduler = MaintenanceScheduler::new(manager.clone(), config);
-        let (handle, _token) = scheduler.start();
-        info!(
-            "Maintenance scheduler started (interval: {}s)",
-            cli.maintenance_interval
-        );
-        Some(handle)
-    } else {
-        None
-    };
 
     // Execute command
     match cli.command {
-        Commands::Index { subcommand } => execute_index_command(&manager, subcommand).await?,
-        Commands::Doc { subcommand } => execute_doc_command(&manager, subcommand).await?,
-        Commands::Search { index, query } => {
-            execute_search_command(&manager, &index, &query).await?
-        }
-        Commands::Maintain { subcommand } => {
-            execute_maintain_command(&manager, subcommand).await?
-        }
+        Commands::Index { subcommand } => execute_index_command(&mut manager, subcommand)?,
+        Commands::Doc { subcommand } => execute_doc_command(&mut manager, subcommand)?,
+        Commands::Search { index, query } => execute_search_command(&manager, &index, &query)?,
+        Commands::Maintain { subcommand } => execute_maintain_command(&manager, subcommand)?,
     }
 
     Ok(())
@@ -267,7 +217,8 @@ async fn main() -> tantivy_cli::Result<()> {
 
 /// Initialize logging
 fn init_logging(log_level: &str) -> tantivy_cli::Result<()> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
 
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
@@ -277,8 +228,8 @@ fn init_logging(log_level: &str) -> tantivy_cli::Result<()> {
     Ok(())
 }
 
-async fn execute_index_command(
-    manager: &IndexManager,
+fn execute_index_command(
+    manager: &mut IndexManager,
     subcommand: IndexCommands,
 ) -> tantivy_cli::Result<()> {
     match subcommand {
@@ -287,8 +238,9 @@ async fn execute_index_command(
             fields,
             default_ttl,
         } => {
-            let field_defs: Vec<FieldDef> = serde_json::from_str(&fields)
-                .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e)))?;
+            let field_defs: Vec<FieldDef> = serde_json::from_str(&fields).map_err(|e| {
+                tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e))
+            })?;
 
             let config = default_ttl.map(|ttl| IndexConfig {
                 default_ttl: Some(ttl),
@@ -345,17 +297,14 @@ async fn execute_index_command(
             println!("Deleted index '{}'", name);
         }
         IndexCommands::Compact { name } => {
-            let job_id = manager.compact(&name)?;
-            println!("Compaction started for index '{}', job_id: {}", name, job_id);
+            manager.compact(&name)?;
+            println!("Compaction completed for index '{}'", name);
         }
         IndexCommands::Rebuild { name, fields } => {
-            use tantivy_cli::maintenance::rebuild_index;
-
             let new_fields: Option<Vec<FieldDef>> = if let Some(fields_json) = fields {
-                Some(
-                    serde_json::from_str(&fields_json)
-                        .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e)))?,
-                )
+                Some(serde_json::from_str(&fields_json).map_err(|e| {
+                    tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e))
+                })?)
             } else {
                 None
             };
@@ -370,8 +319,8 @@ async fn execute_index_command(
     Ok(())
 }
 
-async fn execute_doc_command(
-    manager: &IndexManager,
+fn execute_doc_command(
+    manager: &mut IndexManager,
     subcommand: DocCommands,
 ) -> tantivy_cli::Result<()> {
     match subcommand {
@@ -382,8 +331,9 @@ async fn execute_doc_command(
             ttl,
         } => {
             let field_map: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_str(&fields)
-                    .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e)))?;
+                serde_json::from_str(&fields).map_err(|e| {
+                    tantivy_cli::Error::ParseError(format!("Invalid fields JSON: {}", e))
+                })?;
 
             let mut doc = Document::new(id.clone(), field_map);
 
@@ -393,19 +343,10 @@ async fn execute_doc_command(
                 doc = doc.with_expiry(expires_at);
             }
 
-            let job_id = manager.add_document(&index, doc)?;
+            manager.add_document(&index, doc)?;
+            manager.commit(&index)?;
 
-            // Wait for job to complete
-            wait_for_job_completion(manager, &job_id, 5).await?;
-
-            // Commit to make the document searchable
-            let commit_job_id = manager.commit(&index)?;
-            wait_for_job_completion(manager, &commit_job_id, 5).await?;
-
-            println!(
-                "Document '{}' added successfully, job_id: {}",
-                id, job_id
-            );
+            println!("Document '{}' added successfully", id);
         }
         DocCommands::AddBatch {
             index,
@@ -415,36 +356,40 @@ async fn execute_doc_command(
             parallel,
         } => {
             // Parse documents from file or command line
-            let doc_inputs: Vec<tantivy_cli::index::BatchDocumentInput> = if let Some(file_path) = file {
-                // Read from file
-                let content = std::fs::read_to_string(&file_path)
-                    .map_err(|e| tantivy_cli::Error::PathError(file_path, e.to_string()))?;
-                serde_json::from_str(&content)
-                    .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid JSON file: {}", e)))?
-            } else if let Some(documents_json) = documents {
-                // Parse from command line
-                serde_json::from_str(&documents_json)
-                    .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid documents JSON: {}", e)))?
-            } else {
-                return Err(tantivy_cli::Error::ParseError(
-                    "Either --file or --documents must be provided".to_string(),
-                ));
-            };
+            let doc_inputs: Vec<tantivy_cli::index::BatchDocumentInput> =
+                if let Some(file_path) = file {
+                    let content = std::fs::read_to_string(&file_path)
+                        .map_err(|e| tantivy_cli::Error::PathError(file_path, e.to_string()))?;
+                    serde_json::from_str(&content).map_err(|e| {
+                        tantivy_cli::Error::ParseError(format!("Invalid JSON file: {}", e))
+                    })?
+                } else if let Some(documents_json) = documents {
+                    serde_json::from_str(&documents_json).map_err(|e| {
+                        tantivy_cli::Error::ParseError(format!("Invalid documents JSON: {}", e))
+                    })?
+                } else {
+                    return Err(tantivy_cli::Error::ParseError(
+                        "Either --file or --documents must be provided".to_string(),
+                    ));
+                };
 
             if doc_inputs.is_empty() {
                 println!("No documents to add");
                 return Ok(());
             }
 
-            println!("Adding {} documents to index '{}'...", doc_inputs.len(), index);
+            println!(
+                "Adding {} documents to index '{}'...",
+                doc_inputs.len(),
+                index
+            );
 
             // Add documents in batch
             let result = manager.add_documents_batch(&index, doc_inputs, ttl, parallel)?;
 
             // Commit to make all documents searchable at once
             println!("Committing changes...");
-            let commit_job_id = manager.commit(&index)?;
-            wait_for_job_completion(manager, &commit_job_id, 30).await?;
+            manager.commit(&index)?;
 
             // Print results
             println!("\nBatch add completed:");
@@ -460,63 +405,20 @@ async fn execute_doc_command(
             }
         }
         DocCommands::Delete { index, id } => {
-            let job_id = manager.delete_document(&index, &id)?;
+            manager.delete_document(&index, &id)?;
+            manager.commit(&index)?;
 
-            // Wait for job to complete
-            wait_for_job_completion(manager, &job_id, 5).await?;
-
-            // Commit to apply the deletion
-            let commit_job_id = manager.commit(&index)?;
-            wait_for_job_completion(manager, &commit_job_id, 5).await?;
-
-            println!(
-                "Document '{}' deleted successfully, job_id: {}",
-                id, job_id
-            );
+            println!("Document '{}' deleted successfully", id);
         }
         DocCommands::Commit { index } => {
-            let job_id = manager.commit(&index)?;
-
-            // Wait for job to complete
-            wait_for_job_completion(manager, &job_id, 5).await?;
-
-            println!("Index '{}' committed successfully, job_id: {}", index, job_id);
+            manager.commit(&index)?;
+            println!("Index '{}' committed successfully", index);
         }
     }
     Ok(())
 }
 
-/// Wait for a job to complete with timeout.
-///
-/// Since jobs now execute synchronously, this function simply verifies
-/// the job status is immediately available.
-async fn wait_for_job_completion(
-    manager: &IndexManager,
-    job_id: &str,
-    _timeout_secs: u64,
-) -> tantivy_cli::Result<()> {
-    // Jobs execute synchronously, so status should be immediately available
-    if let Some(job) = manager.job_registry().get_job(job_id) {
-        match job.status {
-            tantivy_cli::maintenance::JobStatus::Completed => return Ok(()),
-            tantivy_cli::maintenance::JobStatus::Failed => {
-                return Err(tantivy_cli::Error::ParseError(
-                    job.error.unwrap_or_else(|| "Job failed".to_string())
-                ));
-            }
-            _ => {
-                // Job is still pending - this shouldn't happen with sync execution
-                return Err(tantivy_cli::Error::ParseError(
-                    "Job is still pending - this indicates a bug in sync execution".to_string()
-                ));
-            }
-        }
-    } else {
-        return Err(tantivy_cli::Error::ParseError("Job not found".to_string()));
-    }
-}
-
-async fn execute_search_command(
+fn execute_search_command(
     manager: &IndexManager,
     index: &str,
     query_json: &str,
@@ -528,10 +430,7 @@ async fn execute_search_command(
 
     println!("Found {} results:", results.len());
     for result in results {
-        println!(
-            "  [{}] Score: {:.4}",
-            result.id, result.score
-        );
+        println!("  [{}] Score: {:.4}", result.id, result.score);
         if let Some(highlight) = result.highlight {
             println!("    {}", highlight);
         }
@@ -540,7 +439,7 @@ async fn execute_search_command(
     Ok(())
 }
 
-async fn execute_maintain_command(
+fn execute_maintain_command(
     manager: &IndexManager,
     subcommand: MaintainCommands,
 ) -> tantivy_cli::Result<()> {
@@ -562,38 +461,10 @@ async fn execute_maintain_command(
                 let indexes = manager.list_indexes();
                 for index_name in indexes {
                     if let Ok(stats) = manager.get_stats(&index_name) {
-                        println!("Index '{}': {} docs, health: {:?}", index_name, stats.doc_count, stats.health);
-                    }
-                }
-            }
-        }
-        MaintainCommands::JobStatus { job_id } => {
-            if let Some(jid) = job_id {
-                match manager.job_registry().get_job(&jid) {
-                    Some(job) => {
-                        println!("Job '{}':", jid);
-                        println!("  Status: {:?}", job.status);
-                        println!("  Type: {:?}", job.job_type);
-                        println!("  Index: {:?}", job.index_name);
-                        if let Some(progress) = job.progress {
-                            println!("  Progress: {}%", progress);
-                        }
-                        if let Some(error) = &job.error {
-                            println!("  Error: {}", error);
-                        }
-                    }
-                    None => {
-                        println!("Job not found: {}", jid);
-                    }
-                }
-            } else {
-                let jobs = manager.job_registry().list_jobs(None, None);
-                if jobs.is_empty() {
-                    println!("No jobs found");
-                } else {
-                    println!("Jobs:");
-                    for job in jobs {
-                        println!("  [{}] {:?} - {:?}", job.id, job.job_type, job.status);
+                        println!(
+                            "Index '{}': {} docs, health: {:?}",
+                            index_name, stats.doc_count, stats.health
+                        );
                     }
                 }
             }
@@ -613,7 +484,10 @@ fn parse_ttl(ttl: &str) -> tantivy_cli::Result<chrono::Duration> {
     let numeric_end = ttl.find(|c: char| !c.is_ascii_digit()).unwrap_or(ttl.len());
 
     if numeric_end == 0 {
-        return Err(tantivy_cli::Error::ParseError(format!("Invalid TTL: {}", ttl)));
+        return Err(tantivy_cli::Error::ParseError(format!(
+            "Invalid TTL: {}",
+            ttl
+        )));
     }
 
     let number: i64 = ttl[..numeric_end]

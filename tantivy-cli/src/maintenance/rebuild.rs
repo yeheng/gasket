@@ -41,7 +41,7 @@ const DEFAULT_BATCH_SIZE: usize = 1000;
 ///
 /// Memory usage stays constant regardless of total document count.
 pub fn rebuild_index(
-    manager: &IndexManager,
+    manager: &mut IndexManager,
     index_name: &str,
     new_fields: Option<Vec<FieldDef>>,
     batch_size: usize,
@@ -62,14 +62,18 @@ pub fn rebuild_index(
 
     // Get total document count first (for progress reporting)
     let stats = manager.get_stats(index_name)?;
-    let total_docs = stats.doc_count as u64;
+    let total_docs = stats.doc_count;
     info!(
         "Preparing to reindex {} documents in batches of {}",
         total_docs, batch_size
     );
 
     // Phase 2: Create temporary index for the rebuild
-    let temp_index_name = format!("{}_rebuild_tmp_{}", index_name, chrono::Utc::now().timestamp());
+    let temp_index_name = format!(
+        "{}_rebuild_tmp_{}",
+        index_name,
+        chrono::Utc::now().timestamp()
+    );
     manager.create_index(&temp_index_name, fields, None)?;
     info!("Created temporary index: {}", temp_index_name);
 
@@ -131,7 +135,7 @@ pub fn rebuild_index(
 }
 
 /// Rename an index by renaming its directory and reloading.
-fn rename_index(manager: &IndexManager, old_name: &str, new_name: &str) -> Result<()> {
+fn rename_index(manager: &mut IndexManager, old_name: &str, new_name: &str) -> Result<()> {
     // Get the index directory path
     let index_dir = manager.index_dir();
 
@@ -161,7 +165,7 @@ fn rename_index(manager: &IndexManager, old_name: &str, new_name: &str) -> Resul
 /// This is useful when you want to minimize global lock time.
 #[allow(dead_code)]
 pub fn prepare_rebuild(
-    manager: &IndexManager,
+    manager: &mut IndexManager,
     index_name: &str,
     new_fields: Option<Vec<FieldDef>>,
 ) -> Result<(Vec<Document>, Vec<FieldDef>, bool)> {
@@ -186,7 +190,7 @@ pub fn prepare_rebuild(
 /// All locking is handled internally by IndexManager methods.
 #[allow(dead_code)]
 pub fn execute_rebuild(
-    manager: &IndexManager,
+    manager: &mut IndexManager,
     index_name: &str,
     docs: Vec<Document>,
     fields: Vec<FieldDef>,
