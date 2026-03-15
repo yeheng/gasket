@@ -64,6 +64,12 @@ const DEFAULT_MAX_TOKENS: u32 = 65536;
 const DEFAULT_MEMORY_WINDOW: usize = 50;
 /// Default maximum characters for tool result output
 const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 8000;
+/// Default subagent execution timeout in seconds (10 minutes)
+pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
+/// Default session idle timeout in seconds (1 hour)
+pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECS: u64 = 3600;
+/// Default wait timeout for subagent results in seconds (12 minutes)
+pub const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 720;
 
 /// Agent loop configuration
 #[derive(Clone)]
@@ -79,6 +85,10 @@ pub struct AgentConfig {
     pub thinking_enabled: bool,
     /// Enable streaming mode for progressive output
     pub streaming: bool,
+    /// Subagent execution timeout in seconds
+    pub subagent_timeout_secs: u64,
+    /// Session idle timeout in seconds
+    pub session_idle_timeout_secs: u64,
 }
 
 impl Default for AgentConfig {
@@ -92,6 +102,8 @@ impl Default for AgentConfig {
             max_tool_result_chars: DEFAULT_MAX_TOOL_RESULT_CHARS,
             thinking_enabled: false,
             streaming: true,
+            subagent_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
+            session_idle_timeout_secs: DEFAULT_SESSION_IDLE_TIMEOUT_SECS,
         }
     }
 }

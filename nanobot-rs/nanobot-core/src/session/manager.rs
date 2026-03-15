@@ -50,7 +50,13 @@ impl Session {
     }
 
     /// Get the session key as a typed SessionKey.
+    ///
+    /// # Safety
+    ///
+    /// This is safe because `self.key` is always generated from a valid `SessionKey::to_string()`,
+    /// which guarantees the format is correct ("channel:chat_id").
     pub fn session_key(&self) -> SessionKey {
+        // SAFETY: self.key is always generated from SessionKey::to_string()
         SessionKey::from(self.key.as_str())
     }
 

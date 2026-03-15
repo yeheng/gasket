@@ -66,6 +66,8 @@ pub fn build_agent_config(config: &Config) -> AgentConfig {
         max_tool_result_chars: defaults.max_tool_result_chars,
         thinking_enabled: config.agents.defaults.thinking_enabled,
         streaming: config.agents.defaults.streaming,
+        subagent_timeout_secs: defaults.subagent_timeout_secs,
+        session_idle_timeout_secs: defaults.session_idle_timeout_secs,
     }
 }
 

@@ -4,6 +4,7 @@
 //! The `SubagentTaskBuilder` consolidates all the scattered `submit_*` methods
 //! into a single, fluent API.
 
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -39,6 +40,48 @@ pub async fn run_subagent(
         .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
+/// RAII guard for session key management.
+///
+/// Automatically clears the session key when dropped, ensuring
+/// cleanup even if the request panics.
+///
+/// # Example
+///
+/// ```ignore
+/// let manager = SubagentManager::new(...);
+/// {
+///     let _guard = manager.session_key_guard(session_key);
+///     // Session key is set
+///     manager.get_session_key(); // Some(session_key)
+/// }
+/// // Session key is automatically cleared
+/// manager.get_session_key(); // None
+/// ```
+pub struct SessionKeyGuard<'a> {
+    manager: &'a SubagentManager,
+}
+
+impl<'a> SessionKeyGuard<'a> {
+    fn new(manager: &'a SubagentManager, session_key: SessionKey) -> Self {
+        manager.set_session_key_internal(session_key);
+        Self { manager }
+    }
+}
+
+impl<'a> Deref for SessionKeyGuard<'a> {
+    type Target = SubagentManager;
+
+    fn deref(&self) -> &Self::Target {
+        self.manager
+    }
+}
+
+impl<'a> Drop for SessionKeyGuard<'a> {
+    fn drop(&mut self) {
+        self.manager.clear_session_key_internal();
+    }
+}
+
 pub struct SubagentManager {
     provider: Arc<dyn LlmProvider>,
     workspace: PathBuf,
@@ -46,8 +89,9 @@ pub struct SubagentManager {
     outbound_tx: mpsc::Sender<OutboundMessage>,
     /// Session key for WebSocket streaming (set per-request).
     /// Uses Mutex instead of RwLock because access is serial (one request at a time).
-    /// TODO: Remove this field entirely and pass session_key directly to methods.
     session_key: Arc<std::sync::Mutex<Option<SessionKey>>>,
+    /// Subagent execution timeout in seconds
+    timeout_secs: u64,
 }
 
 /// Builder for configuring and spawning subagent tasks.
@@ -505,22 +549,77 @@ impl SubagentManager {
             tools,
             outbound_tx,
             session_key: Arc::new(std::sync::Mutex::new(None)),
+            timeout_secs: super::loop_::DEFAULT_SUBAGENT_TIMEOUT_SECS,
         }
     }
 
-    /// Set the session key for the current request context.
+    /// Create a new SubagentManager with custom timeout.
+    pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = timeout_secs;
+        self
+    }
+
+    /// Get the configured timeout in seconds.
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout_secs
+    }
+
+    /// Get the timeout as a Duration.
+    pub fn timeout_duration(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.timeout_secs)
+    }
+
+    /// Create an RAII guard for session key management.
     ///
-    /// This should be called at the start of each request to enable
-    /// WebSocket streaming for subagent events.
-    pub fn set_session_key(&self, session_key: SessionKey) {
+    /// The session key will be automatically cleared when the guard is dropped,
+    /// ensuring cleanup even if the request panics.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let manager = SubagentManager::new(...);
+    /// {
+    ///     let _guard = manager.session_key_guard(session_key);
+    ///     // Use manager with session key set
+    ///     manager.task("task-1", "Analyze code").spawn(result_tx).await?;
+    /// }
+    /// // Session key automatically cleared
+    /// ```
+    pub fn session_key_guard(&self, session_key: SessionKey) -> SessionKeyGuard<'_> {
+        SessionKeyGuard::new(self, session_key)
+    }
+
+    /// Internal method to set session key (called by SessionKeyGuard)
+    fn set_session_key_internal(&self, session_key: SessionKey) {
         let mut guard = self.session_key.lock().unwrap();
         *guard = Some(session_key);
     }
 
-    /// Clear the session key (call after request completes)
-    pub fn clear_session_key(&self) {
+    /// Internal method to clear session key (called by SessionKeyGuard::drop)
+    fn clear_session_key_internal(&self) {
         let mut guard = self.session_key.lock().unwrap();
         *guard = None;
+    }
+
+    /// Set the session key for the current request context.
+    ///
+    /// # Deprecation Notice
+    ///
+    /// Prefer using `session_key_guard()` for automatic cleanup.
+    /// This method requires manual `clear_session_key()` call.
+    #[deprecated(note = "Use session_key_guard() for automatic cleanup")]
+    pub fn set_session_key(&self, session_key: SessionKey) {
+        self.set_session_key_internal(session_key);
+    }
+
+    /// Clear the session key (call after request completes)
+    ///
+    /// # Deprecation Notice
+    ///
+    /// Prefer using `session_key_guard()` for automatic cleanup.
+    #[deprecated(note = "Use session_key_guard() for automatic cleanup")]
+    pub fn clear_session_key(&self) {
+        self.clear_session_key_internal();
     }
 
     /// Get the current session key

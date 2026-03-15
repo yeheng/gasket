@@ -158,13 +158,58 @@ impl fmt::Display for SessionKey {
     }
 }
 
-impl From<&str> for SessionKey {
-    fn from(s: &str) -> Self {
+impl SessionKey {
+    /// Parse a session key from a string.
+    ///
+    /// Returns `None` if the format is invalid (missing ':' separator).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nanobot_core::bus::events::SessionKey;
+    ///
+    /// let key = SessionKey::parse("telegram:chat-123");
+    /// assert!(key.is_some());
+    ///
+    /// let invalid = SessionKey::parse("invalid_format");
+    /// assert!(invalid.is_none());
+    /// ```
+    pub fn parse(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.splitn(2, ':').collect();
         match parts.as_slice() {
-            [channel, chat_id] => Self::new(ChannelType::new(*channel), *chat_id),
-            _ => panic!("Invalid session key format: {}", s),
+            [channel, chat_id] => Some(Self::new(ChannelType::new(*channel), *chat_id)),
+            _ => None,
         }
+    }
+
+    /// Parse a session key from a string, returning an error on failure.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nanobot_core::bus::events::SessionKey;
+    ///
+    /// let key = SessionKey::try_parse("telegram:chat-123").unwrap();
+    /// assert_eq!(key.chat_id, "chat-123");
+    ///
+    /// let result = SessionKey::try_parse("invalid");
+    /// assert!(result.is_err());
+    /// ```
+    pub fn try_parse(s: impl AsRef<str>) -> Result<Self, SessionKeyParseError> {
+        Self::parse(s.as_ref())
+            .ok_or_else(|| SessionKeyParseError::InvalidFormat(s.as_ref().to_string()))
+    }
+}
+
+impl From<&str> for SessionKey {
+    /// Parse a session key from a string.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the format is invalid (missing ':' separator).
+    /// Use [`SessionKey::parse`] or [`SessionKey::try_parse`] for fallible versions.
+    fn from(s: &str) -> Self {
+        Self::parse(s).unwrap_or_else(|| panic!("Invalid session key format: {}", s))
     }
 }
 
@@ -172,6 +217,14 @@ impl From<String> for SessionKey {
     fn from(s: String) -> Self {
         Self::from(s.as_str())
     }
+}
+
+/// Error type for session key parsing failures.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Failed to parse session key: {0}")]
+pub enum SessionKeyParseError {
+    #[error("Invalid format (expected 'channel:chat_id'): {0}")]
+    InvalidFormat(String),
 }
 
 // ── InboundMessage ───────────────────────────────────────────
@@ -403,6 +456,7 @@ impl WebSocketMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::TryFrom;
 
     #[test]
     fn test_channel_type_constructors() {
@@ -481,5 +535,44 @@ mod tests {
         }
         assert_eq!(check_exhaustive(ChannelType::Telegram), "telegram");
         assert_eq!(check_exhaustive(ChannelType::new("foo")), "custom");
+    }
+
+    // SessionKey tests
+    #[test]
+    fn test_session_key_parse_valid() {
+        let key = SessionKey::parse("telegram:chat-123").unwrap();
+        assert_eq!(key.channel, ChannelType::Telegram);
+        assert_eq!(key.chat_id, "chat-123");
+    }
+
+    #[test]
+    fn test_session_key_parse_invalid() {
+        assert!(SessionKey::parse("invalid_format").is_none());
+        assert!(SessionKey::parse("").is_none());
+    }
+
+    #[test]
+    fn test_session_key_try_parse_valid() {
+        let key = SessionKey::try_parse("discord:user-456").unwrap();
+        assert_eq!(key.channel, ChannelType::Discord);
+        assert_eq!(key.chat_id, "user-456");
+    }
+
+    #[test]
+    fn test_session_key_try_parse_invalid() {
+        let result = SessionKey::try_parse("no_colon_here");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SessionKeyParseError::InvalidFormat(_)
+        ));
+    }
+
+    #[test]
+    fn test_session_key_roundtrip() {
+        let original = SessionKey::new(ChannelType::WebSocket, "session-abc");
+        let string = original.to_string();
+        let parsed = SessionKey::parse(&string).unwrap();
+        assert_eq!(original, parsed);
     }
 }

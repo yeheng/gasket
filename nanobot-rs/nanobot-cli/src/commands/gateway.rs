@@ -67,7 +67,8 @@ pub async fn cmd_gateway() -> Result<()> {
     println!("🐈 Starting gateway...\n");
 
     // Create message bus — receivers are split out at creation time, no Mutex needed
-    let (bus, inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(100);
+    // Increased buffer size from 100 to 512 to handle burst traffic from parallel subagents
+    let (bus, inbound_rx, outbound_rx) = nanobot_core::bus::MessageBus::new(512);
     let bus = Arc::new(bus);
 
     // MemoryStore provides the underlying SqliteStore for session management

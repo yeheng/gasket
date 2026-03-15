@@ -113,10 +113,12 @@ pub async fn run_session_actor(
             }
         };
 
-        // Set session key on SubagentManager before processing (for WebSocket streaming)
-        if let Some(ref manager) = subagent_manager {
-            manager.set_session_key(session_key.clone());
-        }
+        // Use RAII guard for session key management
+        // The guard automatically clears the session key when dropped,
+        // even if processing panics
+        let _guard = subagent_manager
+            .as_ref()
+            .map(|m| m.session_key_guard(session_key.clone()));
 
         // Process message and handle result immediately (avoid holding non-Send across await)
         match process_session_message(
@@ -133,11 +135,7 @@ pub async fn run_session_actor(
                 tracing::error!("Session [{}] error: {}", session_key_str, e);
             }
         }
-
-        // Clear session key after processing
-        if let Some(ref manager) = subagent_manager {
-            manager.clear_session_key();
-        }
+        // _guard is automatically dropped here, clearing the session key
     }
 }
 
@@ -277,10 +275,28 @@ async fn process_regular_message(
 /// the dead entry gets replaced with a fresh session actor. No polling needed —
 /// if a session never receives another message, its HashMap entry is harmless.
 pub async fn run_router_actor(
+    inbound_rx: mpsc::Receiver<InboundMessage>,
+    outbound_tx: mpsc::Sender<OutboundMessage>,
+    agent: Arc<AgentLoop>,
+    subagent_manager: Option<Arc<SubagentManager>>,
+) {
+    run_router_actor_with_timeout(
+        inbound_rx,
+        outbound_tx,
+        agent,
+        subagent_manager,
+        Duration::from_secs(crate::agent::loop_::DEFAULT_SESSION_IDLE_TIMEOUT_SECS),
+    )
+    .await
+}
+
+/// Router actor with configurable session idle timeout.
+pub async fn run_router_actor_with_timeout(
     mut inbound_rx: mpsc::Receiver<InboundMessage>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     agent: Arc<AgentLoop>,
     subagent_manager: Option<Arc<SubagentManager>>,
+    idle_timeout: Duration,
 ) {
     tracing::info!("Router Actor started");
     let mut sessions: HashMap<SessionKey, mpsc::Sender<InboundMessage>> = HashMap::new();
@@ -310,7 +326,7 @@ pub async fn run_router_actor(
                 ob_tx,
                 agent_clone,
                 manager_clone,
-                Duration::from_secs(3600), // Default: 1 hour (should be configurable)
+                idle_timeout,
             ));
 
             // Send to the freshly created channel (guaranteed to succeed)

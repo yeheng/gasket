@@ -18,10 +18,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::loop_::AgentResponse;
-
-/// Default timeout for waiting all results (12 minutes)
-const DEFAULT_WAIT_TIMEOUT_SECS: u64 = 720;
+use super::loop_::{AgentResponse, DEFAULT_WAIT_TIMEOUT_SECS};
 
 /// Subagent execution result
 #[derive(Debug, Clone)]
@@ -60,6 +57,15 @@ pub enum SubagentEvent {
     Completed { id: String, result: SubagentResult },
     /// Subagent encountered an error
     Error { id: String, error: String },
+}
+
+/// Error type for tracker operations
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum TrackerError {
+    #[error("Event receiver already taken - can only call take_event_receiver once")]
+    EventReceiverAlreadyTaken,
+    #[error("Result receiver is not available")]
+    ResultReceiverNotAvailable,
 }
 
 /// Tracks multiple subagent executions for parallel coordination
@@ -118,13 +124,13 @@ impl SubagentTracker {
     /// This transfers the event receiver to a spawned task for real-time processing.
     /// Should be called once before `wait_for_all`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if called more than once (receiver already taken).
-    pub fn take_event_receiver(&mut self) -> mpsc::Receiver<SubagentEvent> {
+    /// Returns `TrackerError::EventReceiverAlreadyTaken` if called more than once.
+    pub fn take_event_receiver(&mut self) -> Result<mpsc::Receiver<SubagentEvent>, TrackerError> {
         self.event_rx
             .take()
-            .expect("event_receiver already taken - can only call once")
+            .ok_or(TrackerError::EventReceiverAlreadyTaken)
     }
 
     /// Check if event receiver is still available
@@ -150,7 +156,15 @@ impl SubagentTracker {
     /// Wait for N subagents to complete with default timeout.
     ///
     /// Takes `&mut self` because we need exclusive access to the result receiver.
-    pub async fn wait_for_all(&mut self, count: usize) -> Vec<SubagentResult> {
+    ///
+    /// # Errors
+    ///
+    /// Returns `TrackerError::ResultReceiverNotAvailable` if the result receiver
+    /// was already consumed or not available.
+    pub async fn wait_for_all(
+        &mut self,
+        count: usize,
+    ) -> Result<Vec<SubagentResult>, TrackerError> {
         self.wait_for_all_timeout(count, Duration::from_secs(DEFAULT_WAIT_TIMEOUT_SECS))
             .await
     }
@@ -161,18 +175,23 @@ impl SubagentTracker {
     /// partial results are returned with error markers for missing tasks.
     ///
     /// Takes `&mut self` because we need exclusive access to the result receiver.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TrackerError::ResultReceiverNotAvailable` if the result receiver
+    /// was already consumed or not available.
     pub async fn wait_for_all_timeout(
         &mut self,
         count: usize,
         timeout: Duration,
-    ) -> Vec<SubagentResult> {
+    ) -> Result<Vec<SubagentResult>, TrackerError> {
         let mut collected = Vec::with_capacity(count);
 
         // Get the receiver - we own it exclusively
         let rx = self
             .result_rx
             .as_mut()
-            .expect("result_rx should be available");
+            .ok_or(TrackerError::ResultReceiverNotAvailable)?;
 
         // Use tokio::select to implement overall timeout
         let collect_future = async {
@@ -217,7 +236,7 @@ impl SubagentTracker {
                 } else {
                     tracing::debug!("[Tracker] Successfully collected all {} results", count);
                 }
-                collected
+                Ok(collected)
             }
             Err(_) => {
                 tracing::warn!(
@@ -226,7 +245,7 @@ impl SubagentTracker {
                     collected.len(),
                     count
                 );
-                collected
+                Ok(collected)
             }
         }
     }

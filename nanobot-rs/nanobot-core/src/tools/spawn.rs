@@ -5,68 +5,21 @@
 //! for results instead of using fire-and-forget semantics.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::time::timeout;
 use tracing::{info, instrument, trace, warn};
 
 use super::base::{Tool, ToolError};
+use crate::agent::stream_buffer::BufferedEvents;
 use crate::agent::subagent::SubagentManager;
 use crate::agent::subagent_tracker::{SubagentEvent, SubagentTracker};
 use crate::bus::events::{OutboundMessage, WebSocketMessage};
 use crate::config::ModelRegistry;
 use crate::providers::ProviderRegistry;
-
-/// Buffered events for a single subagent
-struct BufferedEvents {
-    /// Collected WebSocket messages
-    messages: Vec<WebSocketMessage>,
-    /// Whether the subagent has completed
-    completed: bool,
-}
-
-impl BufferedEvents {
-    /// Flush messages in a user-friendly order:
-    /// 1. All Thinking messages first
-    /// 2. ToolStart/ToolEnd (if any, in original order relative to each other)
-    /// 3. All Content messages last
-    ///
-    /// This ensures the UI shows the thinking process before the response content,
-    /// avoiding the interleaved display issue.
-    fn flush_ordered(&mut self) -> Vec<WebSocketMessage> {
-        if self.messages.is_empty() {
-            return Vec::new();
-        }
-
-        let mut thinking_msgs: Vec<WebSocketMessage> = Vec::new();
-        let mut tool_msgs: Vec<WebSocketMessage> = Vec::new();
-        let mut content_msgs: Vec<WebSocketMessage> = Vec::new();
-        let mut other_msgs: Vec<WebSocketMessage> = Vec::new();
-
-        for msg in self.messages.drain(..) {
-            match &msg {
-                WebSocketMessage::Thinking { .. } => thinking_msgs.push(msg),
-                WebSocketMessage::ToolStart { .. } | WebSocketMessage::ToolEnd { .. } => {
-                    tool_msgs.push(msg)
-                }
-                WebSocketMessage::Content { .. } => content_msgs.push(msg),
-                _ => other_msgs.push(msg),
-            }
-        }
-
-        // Concatenate: Thinking -> Tools -> Content -> Other
-        let mut result = Vec::with_capacity(
-            thinking_msgs.len() + tool_msgs.len() + content_msgs.len() + other_msgs.len(),
-        );
-        result.append(&mut thinking_msgs);
-        result.append(&mut tool_msgs);
-        result.append(&mut content_msgs);
-        result.append(&mut other_msgs);
-
-        result
-    }
-}
 
 pub struct SpawnTool {
     manager: Option<Arc<SubagentManager>>,
@@ -270,7 +223,9 @@ impl Tool for SpawnTool {
         drop(event_tx);
 
         // Take event receiver for streaming
-        let mut event_rx = tracker.take_event_receiver();
+        let mut event_rx = tracker.take_event_receiver().map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to take event receiver: {}", e))
+        })?;
 
         // Get outbound channel and session key for WebSocket streaming
         let outbound_tx = manager.outbound_sender();
@@ -280,10 +235,7 @@ impl Tool for SpawnTool {
         let mut at_line_start = true;
 
         // Buffer events until subagent completes
-        let mut buffer = BufferedEvents {
-            messages: Vec::new(),
-            completed: false,
-        };
+        let mut buffer = BufferedEvents::new();
 
         // Spawn background task to collect events and forward to WebSocket/channel
         // Uses buffering: collect all events, send them only when subagent completes
@@ -389,11 +341,15 @@ impl Tool for SpawnTool {
                                 &key.chat_id,
                                 msg,
                             );
-                            if let Err(e) = outbound_tx.try_send(outbound) {
-                                warn!(
-                                    "[Spawn] Failed to send buffered event to outbound channel: {}",
-                                    e
-                                );
+                            // Use timeout + send to apply backpressure without indefinite blocking
+                            match timeout(Duration::from_millis(100), outbound_tx.send(outbound))
+                                .await
+                            {
+                                Ok(Ok(_)) => { /* sent successfully */ }
+                                Ok(Err(e)) => warn!("[Spawn] Outbound channel closed: {}", e),
+                                Err(_) => warn!(
+                                    "[Spawn] Send timeout after 100ms, outbound channel congested"
+                                ),
                             }
                         }
                     }
@@ -404,7 +360,9 @@ impl Tool for SpawnTool {
 
         // Wait for result (blocking)
         info!("[Spawn] Waiting for subagent result...");
-        let results = tracker.wait_for_all(1).await;
+        let results = tracker.wait_for_all(1).await.map_err(|e| {
+            ToolError::ExecutionError(format!("Failed to wait for subagent results: {}", e))
+        })?;
 
         if results.is_empty() {
             return Err(ToolError::ExecutionError(
