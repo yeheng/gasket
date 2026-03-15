@@ -98,6 +98,13 @@ pub struct ProviderConfig {
     /// API compatibility mode for custom providers (openai or anthropic)
     /// Only relevant when provider_type is Custom
     pub api_compatibility: ApiCompatibility,
+
+    /// Whether to enable HTTP proxy for this provider.
+    /// When `true` (default), proxy settings from environment variables
+    /// (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY) will be used.
+    /// When `false`, the provider will bypass all proxies even if
+    /// environment variables are set.
+    pub proxy_enabled: Option<bool>,
 }
 
 impl std::fmt::Debug for ProviderConfig {
@@ -114,6 +121,7 @@ impl std::fmt::Debug for ProviderConfig {
             .field("models", &self.models)
             .field("provider_type", &self.provider_type)
             .field("api_compatibility", &self.api_compatibility)
+            .field("proxy_enabled", &self.proxy_enabled)
             .finish()
     }
 }
@@ -122,6 +130,12 @@ impl ProviderConfig {
     /// Check if this provider supports thinking mode.
     pub fn supports_thinking(&self) -> bool {
         self.supports_thinking.unwrap_or(false)
+    }
+
+    /// Check if proxy is enabled for this provider.
+    /// Returns `true` by default (proxy enabled) unless explicitly set to `false`.
+    pub fn proxy_enabled(&self) -> bool {
+        self.proxy_enabled.unwrap_or(true)
     }
 
     /// Check if this provider is available (configured and has required credentials).
@@ -207,6 +221,10 @@ struct LegacyProviderConfig {
     /// API compatibility mode for custom providers (openai or anthropic)
     #[serde(default, alias = "apiCompatibility")]
     api_compatibility: ApiCompatibility,
+
+    /// Whether to enable proxy for this provider (default: true)
+    #[serde(default, alias = "proxyEnabled")]
+    proxy_enabled: Option<bool>,
 }
 
 impl From<LegacyProviderConfig> for ProviderConfig {
@@ -240,6 +258,7 @@ impl From<LegacyProviderConfig> for ProviderConfig {
             models,
             provider_type: legacy.provider_type,
             api_compatibility: legacy.api_compatibility,
+            proxy_enabled: legacy.proxy_enabled,
         }
     }
 }
@@ -261,7 +280,7 @@ impl Serialize for ProviderConfig {
     {
         use serde::ser::SerializeStruct;
 
-        let mut s = serializer.serialize_struct("ProviderConfig", 8)?;
+        let mut s = serializer.serialize_struct("ProviderConfig", 9)?;
         s.serialize_field("apiKey", &self.api_key)?;
         s.serialize_field("apiBase", &self.api_base)?;
         s.serialize_field("supportsThinking", &self.supports_thinking)?;
@@ -270,6 +289,7 @@ impl Serialize for ProviderConfig {
         s.serialize_field("models", &self.models)?;
         s.serialize_field("type", &self.provider_type)?;
         s.serialize_field("apiCompatibility", &self.api_compatibility)?;
+        s.serialize_field("proxyEnabled", &self.proxy_enabled)?;
         s.end()
     }
 }
@@ -505,6 +525,7 @@ models:
             },
             provider_type: ProviderType::Builtin,
             api_compatibility: ApiCompatibility::Openai,
+            proxy_enabled: Some(true),
         };
 
         let yaml = serde_yaml::to_string(&provider).unwrap();

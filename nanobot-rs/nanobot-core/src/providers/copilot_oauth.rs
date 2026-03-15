@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info};
 
+use super::common::build_http_client;
+
 /// Default GitHub App Client ID for Copilot
 /// This is the official GitHub Copilot extension's client ID
 pub const DEFAULT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
@@ -197,7 +199,7 @@ impl CopilotOAuth {
     /// Create a new OAuth client with the given client ID
     pub fn new(client_id: impl Into<String>) -> Self {
         Self {
-            client: Client::new(),
+            client: build_http_client(true),
             client_id: client_id.into(),
         }
     }
@@ -205,6 +207,14 @@ impl CopilotOAuth {
     /// Create a new OAuth client with the default client ID
     pub fn with_default_client_id() -> Self {
         Self::new(DEFAULT_CLIENT_ID)
+    }
+
+    /// Create a new OAuth client with proxy configuration
+    pub fn with_proxy(client_id: impl Into<String>, proxy_enabled: bool) -> Self {
+        Self {
+            client: build_http_client(proxy_enabled),
+            client_id: client_id.into(),
+        }
     }
 
     /// Step 1: Request a device code from GitHub

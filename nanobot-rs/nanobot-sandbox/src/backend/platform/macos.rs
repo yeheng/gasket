@@ -26,20 +26,22 @@ use crate::error::{Result, SandboxError};
 /// Note: sandbox-exec is deprecated by Apple for App Store apps, but remains
 /// the most practical solution for CLI tools requiring filesystem isolation.
 pub struct MacOsSandboxBackend {
-    workspace: PathBuf,
+    _workspace: PathBuf,
 }
 
 impl MacOsSandboxBackend {
     /// Create a new macOS sandbox backend
     pub fn new() -> Self {
         Self {
-            workspace: PathBuf::from("."),
+            _workspace: PathBuf::from("."),
         }
     }
 
     /// Create with a specific workspace
     pub fn with_workspace(workspace: PathBuf) -> Self {
-        Self { workspace }
+        Self {
+            _workspace: workspace,
+        }
     }
 
     /// Detect sandbox-exec binary on macOS

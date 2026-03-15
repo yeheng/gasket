@@ -8,7 +8,7 @@
 //! This module delegates to `nanobot-sandbox` for all sandbox execution,
 //! eliminating code duplication and ensuring consistent security behavior.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -241,7 +241,7 @@ impl Tool for ExecTool {
 ///
 /// This function maps the core configuration types to the sandbox configuration,
 /// handling differences in field names and structure.
-fn build_sandbox_config(config: &ExecToolConfig, workspace: &PathBuf) -> SandboxExecutorConfig {
+fn build_sandbox_config(config: &ExecToolConfig, workspace: &Path) -> SandboxExecutorConfig {
     use nanobot_sandbox::config::{
         ApprovalConfig, AuditConfig, CommandPolicyConfig as SandboxPolicyConfig,
         ResourceLimitsConfig as SandboxLimitsConfig,
@@ -266,7 +266,7 @@ fn build_sandbox_config(config: &ExecToolConfig, workspace: &PathBuf) -> Sandbox
         enabled: config.sandbox.enabled,
         backend: config.sandbox.backend.clone(),
         tmp_size_mb: config.sandbox.tmp_size_mb,
-        workspace: Some(workspace.clone()),
+        workspace: Some(workspace.to_path_buf()),
         limits,
         policy,
         approval: ApprovalConfig::default(),

@@ -82,6 +82,8 @@ pub struct SubagentTaskBuilder<'a> {
     system_prompt: Option<String>,
     /// Session key for WebSocket streaming (passed directly, not stored in manager)
     session_key: Option<SessionKey>,
+    /// Cancellation token for graceful shutdown
+    cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl<'a> SubagentTaskBuilder<'a> {
@@ -96,6 +98,7 @@ impl<'a> SubagentTaskBuilder<'a> {
             event_tx: None,
             system_prompt: None,
             session_key: None,
+            cancellation_token: None,
         }
     }
 
@@ -132,6 +135,15 @@ impl<'a> SubagentTaskBuilder<'a> {
         self
     }
 
+    /// Set the cancellation token for graceful shutdown.
+    ///
+    /// The subagent task will check this token periodically and stop
+    /// execution when cancelled.
+    pub fn with_cancellation_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
+        self
+    }
+
     /// Spawn the subagent task and return its ID.
     ///
     /// The task runs in the background and sends its result to `result_tx`
@@ -145,6 +157,7 @@ impl<'a> SubagentTaskBuilder<'a> {
         let tools = self.manager.tools.clone();
         let task_clone = self.task.clone();
         let id_clone = self.subagent_id.clone();
+        let cancellation_token = self.cancellation_token.clone();
 
         let agent_config = self.agent_config.unwrap_or_else(|| AgentConfig {
             model: provider.default_model().to_string(),
@@ -160,6 +173,14 @@ impl<'a> SubagentTaskBuilder<'a> {
                 "[Subagent {}] Task started with model '{}': {}",
                 &self.subagent_id, &agent_config.model, &self.task
             );
+
+            // Check cancellation at startup
+            if let Some(ref token) = cancellation_token {
+                if token.is_cancelled() {
+                    warn!("[Subagent {}] Cancelled before starting", self.subagent_id);
+                    return;
+                }
+            }
 
             // Send started event
             if let Some(ref tx) = event_tx {
@@ -177,6 +198,8 @@ impl<'a> SubagentTaskBuilder<'a> {
                     reasoning_content: None,
                     tools_used: vec![],
                     model: Some(model.to_string()),
+                    token_usage: None,
+                    cost: 0.0,
                 }
             };
 
@@ -263,9 +286,9 @@ impl<'a> SubagentTaskBuilder<'a> {
                 let tx_clone = tx.clone();
                 let id_clone = self.subagent_id.clone();
                 let iteration_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+                let cancellation_token_clone = cancellation_token.clone();
 
-                let result = tokio::time::timeout(
-                    timeout_duration,
+                let future =
                     agent.process_direct_streaming(&self.task, &session_key, move |event| {
                         match event {
                             StreamEvent::Content(content) => {
@@ -309,9 +332,27 @@ impl<'a> SubagentTaskBuilder<'a> {
                                 // Token stats can be ignored for subagent events
                             }
                         }
-                    }),
-                )
-                .await;
+                    });
+
+                // Use tokio::select! to handle both timeout and cancellation
+                let result = if let Some(ref token) = cancellation_token_clone {
+                    let token_clone = token.clone();
+                    tokio::select! {
+                        biased;
+                        _ = token_clone.cancelled() => {
+                            warn!("[Subagent {}] Cancelled during execution", self.subagent_id);
+                            // Return a custom error to distinguish cancellation from timeout
+                            Err(anyhow::anyhow!("cancelled"))
+                        }
+                        result = tokio::time::timeout(timeout_duration, future) => {
+                            result.map_err(|_| anyhow::anyhow!("timed out"))
+                        }
+                    }
+                } else {
+                    tokio::time::timeout(timeout_duration, future)
+                        .await
+                        .map_err(|_| anyhow::anyhow!("timed out"))
+                };
 
                 match result {
                     Ok(Ok(resp)) => resp,
@@ -336,27 +377,46 @@ impl<'a> SubagentTaskBuilder<'a> {
                         return;
                     }
                     Err(_) => {
-                        warn!(
-                            "[Subagent {}] Timed out after {:?}",
-                            self.subagent_id, timeout_duration
-                        );
-                        send_error_event(
-                            tx,
-                            &self.subagent_id,
-                            &format!("Timed out after {:?}", timeout_duration),
-                        );
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: self.subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Timed out after {:?}", timeout_duration),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
+                        // Check if it was cancelled or timed out
+                        let was_cancelled = cancellation_token_clone
+                            .as_ref()
+                            .map(|t| t.is_cancelled())
+                            .unwrap_or(false);
+
+                        if was_cancelled {
+                            warn!("[Subagent {}] Cancelled by user", self.subagent_id);
+                            let _ = result_tx
+                                .send(SubagentResult {
+                                    id: self.subagent_id.clone(),
+                                    task: task_clone.clone(),
+                                    response: send_error("Cancelled by user", &model_name),
+                                    model: Some(model_name.clone()),
+                                })
+                                .await;
+                            return;
+                        } else {
+                            warn!(
+                                "[Subagent {}] Timed out after {:?}",
+                                self.subagent_id, timeout_duration
+                            );
+                            send_error_event(
+                                tx,
+                                &self.subagent_id,
+                                &format!("Timed out after {:?}", timeout_duration),
+                            );
+                            let _ = result_tx
+                                .send(SubagentResult {
+                                    id: self.subagent_id.clone(),
+                                    task: task_clone.clone(),
+                                    response: send_error(
+                                        &format!("Timed out after {:?}", timeout_duration),
+                                        &model_name,
+                                    ),
+                                    model: Some(model_name.clone()),
+                                })
+                                .await;
+                            return;
+                        }
                     }
                 }
             } else {

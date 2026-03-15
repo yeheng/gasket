@@ -15,20 +15,20 @@ use crate::error::{Result, SandboxError};
 
 /// Fallback executor — direct `bash -c` with ulimit-based resource limits.
 pub struct FallbackBackend {
-    limits: ResourceLimits,
+    _limits: ResourceLimits,
 }
 
 impl FallbackBackend {
     /// Create a new fallback backend with default limits
     pub fn new() -> Self {
         Self {
-            limits: ResourceLimits::default(),
+            _limits: ResourceLimits::default(),
         }
     }
 
     /// Create with custom resource limits
     pub fn with_limits(limits: ResourceLimits) -> Self {
-        Self { limits }
+        Self { _limits: limits }
     }
 }
 

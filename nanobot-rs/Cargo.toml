@@ -19,6 +19,7 @@ members = [
 [workspace.dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 async-trait = "0.1"
 futures-util = "0.3.32"
 

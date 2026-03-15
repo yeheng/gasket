@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
+use super::common::build_http_client;
 use super::copilot_oauth::CopilotOAuth;
 use super::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall, ToolDefinition,
@@ -75,7 +76,29 @@ impl CopilotProvider {
         default_model: Option<String>,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: build_http_client(true),
+            github_token: github_token.into(),
+            cached_token: Mutex::new(None),
+            api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),
+            default_model: default_model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
+        }
+    }
+
+    /// Create a new Copilot provider with proxy configuration
+    ///
+    /// # Arguments
+    /// * `github_token` - GitHub access token (PAT or OAuth token)
+    /// * `api_base` - Optional custom API base URL
+    /// * `default_model` - Default model to use (e.g., "gpt-4o")
+    /// * `proxy_enabled` - Whether to enable HTTP proxy (default: true)
+    pub fn with_proxy(
+        github_token: impl Into<String>,
+        api_base: Option<String>,
+        default_model: Option<String>,
+        proxy_enabled: bool,
+    ) -> Self {
+        Self {
+            client: build_http_client(proxy_enabled),
             github_token: github_token.into(),
             cached_token: Mutex::new(None),
             api_base: api_base.unwrap_or_else(|| COPILOT_API_BASE.to_string()),

@@ -51,7 +51,6 @@ use crate::agent::context::{PersistentContext, StatelessContext};
 use crate::agent::memory::MemoryStore;
 use crate::agent::summarization::SummarizationService;
 use crate::session::SessionManager;
-use std::sync::Mutex;
 
 /// Default model for agent
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -67,6 +66,7 @@ const DEFAULT_MEMORY_WINDOW: usize = 50;
 const DEFAULT_MAX_TOOL_RESULT_CHARS: usize = 8000;
 
 /// Agent loop configuration
+#[derive(Clone)]
 pub struct AgentConfig {
     pub model: String,
     pub max_iterations: u32,
@@ -107,6 +107,10 @@ pub struct AgentResponse {
     pub tools_used: Vec<String>,
     /// Model name used for this response
     pub model: Option<String>,
+    /// Token usage for this request (if tracking enabled)
+    pub token_usage: Option<crate::token_tracker::TokenUsage>,
+    /// Cost for this request (if pricing configured)
+    pub cost: f64,
 }
 
 /// Result from the agent loop execution.
@@ -174,8 +178,6 @@ pub struct AgentLoop {
     vault_injector: Option<VaultInjector>,
     /// Pricing configuration for cost calculation (optional)
     pricing: Option<crate::token_tracker::ModelPricing>,
-    /// Token usage tracker for the session
-    session_stats: Mutex<crate::token_tracker::SessionTokenStats>,
 }
 
 impl AgentLoop {
@@ -236,7 +238,6 @@ impl AgentLoop {
             external_hooks,
             vault_injector,
             pricing: None,
-            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
@@ -354,12 +355,6 @@ impl AgentLoop {
             external_hooks,
             vault_injector,
             pricing: pricing.clone(),
-            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new(
-                pricing
-                    .as_ref()
-                    .map(|p| p.currency.as_str())
-                    .unwrap_or("USD"),
-            )),
         })
     }
 
@@ -390,7 +385,6 @@ impl AgentLoop {
             external_hooks: ExternalHookRunner::noop(),
             vault_injector: None, // No vault for subagents
             pricing: None,
-            session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
     }
 
@@ -444,6 +438,8 @@ impl AgentLoop {
                         reasoning_content: None,
                         tools_used: vec![],
                         model: Some(self.config.model.clone()),
+                        token_usage: None,
+                        cost: 0.0,
                     });
                 }
                 // Use modified message if provided, otherwise keep original
@@ -559,33 +555,87 @@ impl AgentLoop {
             )
             .await;
 
-        // Output session token stats if available
-        if let Ok(stats) = self.session_stats.lock() {
-            if stats.request_count > 0 {
-                info!("{}", stats.format_summary());
-            }
+        // Log token usage if available
+        if let Some(ref usage) = result.token_usage {
+            info!(
+                "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
+                usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
+            );
         }
 
         Ok(AgentResponse {
-            content: result.content,
-            reasoning_content: result.reasoning_content,
-            tools_used: result.tools_used,
+            content: result.content.clone(),
+            reasoning_content: result.reasoning_content.clone(),
+            tools_used: result.tools_used.clone(),
             model: Some(self.config.model.clone()),
+            token_usage: result.token_usage.clone(),
+            cost: result.cost,
         })
     }
 
     /// Process a message with streaming callback.
+    ///
+    /// **Legacy method**: uses synchronous callback which cannot .await.
+    /// For proper backpressure, use `process_direct_streaming_with_channel` instead.
     pub async fn process_direct_streaming<F>(
         &self,
         content: &str,
         session_key: &SessionKey,
-        callback: F,
+        mut callback: F,
     ) -> Result<AgentResponse, AgentError>
     where
         F: FnMut(stream::StreamEvent) + Send + 'static,
     {
+        // For backward compatibility: spawn a task to forward events to callback
+        let (mut event_rx, result_handle) = self
+            .process_direct_streaming_with_channel(content, session_key)
+            .await?;
+
+        // Forward events to callback (this is the old behavior, kept for CLI)
+        let forward_handle = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                callback(event);
+            }
+        });
+
+        // Wait for forwarding to complete and get final result
+        let (result, _) = tokio::join!(result_handle, forward_handle);
+        result.map_err(|e| AgentError::Other(format!("Task join error: {}", e)))?
+    }
+
+    /// Process a message with streaming and return a channel for events.
+    ///
+    /// This is the preferred method for Gateway mode. It returns:
+    /// - `mpsc::Receiver<StreamEvent>` - for consuming stream events with .await
+    /// - `JoinHandle<Result<AgentResponse>>` - final result after streaming completes
+    ///
+    /// The caller can now await each event send, providing proper backpressure.
+    ///
+    /// ## Usage in SessionActor
+    ///
+    /// ```rust
+    /// let (mut event_rx, result_handle) = agent.process_direct_streaming_with_channel(...).await?;
+    /// while let Some(event) = event_rx.recv().await {
+    ///     // Can now use .await here for proper backpressure!
+    ///     websocket_manager.send(event_to_ws(event)).await?;
+    /// }
+    /// let response = result_handle.await??;
+    /// ```
+    pub async fn process_direct_streaming_with_channel(
+        &self,
+        content: &str,
+        session_key: &SessionKey,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::Receiver<stream::StreamEvent>,
+            tokio::task::JoinHandle<Result<AgentResponse, AgentError>>,
+        ),
+        AgentError,
+    > {
         let session_key_str = session_key.to_string();
-        let content = match self
+
+        // Pre-request processing (must complete before streaming)
+        let content_str = match self
             .external_hooks
             .run_pre_request(&session_key_str, content)
             .await
@@ -593,12 +643,18 @@ impl AgentLoop {
             Ok(Some(output)) => {
                 if output.is_abort() {
                     let error_msg = output.error.unwrap_or_else(|| "请求被拒绝".to_string());
-                    return Ok(AgentResponse {
-                        content: error_msg,
-                        reasoning_content: None,
-                        tools_used: vec![],
-                        model: Some(self.config.model.clone()),
+                    let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                    let handle = tokio::spawn(async move {
+                        Ok(AgentResponse {
+                            content: error_msg,
+                            reasoning_content: None,
+                            tools_used: vec![],
+                            model: Some("error".to_string()),
+                            token_usage: None,
+                            cost: 0.0,
+                        })
                     });
+                    return Ok((rx, handle));
                 }
                 output
                     .modified_message
@@ -610,12 +666,11 @@ impl AgentLoop {
                 content.to_string()
             }
         };
-        let content = content.as_str();
 
         let session = self.context.load_session(session_key).await;
         let history_snapshot = session.get_history(self.config.memory_window);
         self.context
-            .save_message(session_key, "user", content, None)
+            .save_message(session_key, "user", &content_str, None)
             .await;
 
         let processed = process_history(history_snapshot, &self.history_config);
@@ -635,7 +690,7 @@ impl AgentLoop {
 
         let mut messages = Self::assemble_prompt(
             processed.messages,
-            content,
+            &content_str,
             &system_prompts,
             summary.as_deref(),
         );
@@ -648,42 +703,74 @@ impl AgentLoop {
         local_vault_values.sort();
         local_vault_values.dedup();
 
-        let result = self
-            .run_agent_loop_streaming(messages, &local_vault_values, callback)
-            .await?;
+        // Create channel for stream events
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
 
-        let tools_used_str = result.tools_used.join(", ");
-        let safe_content = redact_secrets(&result.content, &local_vault_values);
-        if let Err(e) = self
-            .external_hooks
-            .run_post_response(&session_key_str, &safe_content, &tools_used_str)
-            .await
-        {
-            warn!("post_response hook failed (ignored): {}", e);
-        }
+        // Clone data needed for the spawned task
+        let provider = self.provider.clone();
+        let tools = self.tools.clone();
+        let config = self.config.clone();
+        let pricing = self.pricing.clone();
+        let external_hooks = self.external_hooks.clone();
+        let context = self.context.clone();
+        let session_key_clone = session_key.clone();
 
-        let history_content = redact_secrets(&result.content, &local_vault_values);
-        self.context
-            .save_message(
-                session_key,
-                "assistant",
-                &history_content,
-                Some(result.tools_used.clone()),
-            )
-            .await;
+        // Spawn task to execute agent loop and handle post-processing
+        let result_handle = tokio::spawn(async move {
+            use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-        if let Ok(stats) = self.session_stats.lock() {
-            if stats.request_count > 0 {
-                info!("{}", stats.format_summary());
+            let executor = AgentExecutor::new(provider, tools, &config);
+
+            let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
+            if let Some(ref p) = pricing {
+                options = options.with_pricing(p.clone());
             }
-        }
 
-        Ok(AgentResponse {
-            content: result.content,
-            reasoning_content: result.reasoning_content,
-            tools_used: result.tools_used,
-            model: Some(self.config.model.clone()),
-        })
+            // Execute with streaming
+            let result = executor
+                .execute_stream_with_options(messages, event_tx, &options)
+                .await?;
+
+            // Post-response processing
+            let tools_used_str = result.tools_used.join(", ");
+            let safe_content = redact_secrets(&result.content, &local_vault_values);
+            if let Err(e) = external_hooks
+                .run_post_response(&session_key_str, &safe_content, &tools_used_str)
+                .await
+            {
+                warn!("post_response hook failed (ignored): {}", e);
+            }
+
+            // Save to history
+            let history_content = redact_secrets(&result.content, &local_vault_values);
+            context
+                .save_message(
+                    &session_key_clone,
+                    "assistant",
+                    &history_content,
+                    Some(result.tools_used.clone()),
+                )
+                .await;
+
+            // Log token usage if available
+            if let Some(ref usage) = result.token_usage {
+                info!(
+                    "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
+                    usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
+                );
+            }
+
+            Ok(AgentResponse {
+                content: result.content,
+                reasoning_content: result.reasoning_content,
+                tools_used: result.tools_used,
+                model: Some(config.model.clone()),
+                token_usage: result.token_usage.clone(),
+                cost: result.cost,
+            })
+        });
+
+        Ok((event_rx, result_handle))
     }
 
     // ── Agent Loop Internals ────────────────────────────────
@@ -715,75 +802,6 @@ impl AgentLoop {
         }
 
         let result = executor.execute_with_options(messages, &options).await?;
-
-        // Update session stats
-        if let Some(ref usage) = result.token_usage {
-            if let Ok(mut stats) = self.session_stats.lock() {
-                stats.add_usage(usage, result.cost);
-            }
-        }
-
-        Ok(AgentLoopResult {
-            content: result.content,
-            reasoning_content: result.reasoning_content,
-            tools_used: result.tools_used,
-            token_usage: result.token_usage,
-            cost: result.cost,
-        })
-    }
-
-    /// Execute with streaming callback.
-    ///
-    /// Delegates to `AgentExecutor` for the core LLM loop with streaming.
-    /// Handles session stats tracking after execution completes.
-    ///
-    /// # Security: Vault Values Scoping
-    ///
-    /// `vault_values` is passed as a parameter (not stored in self) to ensure
-    /// plaintext secrets are scoped to single requests.
-    async fn run_agent_loop_streaming<F>(
-        &self,
-        messages: Vec<ChatMessage>,
-        vault_values: &[String],
-        mut callback: F,
-    ) -> Result<AgentLoopResult, AgentError>
-    where
-        F: FnMut(stream::StreamEvent) + Send + 'static,
-    {
-        use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
-        use tokio::sync::mpsc;
-
-        let executor = AgentExecutor::new(self.provider.clone(), self.tools.clone(), &self.config);
-
-        let mut options = ExecutorOptions::new().with_vault_values(vault_values);
-        if let Some(ref pricing) = self.pricing {
-            options = options.with_pricing(pricing.clone());
-        }
-
-        // Create channel for stream events
-        let (event_tx, mut event_rx) = mpsc::channel(64);
-
-        // Spawn task to forward events to callback
-        let forward_handle = tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                callback(event);
-            }
-        });
-
-        // Execute with streaming
-        let result = executor
-            .execute_stream_with_options(messages, event_tx, &options)
-            .await?;
-
-        // Wait for event forwarding to complete
-        let _ = forward_handle.await;
-
-        // Update session stats
-        if let Some(ref usage) = result.token_usage {
-            if let Ok(mut stats) = self.session_stats.lock() {
-                stats.add_usage(usage, result.cost);
-            }
-        }
 
         Ok(AgentLoopResult {
             content: result.content,

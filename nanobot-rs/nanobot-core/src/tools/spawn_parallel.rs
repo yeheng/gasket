@@ -277,6 +277,7 @@ impl Tool for SpawnParallelTool {
         let mut tracker = SubagentTracker::new();
         let result_tx = tracker.result_sender();
         let event_tx = tracker.event_sender();
+        let cancellation_token = tracker.cancellation_token();
         let task_count = task_specs.len();
 
         info!(
@@ -302,6 +303,7 @@ impl Tool for SpawnParallelTool {
             // The original sender will be dropped after all futures are created
             let result_tx = result_tx.clone();
             let event_tx_clone = event_tx.clone();
+            let cancellation_token_clone = cancellation_token.clone();
 
             // Model selection with fallback and optional smart selection
             let selected_model = self.select_model(&spec.model_id, &task);
@@ -333,7 +335,7 @@ impl Tool for SpawnParallelTool {
                     profile.model
                 );
 
-                // Create boxed future using Builder pattern
+                // Create boxed future using Builder pattern with cancellation
                 let manager = manager.clone();
                 spawn_futures.push(Box::pin(async move {
                     manager
@@ -341,6 +343,7 @@ impl Tool for SpawnParallelTool {
                         .with_provider(provider)
                         .with_config(agent_config)
                         .with_streaming(event_tx_clone)
+                        .with_cancellation_token(cancellation_token_clone)
                         .spawn(result_tx)
                         .await
                 }));
@@ -356,6 +359,7 @@ impl Tool for SpawnParallelTool {
                     manager
                         .task(subagent_id, task)
                         .with_streaming(event_tx_clone)
+                        .with_cancellation_token(cancellation_token_clone)
                         .spawn(result_tx)
                         .await
                 }));

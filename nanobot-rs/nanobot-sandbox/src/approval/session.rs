@@ -33,7 +33,7 @@ struct SessionEntry {
     /// When the entry was created
     created_at: DateTime<Utc>,
     /// Session ID this entry belongs to
-    session_id: Option<Uuid>,
+    _session_id: Option<Uuid>,
 }
 
 /// Key for session cache
@@ -117,7 +117,7 @@ impl ApprovalSession {
             let entry = SessionEntry {
                 permission,
                 created_at: Utc::now(),
-                session_id: context.session_id.or(self.current_session_id),
+                _session_id: context.session_id.or(self.current_session_id),
             };
 
             self.cache.insert(key, entry);

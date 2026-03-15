@@ -14,20 +14,20 @@ use crate::error::{Result, SandboxError};
 /// CLI-based approval interaction
 pub struct CliInteraction {
     /// Timeout for user response
-    timeout: Duration,
+    _timeout: Duration,
 }
 
 impl CliInteraction {
     /// Create a new CLI interaction handler
     pub fn new() -> Self {
         Self {
-            timeout: Duration::from_secs(300), // 5 minutes default
+            _timeout: Duration::from_secs(300), // 5 minutes default
         }
     }
 
     /// Create with custom timeout
     pub fn with_timeout(timeout: Duration) -> Self {
-        Self { timeout }
+        Self { _timeout: timeout }
     }
 
     fn display_request(&self, request: &ApprovalRequest) {
@@ -109,9 +109,9 @@ mod tests {
     #[test]
     fn test_cli_interaction_creation() {
         let interaction = CliInteraction::new();
-        assert_eq!(interaction.timeout, Duration::from_secs(300));
+        assert_eq!(interaction._timeout, Duration::from_secs(300));
 
         let interaction = CliInteraction::with_timeout(Duration::from_secs(60));
-        assert_eq!(interaction.timeout, Duration::from_secs(60));
+        assert_eq!(interaction._timeout, Duration::from_secs(60));
     }
 }

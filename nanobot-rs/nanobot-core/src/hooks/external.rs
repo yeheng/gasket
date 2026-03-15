@@ -94,6 +94,7 @@ impl ScriptAvailability {
 ///
 /// If the hooks directory doesn't exist or a script is missing,
 /// the runner silently returns `None` — hooks are optional.
+#[derive(Clone)]
 pub struct ExternalHookRunner {
     hooks_dir: Option<PathBuf>,
     /// Cached script availability — scanned once at startup.

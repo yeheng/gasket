@@ -3,6 +3,7 @@
 use crate::providers::base::{
     ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta,
 };
+use crate::providers::common::build_http_client;
 use crate::providers::streaming::sse_lines;
 use crate::providers::{ChatRequest, ChatResponse, LlmProvider};
 use anyhow::{anyhow, Result};
@@ -31,7 +32,17 @@ impl GeminiProvider {
     /// Create a new Gemini provider
     pub fn new(api_key: String) -> Self {
         Self {
-            client: Client::new(),
+            client: build_http_client(true),
+            api_key,
+            api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            default_model: "gemini-pro".to_string(),
+        }
+    }
+
+    /// Create with proxy configuration
+    pub fn with_proxy(api_key: String, proxy_enabled: bool) -> Self {
+        Self {
+            client: build_http_client(proxy_enabled),
             api_key,
             api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             default_model: "gemini-pro".to_string(),
@@ -41,10 +52,26 @@ impl GeminiProvider {
     /// Create with custom API base URL
     pub fn with_api_base(api_key: String, api_base: String) -> Self {
         Self {
-            client: Client::new(),
+            client: build_http_client(true),
             api_key,
             api_base,
             default_model: "gemini-pro".to_string(),
+        }
+    }
+
+    /// Create with full configuration
+    pub fn with_config(
+        api_key: String,
+        api_base: Option<String>,
+        default_model: Option<String>,
+        proxy_enabled: bool,
+    ) -> Self {
+        Self {
+            client: build_http_client(proxy_enabled),
+            api_key,
+            api_base: api_base
+                .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string()),
+            default_model: default_model.unwrap_or_else(|| "gemini-pro".to_string()),
         }
     }
 

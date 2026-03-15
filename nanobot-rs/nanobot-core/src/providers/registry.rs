@@ -107,7 +107,12 @@ impl ProviderRegistry {
                     .api_key
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Gemini API key not configured"))?;
-                Arc::new(GeminiProvider::new(api_key.clone()))
+                Arc::new(GeminiProvider::with_config(
+                    api_key.clone(),
+                    config.api_base.clone(),
+                    None, // Use default model
+                    config.proxy_enabled(),
+                ))
             }
             _ => {
                 // Use OpenAI-compatible provider for most providers
@@ -125,6 +130,7 @@ impl ProviderRegistry {
                     api_key: api_key.clone(),
                     default_model: Self::get_default_model(name),
                     extra_headers: HashMap::new(),
+                    proxy_enabled: config.proxy_enabled(),
                 };
 
                 Arc::new(OpenAICompatibleProvider::new(provider_config))

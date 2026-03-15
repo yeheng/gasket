@@ -24,7 +24,7 @@ pub struct AuditLog {
     /// Maximum file size in bytes
     max_size_bytes: u64,
     /// Whether to log command output
-    log_output: bool,
+    _log_output: bool,
     /// Buffered writer with file handle (kept open)
     writer: Arc<Mutex<Option<BufWriter<File>>>>,
     /// Current file size for rotation tracking
@@ -46,7 +46,7 @@ impl AuditLog {
         Ok(Self {
             path,
             max_size_bytes,
-            log_output: config.log_output,
+            _log_output: config.log_output,
             writer: Arc::new(Mutex::new(None)),
             current_size: Arc::new(Mutex::new(0)),
         })
@@ -57,7 +57,7 @@ impl AuditLog {
         Self {
             path: path.into(),
             max_size_bytes: 100 * 1024 * 1024, // 100 MB default
-            log_output: false,
+            _log_output: false,
             writer: Arc::new(Mutex::new(None)),
             current_size: Arc::new(Mutex::new(0)),
         }

@@ -160,6 +160,12 @@ async fn process_session_message(
 ///
 /// Streaming channels receive incremental LLM output and forward events
 /// to the client in real-time (thinking, content, tool events).
+///
+/// ## Backpressure
+///
+/// This function now uses `process_direct_streaming_with_channel` which returns
+/// an `mpsc::Receiver<StreamEvent>`. We can await each send, providing proper
+/// backpressure — no more `try_send` dropping messages.
 async fn process_streaming_message(
     msg: InboundMessage,
     session_key: &SessionKey,
@@ -171,40 +177,43 @@ async fn process_streaming_message(
 
     let channel = msg.channel.clone();
     let chat_id = msg.chat_id.clone();
-    let ob_tx = outbound_tx.clone();
     let session_key_str = session_key.to_string();
-    let session_key_str_for_closure = session_key_str.clone();
 
     info!(
         "[Streaming] Processing message for session: {}",
         session_key_str
     );
 
+    // Use the new channel-based API for proper backpressure
+    let (mut event_rx, result_handle) = agent
+        .process_direct_streaming_with_channel(&msg.content, session_key)
+        .await?;
+
+    // Consume events with proper awaiting
     let mut event_count = 0usize;
-    let result = agent
-        .process_direct_streaming(&msg.content, session_key, move |event| {
-            event_count += 1;
-            if event_count == 1 {
-                debug!(
-                    "[Streaming] First event received for session: {}",
-                    session_key_str_for_closure
-                );
-            }
-            if let Some(ws_msg) = stream_event_to_ws_message(event) {
-                let outbound_msg =
-                    OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
-                if let Err(e) = ob_tx.try_send(outbound_msg) {
-                    tracing::warn!("[Streaming] Failed to send outbound message: {}", e);
-                }
-            }
-        })
-        .await;
+    while let Some(event) = event_rx.recv().await {
+        event_count += 1;
+        if event_count == 1 {
+            debug!(
+                "[Streaming] First event received for session: {}",
+                session_key_str
+            );
+        }
+        if let Some(ws_msg) = stream_event_to_ws_message(event) {
+            let outbound_msg =
+                OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
+            // Use .await instead of try_send - proper backpressure!
+            outbound_tx.send(outbound_msg).await?;
+        }
+    }
+
+    // Wait for the final result
+    let _response = result_handle.await??;
 
     info!(
         "[Streaming] Streaming completed for session: {}, total events: {}",
         session_key_str, event_count
     );
-    result?;
 
     Ok(())
 }

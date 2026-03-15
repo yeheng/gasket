@@ -254,11 +254,16 @@ pub async fn cmd_gateway() -> Result<()> {
         }));
     }
 
+    // Prepare ws_manager for router actor (needs to be defined before use)
+    #[cfg(any(feature = "all-channels"))]
+    let ws_manager_for_router = Some(websocket_manager.clone());
+    #[cfg(not(any(feature = "all-channels")))]
+    let ws_manager_for_router = None::<Arc<nanobot_core::channels::websocket::WebSocketManager>>;
+
     tasks.push(tokio::spawn(nanobot_core::bus::run_outbound_actor(
         outbound_rx,
         outbound_registry,
-        #[cfg(feature = "all-channels")]
-        Some(websocket_manager),
+        ws_manager_for_router,
     )));
 
     // 2. Start Router Actor (dispatches inbound to per-session channels)

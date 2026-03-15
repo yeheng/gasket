@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::loop_::AgentResponse;
@@ -66,6 +67,12 @@ pub enum SubagentEvent {
 /// Uses direct ownership of receivers - no `Arc<Mutex>` needed.
 /// The event receiver should be taken via `take_event_receiver()` and moved
 /// to a spawned task before calling `wait_for_all`.
+///
+/// ## Cancellation
+///
+/// Uses `CancellationToken` to allow graceful cancellation of all subagents.
+/// When the tracker is dropped (or explicitly cancelled), all running subagents
+/// are notified to stop immediately.
 pub struct SubagentTracker {
     results: Arc<RwLock<HashMap<String, SubagentResult>>>,
     result_tx: mpsc::Sender<SubagentResult>,
@@ -73,6 +80,8 @@ pub struct SubagentTracker {
     /// Event channel for real-time streaming
     event_tx: mpsc::Sender<SubagentEvent>,
     event_rx: Option<mpsc::Receiver<SubagentEvent>>,
+    /// Cancellation token for all spawned subagents
+    cancellation_token: CancellationToken,
 }
 
 impl SubagentTracker {
@@ -85,6 +94,7 @@ impl SubagentTracker {
             result_rx: Some(rx),
             event_tx,
             event_rx: Some(event_rx),
+            cancellation_token: CancellationToken::new(),
         }
     }
 
@@ -120,6 +130,21 @@ impl SubagentTracker {
     /// Check if event receiver is still available
     pub fn has_event_receiver(&self) -> bool {
         self.event_rx.is_some()
+    }
+
+    /// Get a cancellation token for spawning subagents.
+    ///
+    /// Each subagent task should check this token periodically
+    /// to determine if it should stop execution.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
+    }
+
+    /// Cancel all running subagents immediately.
+    ///
+    /// This signals all subagents to stop execution via the cancellation token.
+    pub fn cancel_all(&self) {
+        self.cancellation_token.cancel();
     }
 
     /// Wait for N subagents to complete with default timeout.
@@ -214,6 +239,16 @@ impl SubagentTracker {
     /// Get count of collected results so far
     pub async fn result_count(&self) -> usize {
         self.results.read().await.len()
+    }
+}
+
+impl Drop for SubagentTracker {
+    /// Cancel all running subagents when the tracker is dropped.
+    ///
+    /// This ensures that orphaned tasks are properly cleaned up
+    /// and stop consuming resources (especially LLM API calls).
+    fn drop(&mut self) {
+        self.cancel_all();
     }
 }
 
