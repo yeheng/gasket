@@ -142,6 +142,32 @@ enum DocCommands {
         ttl: Option<String>,
     },
 
+    /// Add multiple documents in batch
+    AddBatch {
+        /// Index name
+        #[arg(short, long)]
+        index: String,
+
+        /// Path to JSON file containing array of documents
+        /// Each document should have: { "id": "...", "fields": {...}, "ttl": "..." (optional) }
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+
+        /// Documents as JSON array string (alternative to --file)
+        /// Format: [{"id": "1", "fields": {...}}, {"id": "2", "fields": {...}}]
+        #[arg(short, long, conflicts_with = "file")]
+        documents: Option<String>,
+
+        /// Optional default TTL for all documents (e.g., "7d")
+        /// Individual document TTL in JSON takes precedence
+        #[arg(short, long)]
+        ttl: Option<String>,
+
+        /// Number of parallel workers (default: 4)
+        #[arg(short, long, default_value = "4")]
+        parallel: usize,
+    },
+
     /// Delete a document
     Delete {
         /// Index name
@@ -380,6 +406,58 @@ async fn execute_doc_command(
                 "Document '{}' added successfully, job_id: {}",
                 id, job_id
             );
+        }
+        DocCommands::AddBatch {
+            index,
+            file,
+            documents,
+            ttl,
+            parallel,
+        } => {
+            // Parse documents from file or command line
+            let doc_inputs: Vec<tantivy_cli::index::BatchDocumentInput> = if let Some(file_path) = file {
+                // Read from file
+                let content = std::fs::read_to_string(&file_path)
+                    .map_err(|e| tantivy_cli::Error::PathError(file_path, e.to_string()))?;
+                serde_json::from_str(&content)
+                    .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid JSON file: {}", e)))?
+            } else if let Some(documents_json) = documents {
+                // Parse from command line
+                serde_json::from_str(&documents_json)
+                    .map_err(|e| tantivy_cli::Error::ParseError(format!("Invalid documents JSON: {}", e)))?
+            } else {
+                return Err(tantivy_cli::Error::ParseError(
+                    "Either --file or --documents must be provided".to_string(),
+                ));
+            };
+
+            if doc_inputs.is_empty() {
+                println!("No documents to add");
+                return Ok(());
+            }
+
+            println!("Adding {} documents to index '{}'...", doc_inputs.len(), index);
+
+            // Add documents in batch
+            let result = manager.add_documents_batch(&index, doc_inputs, ttl, parallel)?;
+
+            // Commit to make all documents searchable at once
+            println!("Committing changes...");
+            let commit_job_id = manager.commit(&index)?;
+            wait_for_job_completion(manager, &commit_job_id, 30).await?;
+
+            // Print results
+            println!("\nBatch add completed:");
+            println!("  Total: {}", result.total);
+            println!("  Success: {}", result.success);
+            println!("  Failed: {}", result.failed);
+
+            if !result.errors.is_empty() {
+                println!("\nErrors:");
+                for error in result.errors {
+                    println!("  - Document '{}': {}", error.id, error.error);
+                }
+            }
         }
         DocCommands::Delete { index, id } => {
             let job_id = manager.delete_document(&index, &id)?;

@@ -11,7 +11,7 @@ description = "Secure sandbox execution module for nanobot with multi-platform s
 [features]
 default = ["platform-native", "approval", "audit"]
 
-# Platform-native sandbox (bwrap, sandbox-exec, Job Objects)
+# Platform-native sandbox (bwrap, sandbox-exec, fallback)
 platform-native = []
 
 # Approval system (permission confirmation)
@@ -20,11 +20,8 @@ approval = []
 # Audit logging
 audit = []
 
-# SQLite storage (optional, default uses JSON files)
-sqlite = ["sqlx"]
-
 # Full feature set
-full = ["platform-native", "approval", "audit", "sqlite"]
+full = ["platform-native", "approval", "audit"]
 
 [dependencies]
 # Async runtime
@@ -55,9 +52,6 @@ dirs = { workspace = true }
 # Concurrent data structures
 dashmap = { workspace = true }
 
-# SQLite (optional)
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
-
 # Interactive CLI (for approval prompts)
 dialoguer = { workspace = true }
 
@@ -73,5 +67,4 @@ serde_yaml = "0.9"
 # macOS-specific dependencies
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Windows-specific dependencies
-winapi = { version = "0.3", features = ["jobapi2", "processthreadsapi", "winbase"] }
+# Windows-specific dependencies (none - WindowsFallbackBackend uses std::process::Command)

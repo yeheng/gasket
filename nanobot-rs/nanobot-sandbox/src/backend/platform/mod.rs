@@ -18,4 +18,4 @@ pub use linux::LinuxBwrapBackend;
 pub use macos::MacOsSandboxBackend;
 
 #[cfg(target_os = "windows")]
-pub use windows::WindowsJobObjectsBackend;
+pub use windows::WindowsFallbackBackend;

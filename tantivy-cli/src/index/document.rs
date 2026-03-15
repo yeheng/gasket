@@ -1,6 +1,7 @@
 //! Document operations.
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Document for indexing.
@@ -34,6 +35,46 @@ impl Document {
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.fields.get(name)
     }
+}
+
+/// Batch document input for deserialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchDocumentInput {
+    /// Document ID.
+    pub id: String,
+    /// Field values.
+    pub fields: Map<String, Value>,
+    /// Optional TTL (e.g., "7d").
+    #[serde(default)]
+    pub ttl: Option<String>,
+}
+
+impl From<BatchDocumentInput> for Document {
+    fn from(input: BatchDocumentInput) -> Self {
+        Self::new(input.id, input.fields)
+    }
+}
+
+/// Batch operation result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchResult {
+    /// Total number of documents.
+    pub total: usize,
+    /// Number of successful operations.
+    pub success: usize,
+    /// Number of failed operations.
+    pub failed: usize,
+    /// List of failed document IDs and errors.
+    pub errors: Vec<BatchError>,
+}
+
+/// Batch operation error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchError {
+    /// Document ID that failed.
+    pub id: String,
+    /// Error message.
+    pub error: String,
 }
 
 /// Document operations trait.

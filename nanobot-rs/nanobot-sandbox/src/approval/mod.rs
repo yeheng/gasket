@@ -2,7 +2,7 @@
 //!
 //! Provides a comprehensive permission management system with:
 //! - Multiple permission levels (denied, ask_always, ask_once, allowed)
-//! - Persistent rule storage (JSON or SQLite)
+//! - Persistent rule storage (JSON files)
 //! - Session-based caching
 //! - Interactive confirmation (CLI or WebSocket)
 
@@ -12,17 +12,11 @@ mod session;
 mod store;
 mod store_json;
 
-#[cfg(feature = "sqlite")]
-mod store_sqlite;
-
 pub use manager::{ApprovalInteraction, ApprovalManager, RuleEngine};
 pub use rules::{ApprovalRule, Condition, OperationType, PermissionLevel, RuleSource};
 pub use session::{ApprovalSession, PermissionVerdict};
 pub use store::PermissionStore;
 pub use store_json::JsonPermissionStore;
-
-#[cfg(feature = "sqlite")]
-pub use store_sqlite::SqlitePermissionStore;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

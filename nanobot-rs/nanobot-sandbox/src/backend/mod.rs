@@ -136,7 +136,7 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         match platform {
             Platform::Linux => "bwrap",
             Platform::MacOS => "sandbox-exec",
-            Platform::Windows => "job-objects",
+            Platform::Windows => "fallback",  // Windows has no real sandbox
         }
     } else {
         &backend_name
@@ -149,7 +149,7 @@ pub fn create_backend(config: &SandboxConfig) -> Box<dyn SandboxBackend> {
         #[cfg(target_os = "macos")]
         "sandbox-exec" => Box::new(MacOsSandboxBackend::new()),
         #[cfg(target_os = "windows")]
-        "job-objects" => Box::new(WindowsJobObjectsBackend::new()),
+        "job-objects" | "windows-fallback" => Box::new(WindowsFallbackBackend::new()),
         _ => {
             tracing::warn!(
                 "Unknown backend '{}', falling back to unsandboxed execution",
@@ -171,7 +171,7 @@ pub fn available_backends() -> Vec<&'static str> {
     backends.push("sandbox-exec");
 
     #[cfg(target_os = "windows")]
-    backends.push("job-objects");
+    backends.push("windows-fallback");  // NOT a real sandbox, just cmd.exe
 
     backends
 }

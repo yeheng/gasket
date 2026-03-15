@@ -33,7 +33,7 @@ use tantivy::{
 };
 use tracing::{debug, info, warn};
 
-use super::document::Document;
+use super::document::{BatchDocumentInput, Document};
 use super::schema::{FieldDef, FieldType, IndexConfig, IndexSchema};
 use super::search::{SearchQuery, SearchResult};
 use crate::maintenance::{JobId, JobRegistry, JobType};
@@ -77,6 +77,7 @@ impl IndexState {
 ///
 /// Uses `DashMap` for concurrent access to the index registry.
 /// All write operations are background jobs tracked via JobRegistry.
+#[derive(Clone)]
 pub struct IndexManager {
     base_path: PathBuf,
     /// Concurrent index registry using DashMap.
@@ -322,6 +323,53 @@ impl IndexManager {
         });
 
         Ok(job_id)
+    }
+
+    /// Add a document synchronously (for batch operations).
+    ///
+    /// This is a synchronous version for use in batch operations.
+    /// Returns Ok(()) if the document was added successfully.
+    pub fn add_document_sync(&self, index_name: &str, document: Document) -> Result<()> {
+        let state = self.get_index(index_name)?;
+
+        let id = document.id.clone();
+        let expires_at_ts = document
+            .expires_at
+            .map(|t| t.timestamp())
+            .unwrap_or(i64::MAX);
+        let field_values: Vec<(String, serde_json::Value)> =
+            document.fields.into_iter().collect();
+
+        // Acquire write lock for the operation
+        state.ensure_writer()?;
+
+        let mut guard = state.writer.write();
+        let writer = match guard.as_mut() {
+            Some(w) => w,
+            None => {
+                return Err(Error::WriterNotInitialized);
+            }
+        };
+
+        // Delete existing document with same ID
+        let delete_term = Term::from_field_text(state.id_field, &id);
+        writer.delete_term(delete_term);
+
+        // Build new document
+        let mut doc = TantivyDocument::new();
+        doc.add_text(state.id_field, &id);
+        doc.add_i64(state.expires_at_field, expires_at_ts);
+
+        for (field_name, value) in field_values {
+            if let Some(tantivy_field) = state.field_map.get(&field_name) {
+                let _ = add_field_value(&mut doc, *tantivy_field, &value);
+            }
+        }
+
+        writer.add_document(doc)?;
+        debug!("Added document {} to index {}", id, index_name);
+
+        Ok(())
     }
 
     /// Delete a document from an index as a background job.
@@ -1044,4 +1092,148 @@ fn generate_highlights(
     } else {
         (Some(highlights), first_highlight)
     }
+}
+
+impl IndexManager {
+    /// Add multiple documents in batch.
+    ///
+    /// Returns a BatchResult with success/failure counts.
+    pub fn add_documents_batch(
+        &self,
+        index_name: &str,
+        documents: Vec<BatchDocumentInput>,
+        default_ttl: Option<String>,
+        parallel: usize,
+    ) -> crate::Result<super::document::BatchResult> {
+        use std::sync::{Arc, Mutex};
+
+        let total = documents.len();
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let success_count = Arc::new(Mutex::new(0usize));
+
+        // Parse default TTL if provided
+        let default_expires_at = if let Some(ref ttl_str) = default_ttl {
+            Some(parse_ttl(ttl_str)?)
+        } else {
+            None
+        };
+
+        // Process documents in parallel batches
+        let chunk_size = (documents.len() + parallel - 1) / parallel;
+        let chunks: Vec<Vec<BatchDocumentInput>> = documents
+            .chunks(chunk_size.max(1))
+            .map(|c| c.to_vec())
+            .collect();
+
+        let mut handles = Vec::new();
+
+        for chunk in chunks {
+            let index_name = index_name.to_string();
+            let manager = self.clone();
+            let errors = Arc::clone(&errors);
+            let success_count = Arc::clone(&success_count);
+            let default_expires_at = default_expires_at.map(|d| d.num_seconds());
+
+            let handle = std::thread::spawn(move || {
+                for doc_input in chunk {
+                    let mut doc = Document::new(doc_input.id.clone(), doc_input.fields);
+
+                    // Apply TTL: document-specific first, then default
+                    let ttl = doc_input.ttl.or_else(|| default_expires_at.map(|_| String::new()));
+                    if let Some(ttl_str) = ttl {
+                        let duration = if ttl_str.is_empty() {
+                            chrono::Duration::seconds(default_expires_at.unwrap_or(0))
+                        } else {
+                            match parse_ttl(&ttl_str) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    errors
+                                        .lock()
+                                        .unwrap()
+                                        .push(super::document::BatchError {
+                                            id: doc_input.id.clone(),
+                                            error: format!("Invalid TTL: {}", e),
+                                        });
+                                    continue;
+                                }
+                            }
+                        };
+                        doc = doc.with_expiry(chrono::Utc::now() + duration);
+                    }
+
+                    // Add document synchronously
+                    match manager.add_document_sync(&index_name, doc) {
+                        Ok(_) => {
+                            *success_count.lock().unwrap() += 1;
+                        }
+                        Err(e) => {
+                            errors.lock().unwrap().push(super::document::BatchError {
+                                id: doc_input.id.clone(),
+                                error: e.to_string(),
+                            });
+                        }
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Wait for all workers to complete
+        for handle in handles {
+            handle.join().expect("Worker thread panicked");
+        }
+
+        let errors_vec = std::mem::take(&mut *errors.lock().unwrap());
+        let success = *success_count.lock().unwrap();
+
+        Ok(super::document::BatchResult {
+            total,
+            success,
+            failed: errors_vec.len(),
+            errors: errors_vec,
+        })
+    }
+}
+
+/// Parse a TTL string into a duration (moved from main.rs for reuse).
+fn parse_ttl(ttl: &str) -> crate::Result<chrono::Duration> {
+    let ttl = ttl.trim();
+
+    if ttl.is_empty() {
+        return Err(crate::Error::ParseError("Empty TTL".to_string()));
+    }
+
+    let numeric_end = ttl.find(|c: char| !c.is_ascii_digit()).unwrap_or(ttl.len());
+
+    if numeric_end == 0 {
+        return Err(crate::Error::ParseError(format!(
+            "Invalid TTL: {}",
+            ttl
+        )));
+    }
+
+    let number: i64 = ttl[..numeric_end]
+        .parse()
+        .map_err(|_| {
+            crate::Error::ParseError(format!("Invalid TTL number: {}", ttl))
+        })?;
+
+    let unit = &ttl[numeric_end..];
+
+    let duration = match unit {
+        "s" | "sec" | "seconds" => chrono::Duration::seconds(number),
+        "m" | "min" | "minutes" => chrono::Duration::minutes(number),
+        "h" | "hour" | "hours" => chrono::Duration::hours(number),
+        "d" | "day" | "days" => chrono::Duration::days(number),
+        "w" | "week" | "weeks" => chrono::Duration::weeks(number),
+        _ => {
+            return Err(crate::Error::ParseError(format!(
+                "Unknown TTL unit: {}",
+                unit
+            )))
+        }
+    };
+
+    Ok(duration)
 }

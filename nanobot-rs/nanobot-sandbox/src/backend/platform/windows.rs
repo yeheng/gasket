@@ -1,29 +1,39 @@
-//! Windows Job Objects sandbox backend
+//! Windows fallback sandbox backend
 //!
-//! Uses Windows Job Objects for process group limits and resource constraints.
-//! Provides basic isolation on Windows platforms.
+//! **WARNING**: This is NOT a real sandbox. Commands run with the same
+//! privileges as the parent process without isolation or resource limits.
+//! Consider using WSL2 with bwrap for proper sandboxing on Windows.
 
 use std::path::Path;
 use std::process::Command;
 
 use async_trait::async_trait;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
 use crate::config::SandboxConfig;
 use crate::error::{Result, SandboxError};
 
-/// Windows Job Objects based sandbox.
+/// Windows fallback executor — direct cmd.exe execution.
 ///
-/// Uses Windows Job Objects to limit resources for child processes.
-/// This provides basic isolation but less than Linux namespaces.
-pub struct WindowsJobObjectsBackend {
-    // Future: could store Job Object handle for reuse
+/// **WARNING**: This is NOT a real sandbox. Commands run with the same
+/// privileges as the parent process without isolation or resource limits.
+/// Full Job Objects integration would require unsafe Win32 API calls.
+///
+/// For proper sandboxing on Windows, consider using WSL2 with bwrap.
+pub struct WindowsFallbackBackend {
+    // No Job Object handle - this is intentional (not implemented)
 }
 
-impl WindowsJobObjectsBackend {
-    /// Create a new Windows Job Objects backend
+impl WindowsFallbackBackend {
+    /// Create a new Windows fallback backend
+    ///
+    /// **WARNING**: Logs a warning that this is not a real sandbox.
     pub fn new() -> Self {
+        warn!(
+            "WindowsFallbackBackend: This is NOT a sandbox. \
+             Commands run without isolation. Consider using WSL2 with bwrap."
+        );
         Self {}
     }
 
@@ -34,32 +44,31 @@ impl WindowsJobObjectsBackend {
         _config: &SandboxConfig,
     ) -> Command {
         // On Windows, we use cmd.exe for command execution
-        // Job Objects limits are applied via Win32 API after process creation
-        // For simplicity, this implementation uses basic command execution
+        // NOTE: This provides NO sandboxing - commands run with full privileges
         // Full Job Objects integration would require unsafe Win32 API calls
 
         let mut command = Command::new("cmd");
         command.arg("/C").arg(cmd).current_dir(working_dir);
 
-        debug!("Windows command: {:?}", command);
+        debug!("Windows command (unsandboxed): {:?}", command);
         command
     }
 }
 
-impl Default for WindowsJobObjectsBackend {
+impl Default for WindowsFallbackBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl SandboxBackend for WindowsJobObjectsBackend {
+impl SandboxBackend for WindowsFallbackBackend {
     fn name(&self) -> &str {
-        "job-objects"
+        "fallback"  // Changed from "job-objects" to be honest about capabilities
     }
 
     async fn is_available(&self) -> bool {
-        // Job Objects are always available on Windows
+        // Always available on Windows (it's just cmd.exe)
         true
     }
 
@@ -123,14 +132,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_job_objects_availability() {
-        let backend = WindowsJobObjectsBackend::new();
+    async fn test_fallback_availability() {
+        let backend = WindowsFallbackBackend::new();
         assert!(backend.is_available().await);
     }
 
     #[test]
     fn test_build_command() {
-        let backend = WindowsJobObjectsBackend::new();
+        let backend = WindowsFallbackBackend::new();
         let config = SandboxConfig::default();
         let cmd = backend.build_command("echo hello", Path::new("C:\\"), &config);
         assert!(cmd.is_ok());

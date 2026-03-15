@@ -119,6 +119,9 @@ argon2 = { version = "0.5", features = ["std"] }
 rand = "0.8"
 zeroize = { version = "1.7", features = ["zeroize_derive"] }
 
+# Sandbox module
+nanobot-sandbox = { path = "../nanobot-sandbox" }
+
 # Archive extraction (for workspace template downloads)
 tar = "0.4"
 flate2 = "1.0"
