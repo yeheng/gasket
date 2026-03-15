@@ -31,7 +31,7 @@
 //! This pattern allows polymorphic dispatch at initialization time rather than
 //! runtime branching on every message.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tracing::{debug, info, warn};
@@ -197,6 +197,17 @@ impl AgentLoop {
         tools: Arc<ToolRegistry>,
     ) -> Result<Self, AgentError> {
         let memory_store = Arc::new(MemoryStore::new().await);
+        Self::with_services(provider, workspace, config, tools, memory_store).await
+    }
+
+    /// Internal helper: create AgentLoop with pre-created services.
+    async fn with_services(
+        provider: Arc<dyn LlmProvider>,
+        workspace: PathBuf,
+        config: AgentConfig,
+        tools: Arc<ToolRegistry>,
+        memory_store: Arc<MemoryStore>,
+    ) -> Result<Self, AgentError> {
         let session_manager = Arc::new(SessionManager::new(memory_store.sqlite_store().clone()));
 
         let store_arc = memory_store.sqlite_store().clone();
@@ -206,35 +217,12 @@ impl AgentLoop {
             config.model.clone(),
         ));
 
-        // Create persistent context for main agents
         let context: Arc<dyn AgentContext> =
             Arc::new(PersistentContext::new(session_manager, summarization));
 
-        // Load system prompt and skills directly — no hook indirection
-        let system_prompt =
-            prompt::load_system_prompt(&workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
-        let skills_context = prompt::load_skills_context(&workspace).await;
-
-        // External shell hooks: look for scripts in ~/.nanobot/hooks/
-        let hooks_dir = dirs::home_dir()
-            .map(|p| p.join(".nanobot").join("hooks"))
-            .unwrap_or_else(|| {
-                tracing::warn!("Could not resolve home directory, disabling external hooks.");
-                PathBuf::from("/dev/null")
-            });
-        let external_hooks = ExternalHookRunner::new(hooks_dir);
-
-        // Initialize vault injector (optional - for sensitive data isolation)
-        let vault_injector = match VaultStore::new() {
-            Ok(store) => {
-                debug!("[Agent] Vault initialized successfully, adding vault injector");
-                Some(VaultInjector::new(Arc::new(store)))
-            }
-            Err(_) => {
-                debug!("[Agent] Vault not available, skipping vault injector");
-                None
-            }
-        };
+        let (system_prompt, skills_context) = Self::load_prompts(&workspace).await?;
+        let external_hooks = Self::load_external_hooks();
+        let vault_injector = Self::create_vault_injector();
 
         Ok(Self {
             provider,
@@ -250,6 +238,39 @@ impl AgentLoop {
             pricing: None,
             session_stats: Mutex::new(crate::token_tracker::SessionTokenStats::new("USD")),
         })
+    }
+
+    /// Load system prompt and skills context from workspace.
+    async fn load_prompts(workspace: &Path) -> Result<(String, Option<String>), AgentError> {
+        let system_prompt =
+            prompt::load_system_prompt(workspace, prompt::BOOTSTRAP_FILES_FULL).await?;
+        let skills_context = prompt::load_skills_context(workspace).await;
+        Ok((system_prompt, skills_context))
+    }
+
+    /// Create external hook runner from ~/.nanobot/hooks/.
+    fn load_external_hooks() -> ExternalHookRunner {
+        let hooks_dir = dirs::home_dir()
+            .map(|p| p.join(".nanobot").join("hooks"))
+            .unwrap_or_else(|| {
+                tracing::warn!("Could not resolve home directory, disabling external hooks.");
+                PathBuf::from("/dev/null")
+            });
+        ExternalHookRunner::new(hooks_dir)
+    }
+
+    /// Initialize vault injector if VaultStore is available.
+    fn create_vault_injector() -> Option<VaultInjector> {
+        match VaultStore::new() {
+            Ok(store) => {
+                debug!("[Agent] Vault initialized successfully, adding vault injector");
+                Some(VaultInjector::new(Arc::new(store)))
+            }
+            Err(_) => {
+                debug!("[Agent] Vault not available, skipping vault injector");
+                None
+            }
+        }
     }
 
     /// Create a new agent loop with an **externally created** 'MemoryStore'.

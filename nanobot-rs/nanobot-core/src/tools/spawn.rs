@@ -274,7 +274,7 @@ impl Tool for SpawnTool {
 
         // Get outbound channel and session key for WebSocket streaming
         let outbound_tx = manager.outbound_sender();
-        let session_key = manager.get_session_key().await;
+        let session_key = manager.get_session_key();
 
         // Track whether we're at the start of a new line (for prefix insertion)
         let mut at_line_start = true;

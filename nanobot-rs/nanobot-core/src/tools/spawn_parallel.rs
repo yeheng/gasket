@@ -382,7 +382,7 @@ impl Tool for SpawnParallelTool {
 
         // Get outbound channel and session key from manager for WebSocket streaming
         let outbound_tx = manager.outbound_sender();
-        let session_key = manager.get_session_key().await;
+        let session_key = manager.get_session_key();
 
         // Spawn a background task to collect events and forward to WebSocket/channel
         // Move task_id_map into the task for [Task N] labeling

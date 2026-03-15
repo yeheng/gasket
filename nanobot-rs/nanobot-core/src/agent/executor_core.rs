@@ -24,7 +24,7 @@ use crate::agent::loop_::AgentConfig;
 use crate::agent::request::RequestHandler;
 use crate::agent::stream::{self, StreamEvent};
 use crate::error::AgentError;
-use crate::providers::{ChatMessage, ChatResponse, LlmProvider};
+use crate::providers::{ChatMessage, ChatResponse, ChatStream, LlmProvider};
 use crate::token_tracker::{ModelPricing, TokenUsage};
 use crate::tools::ToolRegistry;
 use crate::vault::redact_secrets;
@@ -270,91 +270,32 @@ impl<'a> AgentExecutor<'a> {
         event_tx: Option<&mpsc::Sender<StreamEvent>>,
         options: &ExecutorOptions<'_>,
     ) -> Result<IterationOutcome, AgentError> {
+        // Step 1: Build and send request
         let request = request_handler.build_chat_request(&state.messages);
         let stream_result = request_handler.send_with_retry(request).await?;
 
-        // Get response based on streaming mode
-        let response = if let Some(tx) = event_tx {
-            // Streaming mode: forward events to channel
-            debug!("[Executor] Starting streaming mode, creating event stream");
-            let (mut event_stream, response_future) = stream::stream_events(stream_result);
+        // Step 2: Get response (streaming or non-streaming)
+        let response = self
+            .get_response(stream_result, event_tx, state, options)
+            .await?;
 
-            let mut event_count = 0usize;
-            debug!("[Executor] Waiting for events from stream...");
-            while let Some(event) = event_stream.next().await {
-                event_count += 1;
-                if event_count == 1 {
-                    debug!("[Executor] Received first event from LLM stream");
-                }
-                let _ = tx.send(event).await;
-            }
-            debug!(
-                "[Executor] Event stream ended, total events: {}, awaiting response future",
-                event_count
-            );
+        // Step 3: Log token usage
+        Self::log_token_usage(state, &options.pricing, iteration);
 
-            response_future.await?
-        } else {
-            // Non-streaming mode: collect directly
-            stream::collect_stream_response(stream_result).await?
-        };
-
-        // Accumulate token usage and cost
-        if let Some(ref usage) = response.token_usage() {
-            state.accumulate_usage(usage, options.pricing.as_ref());
-
-            // Send TokenStats event if streaming
-            if let Some(tx) = event_tx {
-                if let Some(ref total_usage) = state.total_usage {
-                    let currency = options
-                        .pricing
-                        .as_ref()
-                        .map(|p| p.currency.as_str())
-                        .unwrap_or("USD");
-                    let _ = tx
-                        .send(StreamEvent::TokenStats {
-                            input_tokens: total_usage.input_tokens,
-                            output_tokens: total_usage.output_tokens,
-                            total_tokens: total_usage.total_tokens,
-                            cost: state.total_cost,
-                            currency: currency.to_string(),
-                        })
-                        .await;
-                }
-            }
-
-            // Log token usage
-            Self::log_token_usage(state, &options.pricing, iteration);
-        }
-
-        // Log response (with redaction)
+        // Step 4: Log response
         Self::log_response(&response, iteration, options.vault_values);
 
-        // Check if we have tool calls
-        if !response.has_tool_calls() {
-            info!(
-                "[Executor] No tool calls at iteration {}, returning response",
-                iteration
-            );
-
-            return Ok(IterationOutcome::FinalResponse {
-                content: response
-                    .content
-                    .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
-                reasoning_content: response.reasoning_content,
-            });
+        // Step 4: Check for final response (no tool calls)
+        if let Some(outcome) = Self::check_final_response(&response) {
+            return Ok(outcome);
         }
 
-        // Execute tool calls and update state
+        // Step 5: Execute tool calls
         self.handle_tool_calls(&response, executor, state).await;
 
-        // Check if we've reached max iterations
-        if iteration >= self.config.max_iterations {
-            info!(
-                "[Executor] Max iterations ({}) reached",
-                self.config.max_iterations
-            );
-            return Ok(IterationOutcome::MaxIterationsReached);
+        // Step 6: Check max iterations
+        if let Some(outcome) = self.check_max_iterations(iteration) {
+            return Ok(outcome);
         }
 
         Ok(IterationOutcome::ContinueWithTools)
@@ -468,6 +409,103 @@ impl<'a> AgentExecutor<'a> {
                 result.output,
             ));
         }
+    }
+
+    // ── Helper Functions for process_iteration ──────────────
+
+    /// Get response from stream, optionally forwarding events to channel
+    async fn get_response(
+        &self,
+        stream_result: ChatStream,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        state: &mut ExecutionState,
+        options: &ExecutorOptions<'_>,
+    ) -> Result<ChatResponse, AgentError> {
+        let response = if let Some(tx) = event_tx {
+            // Streaming mode: forward events to channel
+            debug!("[Executor] Starting streaming mode, creating event stream");
+            let (mut event_stream, response_future) = stream::stream_events(stream_result);
+
+            let mut event_count = 0usize;
+            debug!("[Executor] Waiting for events from stream...");
+            while let Some(event) = event_stream.next().await {
+                event_count += 1;
+                if event_count == 1 {
+                    debug!("[Executor] Received first event from LLM stream");
+                }
+                let _ = tx.send(event).await;
+            }
+            debug!(
+                "[Executor] Event stream ended, total events: {}, awaiting response future",
+                event_count
+            );
+
+            response_future.await?
+        } else {
+            // Non-streaming mode: collect directly
+            stream::collect_stream_response(stream_result).await?
+        };
+
+        // Accumulate token usage and cost
+        if let Some(ref usage) = response.token_usage() {
+            state.accumulate_usage(usage, options.pricing.as_ref());
+            Self::send_token_stats_event(state, event_tx, options).await;
+        }
+
+        Ok(response)
+    }
+
+    /// Send token stats event if streaming
+    async fn send_token_stats_event(
+        state: &ExecutionState,
+        event_tx: Option<&mpsc::Sender<StreamEvent>>,
+        options: &ExecutorOptions<'_>,
+    ) {
+        if let Some(tx) = event_tx {
+            if let Some(ref total_usage) = state.total_usage {
+                let currency = options
+                    .pricing
+                    .as_ref()
+                    .map(|p| p.currency.as_str())
+                    .unwrap_or("USD");
+                let _ = tx
+                    .send(StreamEvent::TokenStats {
+                        input_tokens: total_usage.input_tokens,
+                        output_tokens: total_usage.output_tokens,
+                        total_tokens: total_usage.total_tokens,
+                        cost: state.total_cost,
+                        currency: currency.to_string(),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// Check if response is final (no tool calls)
+    fn check_final_response(response: &ChatResponse) -> Option<IterationOutcome> {
+        if !response.has_tool_calls() {
+            info!("[Executor] No tool calls, returning final response");
+            return Some(IterationOutcome::FinalResponse {
+                content: response
+                    .content
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_NO_RESPONSE.to_string()),
+                reasoning_content: response.reasoning_content.clone(),
+            });
+        }
+        None
+    }
+
+    /// Check if max iterations reached
+    fn check_max_iterations(&self, iteration: u32) -> Option<IterationOutcome> {
+        if iteration >= self.config.max_iterations {
+            info!(
+                "[Executor] Max iterations ({}) reached",
+                self.config.max_iterations
+            );
+            return Some(IterationOutcome::MaxIterationsReached);
+        }
+        None
     }
 }
 

@@ -95,10 +95,10 @@ pub async fn run_session_actor(
     outbound_tx: mpsc::Sender<OutboundMessage>,
     agent: Arc<AgentLoop>,
     subagent_manager: Option<Arc<SubagentManager>>,
+    idle_timeout: Duration,
 ) {
     let session_key_str = session_key.to_string();
     tracing::info!("Session Actor [{}] spawned", session_key_str);
-    let idle_timeout = Duration::from_secs(3600);
 
     loop {
         let msg = match timeout(idle_timeout, rx.recv()).await {
@@ -115,11 +115,11 @@ pub async fn run_session_actor(
 
         // Set session key on SubagentManager before processing (for WebSocket streaming)
         if let Some(ref manager) = subagent_manager {
-            manager.set_session_key(session_key.clone()).await;
+            manager.set_session_key(session_key.clone());
         }
 
         // Process message and handle result immediately (avoid holding non-Send across await)
-        match process_session_message(msg, &session_key, &agent, &outbound_tx).await {
+        match process_session_message(msg, &session_key, &agent, &outbound_tx, subagent_manager.as_ref().map(|m| m.as_ref())).await {
             Ok(()) => {}
             Err(e) => {
                 tracing::error!("Session [{}] error: {}", session_key_str, e);
@@ -128,7 +128,7 @@ pub async fn run_session_actor(
 
         // Clear session key after processing
         if let Some(ref manager) = subagent_manager {
-            manager.clear_session_key().await;
+            manager.clear_session_key();
         }
     }
 }
@@ -138,24 +138,26 @@ async fn process_session_message(
     session_key: &SessionKey,
     agent: &Arc<AgentLoop>,
     outbound_tx: &mpsc::Sender<OutboundMessage>,
+    subagent_manager: Option<&SubagentManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(feature = "webhook")]
-    {
-        let is_websocket = matches!(msg.channel, crate::bus::events::ChannelType::WebSocket);
-        if is_websocket {
-            return process_websocket_message(msg, session_key, agent, outbound_tx).await;
-        }
+    // Route based on channel capability (streaming support)
+    if msg.channel.supports_streaming() {
+        process_streaming_message(msg, session_key, agent, outbound_tx, subagent_manager).await
+    } else {
+        process_regular_message(msg, session_key, agent, outbound_tx, subagent_manager).await
     }
-
-    process_regular_message(msg, session_key, agent, outbound_tx).await
 }
 
-#[cfg(feature = "webhook")]
-async fn process_websocket_message(
+/// Process message with real-time streaming (for channels that support it).
+///
+/// Streaming channels receive incremental LLM output and forward events
+/// to the client in real-time (thinking, content, tool events).
+async fn process_streaming_message(
     msg: InboundMessage,
     session_key: &SessionKey,
     agent: &Arc<AgentLoop>,
     outbound_tx: &mpsc::Sender<OutboundMessage>,
+    _subagent_manager: Option<&SubagentManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tracing::{debug, info};
 
@@ -163,11 +165,10 @@ async fn process_websocket_message(
     let chat_id = msg.chat_id.clone();
     let ob_tx = outbound_tx.clone();
     let session_key_str = session_key.to_string();
-    // Clone for use inside the closure
     let session_key_str_for_closure = session_key_str.clone();
 
     info!(
-        "[WebSocket] Processing message for session: {}",
+        "[Streaming] Processing message for session: {}",
         session_key_str
     );
 
@@ -177,7 +178,7 @@ async fn process_websocket_message(
             event_count += 1;
             if event_count == 1 {
                 debug!(
-                    "[WebSocket] First event received for session: {}",
+                    "[Streaming] First event received for session: {}",
                     session_key_str_for_closure
                 );
             }
@@ -185,14 +186,14 @@ async fn process_websocket_message(
                 let outbound_msg =
                     OutboundMessage::with_ws_message(channel.clone(), chat_id.clone(), ws_msg);
                 if let Err(e) = ob_tx.try_send(outbound_msg) {
-                    tracing::warn!("[WebSocket] Failed to send outbound message: {}", e);
+                    tracing::warn!("[Streaming] Failed to send outbound message: {}", e);
                 }
             }
         })
         .await;
 
     info!(
-        "[WebSocket] Streaming completed for session: {}, total events: {}",
+        "[Streaming] Streaming completed for session: {}, total events: {}",
         session_key_str, event_count
     );
     result?;
@@ -200,7 +201,9 @@ async fn process_websocket_message(
     Ok(())
 }
 
-#[cfg(feature = "webhook")]
+/// Convert a StreamEvent to a WebSocketMessage.
+///
+/// Returns None for events that should not be forwarded (e.g., TokenStats).
 fn stream_event_to_ws_message(
     event: crate::agent::stream::StreamEvent,
 ) -> Option<crate::bus::events::WebSocketMessage> {
@@ -226,6 +229,7 @@ async fn process_regular_message(
     session_key: &SessionKey,
     agent: &Arc<AgentLoop>,
     outbound_tx: &mpsc::Sender<OutboundMessage>,
+    _subagent_manager: Option<&SubagentManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = agent.process_direct(&msg.content, session_key).await?;
 
@@ -289,6 +293,7 @@ pub async fn run_router_actor(
                 ob_tx,
                 agent_clone,
                 manager_clone,
+                Duration::from_secs(3600), // Default: 1 hour (should be configurable)
             ));
 
             // Send to the freshly created channel (guaranteed to succeed)

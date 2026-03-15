@@ -87,6 +87,15 @@ impl ChannelType {
             _ => ChannelType::Custom(s),
         }
     }
+
+    /// Check if this channel supports real-time streaming.
+    ///
+    /// Streaming channels receive incremental LLM output (thinking, content, tool events)
+    /// and forward them to the client in real-time. Non-streaming channels only receive
+    /// the final aggregated response.
+    pub fn supports_streaming(&self) -> bool {
+        matches!(self, ChannelType::WebSocket)
+    }
 }
 
 impl fmt::Display for ChannelType {

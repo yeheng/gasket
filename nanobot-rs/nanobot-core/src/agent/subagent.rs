@@ -44,9 +44,10 @@ pub struct SubagentManager {
     workspace: PathBuf,
     tools: Arc<ToolRegistry>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
-    /// Optional session key for WebSocket streaming (set per-request)
-    /// Uses Arc<RwLock> to allow dynamic updates per request
-    session_key: Arc<tokio::sync::RwLock<Option<SessionKey>>>,
+    /// Session key for WebSocket streaming (set per-request).
+    /// Uses Mutex instead of RwLock because access is serial (one request at a time).
+    /// TODO: Remove this field entirely and pass session_key directly to methods.
+    session_key: Arc<std::sync::Mutex<Option<SessionKey>>>,
 }
 
 /// Builder for configuring and spawning subagent tasks.
@@ -79,6 +80,8 @@ pub struct SubagentTaskBuilder<'a> {
     event_tx: Option<mpsc::Sender<SubagentEvent>>,
     /// Optional custom system prompt (uses minimal bootstrap if None)
     system_prompt: Option<String>,
+    /// Session key for WebSocket streaming (passed directly, not stored in manager)
+    session_key: Option<SessionKey>,
 }
 
 impl<'a> SubagentTaskBuilder<'a> {
@@ -92,6 +95,7 @@ impl<'a> SubagentTaskBuilder<'a> {
             agent_config: None,
             event_tx: None,
             system_prompt: None,
+            session_key: None,
         }
     }
 
@@ -116,6 +120,15 @@ impl<'a> SubagentTaskBuilder<'a> {
     /// Set a custom system prompt (uses minimal bootstrap if not set).
     pub fn with_system_prompt(mut self, prompt: String) -> Self {
         self.system_prompt = Some(prompt);
+        self
+    }
+
+    /// Set the session key for WebSocket streaming.
+    ///
+    /// This replaces the old pattern of storing session_key in SubagentManager
+    /// with Arc<RwLock>. Now the session_key is passed directly with the task.
+    pub fn with_session_key(mut self, session_key: SessionKey) -> Self {
+        self.session_key = Some(session_key);
         self
     }
 
@@ -431,7 +444,7 @@ impl SubagentManager {
             workspace,
             tools,
             outbound_tx,
-            session_key: Arc::new(tokio::sync::RwLock::new(None)),
+            session_key: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -439,20 +452,20 @@ impl SubagentManager {
     ///
     /// This should be called at the start of each request to enable
     /// WebSocket streaming for subagent events.
-    pub async fn set_session_key(&self, session_key: SessionKey) {
-        let mut guard = self.session_key.write().await;
+    pub fn set_session_key(&self, session_key: SessionKey) {
+        let mut guard = self.session_key.lock().unwrap();
         *guard = Some(session_key);
     }
 
     /// Clear the session key (call after request completes)
-    pub async fn clear_session_key(&self) {
-        let mut guard = self.session_key.write().await;
+    pub fn clear_session_key(&self) {
+        let mut guard = self.session_key.lock().unwrap();
         *guard = None;
     }
 
     /// Get the current session key
-    pub async fn get_session_key(&self) -> Option<SessionKey> {
-        self.session_key.read().await.clone()
+    pub fn get_session_key(&self) -> Option<SessionKey> {
+        self.session_key.lock().unwrap().clone()
     }
 
     /// Get a clone of the outbound sender for external use
