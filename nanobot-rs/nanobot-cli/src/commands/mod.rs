@@ -9,7 +9,6 @@ mod cron;
 mod gateway;
 mod onboard;
 pub mod registry;
-mod search;
 mod status;
 mod vault;
 
@@ -21,7 +20,6 @@ pub use cron::{
 };
 pub use gateway::cmd_gateway;
 pub use onboard::cmd_onboard;
-pub use search::{cmd_search_rebuild, cmd_search_status, cmd_search_update};
 pub use status::{cmd_auth_status, cmd_status};
 pub use vault::{
     cmd_vault_delete, cmd_vault_export, cmd_vault_get, cmd_vault_import, cmd_vault_list,

@@ -107,24 +107,10 @@ pub async fn cmd_gateway() -> Result<()> {
         );
     }
 
-    // Start MCP servers (if configured)
-    let mcp_tools = if !config.tools.mcp.stdio.is_empty()
-        || !config.tools.mcp.remote.is_empty()
-        || !config.tools.mcp_servers.is_empty()
-    {
-        println!("Starting MCP servers...");
-        let (_mcp_manager, tools) = nanobot_core::mcp::start_mcp_servers(&config.tools).await;
-        println!("  {} MCP tools loaded", tools.len());
-        tools
-    } else {
-        Vec::new()
-    };
-
     let subagent_tools = Arc::new(super::registry::build_tool_registry(
         super::registry::ToolRegistryConfig {
             config: config.clone(),
             workspace: workspace.clone(),
-            mcp_tools: vec![],
             subagent_manager: None,
             extra_tools: vec![],
             sqlite_store: None, // Subagent doesn't need history search
@@ -147,7 +133,6 @@ pub async fn cmd_gateway() -> Result<()> {
     let mut tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config: config.clone(),
         workspace: workspace.clone(),
-        mcp_tools,
         subagent_manager: Some(subagent_manager.clone()),
         extra_tools: {
             let ext: Vec<(Box<dyn nanobot_core::tools::Tool>, ToolMetadata)> = vec![

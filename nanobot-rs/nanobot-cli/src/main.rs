@@ -12,9 +12,7 @@ mod cli;
 mod commands;
 mod provider;
 
-use cli::{
-    AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, SearchCommands, VaultCommands,
-};
+use cli::{AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, VaultCommands};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -62,11 +60,6 @@ async fn main() -> Result<()> {
             CronCommands::Enable { id } => commands::cmd_cron_enable(id).await,
             CronCommands::Disable { id } => commands::cmd_cron_disable(id).await,
         },
-        Some(Commands::Search { command }) => match command {
-            SearchCommands::Rebuild { r#type } => commands::cmd_search_rebuild(&r#type).await,
-            SearchCommands::Update { r#type } => commands::cmd_search_update(&r#type).await,
-            SearchCommands::Status => commands::cmd_search_status().await,
-        },
         Some(Commands::Stats) => commands::cmd_stats().await,
         Some(Commands::Vault { command }) => match command {
             VaultCommands::List => commands::cmd_vault_list().await,
@@ -95,7 +88,6 @@ async fn main() -> Result<()> {
             println!("  gateway   Start the gateway");
             println!("  auth      Authentication commands");
             println!("  cron      Manage scheduled tasks");
-            println!("  search    Manage search indexes");
             println!("  stats     Show session token usage and cost statistics");
             println!("  vault     Manage vault secrets\n");
             println!("Run 'nanobot --help' for more information.");

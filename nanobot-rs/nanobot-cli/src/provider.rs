@@ -32,6 +32,8 @@ pub fn build_provider(
     provider_config: &nanobot_core::config::ProviderConfig,
     model: &str,
 ) -> Result<Arc<dyn LlmProvider>> {
+    let proxy_enabled = provider_config.proxy_enabled();
+
     match name {
         // MiniMax requires special handling for group_id header
         "minimax" => {
@@ -40,16 +42,20 @@ pub fn build_provider(
                 provider_config.api_base.clone(),
                 model,
                 None,
+                proxy_enabled,
             )
             .map_err(|e| anyhow::anyhow!("Failed to create MiniMax provider: {}", e))?;
             Ok(Arc::new(provider))
         }
         // GitHub Copilot requires special handling for OAuth token management
-        "copilot" => Ok(Arc::new(nanobot_core::providers::CopilotProvider::new(
-            api_key,
-            provider_config.api_base.clone(),
-            Some(model.to_string()),
-        ))),
+        "copilot" => Ok(Arc::new(
+            nanobot_core::providers::CopilotProvider::with_proxy(
+                api_key,
+                provider_config.api_base.clone(),
+                Some(model.to_string()),
+                proxy_enabled,
+            ),
+        )),
         // All other providers use the generic from_name constructor
         _ => {
             let provider = OpenAICompatibleProvider::from_name(
@@ -57,6 +63,7 @@ pub fn build_provider(
                 api_key,
                 provider_config.api_base.clone(),
                 Some(model.to_string()),
+                proxy_enabled,
             )
             .map_err(|e| anyhow::anyhow!("Failed to create provider '{}': {}", name, e))?;
             Ok(Arc::new(provider))

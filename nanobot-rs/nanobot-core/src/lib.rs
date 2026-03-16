@@ -8,7 +8,6 @@
 //! - Channel integrations
 //! - Cron scheduling
 //! - Heartbeat service
-//! - MCP (Model Context Protocol) support
 //! - Skills system for dynamic skill loading
 //! - Webhook server for receiving callbacks
 //! - Workspace template management
@@ -22,7 +21,6 @@ pub mod crypto;
 pub mod error;
 pub mod heartbeat;
 pub mod hooks;
-pub mod mcp;
 pub mod memory;
 pub mod providers;
 pub mod search;
@@ -37,7 +35,7 @@ pub mod webhook;
 pub mod workspace;
 
 pub use config::Config;
-pub use error::{AgentError, ChannelError, McpError, PipelineError, ProviderError};
+pub use error::{AgentError, ChannelError, PipelineError, ProviderError};
 pub use providers::{GeminiProvider, LlmProvider, OpenAICompatibleProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};

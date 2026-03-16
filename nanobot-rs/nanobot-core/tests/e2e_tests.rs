@@ -53,6 +53,7 @@ async fn test_agent_initialization() {
         "test-key",
         None,
         Some("gpt-4o".to_string()),
+        true,
     )
     .expect("openai should be known provider");
 
@@ -496,7 +497,7 @@ async fn test_provider_trait() {
     use nanobot_core::providers::OpenAICompatibleProvider;
 
     let provider =
-        OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()))
+        OpenAICompatibleProvider::from_name("openai", "test-key", None, Some("gpt-4o".to_string()), true)
             .expect("openai should be known provider");
 
     assert_eq!(provider.name(), "openai");
@@ -512,6 +513,7 @@ async fn test_openrouter_provider() {
         "sk-or-test",
         None,
         Some("anthropic/claude-sonnet-4".to_string()),
+        true,
     )
     .expect("openrouter should be known provider");
 
@@ -528,6 +530,7 @@ async fn test_anthropic_provider() {
         "sk-ant-test",
         None,
         Some("claude-sonnet-4-20250514".to_string()),
+        true,
     )
     .expect("anthropic should be known provider");
 

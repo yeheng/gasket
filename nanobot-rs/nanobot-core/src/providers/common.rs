@@ -180,13 +180,14 @@ impl OpenAICompatibleProvider {
     ///
     /// # Example
     /// ```ignore
-    /// let provider = OpenAICompatibleProvider::from_name("dashscope", "your-api-key", None, None)?;
+    /// let provider = OpenAICompatibleProvider::from_name("dashscope", "your-api-key", None, None, true)?;
     /// ```
     pub fn from_name(
         name: &str,
         api_key: impl Into<String>,
         api_base: Option<String>,
         default_model: Option<String>,
+        proxy_enabled: bool,
     ) -> ProviderResult<Self> {
         let resolved_base = api_base
             .or_else(|| get_default_api_base(name).map(|s| s.to_string()))
@@ -204,7 +205,7 @@ impl OpenAICompatibleProvider {
             api_key: api_key.into(),
             default_model: resolved_model,
             extra_headers: HashMap::new(),
-            proxy_enabled: true, // Default to enabled
+            proxy_enabled,
         }))
     }
 
@@ -220,8 +221,9 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: Option<String>,
         extra_headers: HashMap<String, String>,
+        proxy_enabled: bool,
     ) -> ProviderResult<Self> {
-        let mut provider = Self::from_name(name, api_key, api_base, default_model)?;
+        let mut provider = Self::from_name(name, api_key, api_base, default_model, proxy_enabled)?;
         provider.config.extra_headers = extra_headers;
         Ok(provider)
     }
@@ -239,6 +241,7 @@ impl OpenAICompatibleProvider {
         api_base: Option<String>,
         default_model: impl Into<String>,
         group_id: Option<String>,
+        proxy_enabled: bool,
     ) -> ProviderResult<Self> {
         let mut extra_headers = HashMap::new();
         if let Some(gid) = group_id {
@@ -250,6 +253,7 @@ impl OpenAICompatibleProvider {
             api_base,
             Some(default_model.into()),
             extra_headers,
+            proxy_enabled,
         )
     }
 
@@ -508,6 +512,7 @@ mod tests {
             "test-key",
             None,
             Some("gpt-4o".to_string()),
+            true,
         )
         .expect("openai should be known provider");
         assert_eq!(provider.name(), "openai");
@@ -522,6 +527,7 @@ mod tests {
             "sk-or-test",
             None,
             Some("anthropic/claude-sonnet-4".to_string()),
+            true,
         )
         .expect("openrouter should be known provider");
         assert_eq!(provider.name(), "openrouter");
@@ -535,6 +541,7 @@ mod tests {
             "sk-ant-test",
             None,
             Some("claude-sonnet-4-20250514".to_string()),
+            true,
         )
         .expect("anthropic should be known provider");
         assert_eq!(provider.name(), "anthropic");
@@ -548,6 +555,7 @@ mod tests {
             "test-key",
             None,
             Some("qwen-max".to_string()),
+            true,
         )
         .expect("dashscope should be known provider");
         assert_eq!(provider.name(), "dashscope");
@@ -565,6 +573,7 @@ mod tests {
             "test-key",
             None,
             Some("moonshot-v1-8k".to_string()),
+            true,
         )
         .expect("moonshot should be known provider");
         assert_eq!(provider.name(), "moonshot");
@@ -578,6 +587,7 @@ mod tests {
             "test-jwt",
             None,
             Some("GLM-5".to_string()),
+            true,
         )
         .expect("zhipu should be known provider");
         assert_eq!(provider.name(), "zhipu");
@@ -592,6 +602,7 @@ mod tests {
             None,
             "abab6.5-chat",
             Some("group123".to_string()),
+            true,
         )
         .expect("minimax should be known provider");
         assert_eq!(provider.name(), "minimax");
@@ -605,6 +616,7 @@ mod tests {
             "ollama",
             None,
             Some("llama2".to_string()),
+            true,
         )
         .expect("ollama should be known provider");
         assert_eq!(provider.name(), "ollama");
@@ -619,6 +631,7 @@ mod tests {
             "ollama",
             Some("http://192.168.1.100:11434/v1".to_string()),
             Some("mistral".to_string()),
+            true,
         )
         .expect("ollama should be known provider");
         assert_eq!(provider.name(), "ollama");
@@ -633,6 +646,7 @@ mod tests {
             "", // LiteLLM may not require API key
             None,
             Some("gpt-4o".to_string()),
+            true,
         )
         .expect("litellm should be known provider");
         assert_eq!(provider.name(), "litellm");
@@ -647,6 +661,7 @@ mod tests {
             "sk-test-key",
             Some("http://192.168.1.100:4000/v1".to_string()),
             Some("claude-3-opus".to_string()),
+            true,
         )
         .expect("litellm should be known provider");
         assert_eq!(provider.name(), "litellm");
@@ -661,6 +676,7 @@ mod tests {
             "test-key",
             None, // No api_base provided
             None,
+            true,
         );
         assert!(result.is_err());
         match result {
@@ -679,6 +695,7 @@ mod tests {
             "test-key",
             Some("https://custom.api.com/v1".to_string()),
             Some("custom-model".to_string()),
+            true,
         )
         .expect("unknown provider with api_base should succeed");
         assert_eq!(provider.name(), "custom-provider");

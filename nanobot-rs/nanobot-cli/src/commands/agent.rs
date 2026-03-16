@@ -59,19 +59,6 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         agent_config.streaming = false;
     }
 
-    // Start MCP servers (if configured)
-    let mcp_tools = if !config.tools.mcp.stdio.is_empty()
-        || !config.tools.mcp.remote.is_empty()
-        || !config.tools.mcp_servers.is_empty()
-    {
-        println!("Starting MCP servers...");
-        let (_mcp_manager, tools) = nanobot_core::mcp::start_mcp_servers(&config.tools).await;
-        println!("  {} MCP tools loaded", tools.len());
-        tools
-    } else {
-        Vec::new()
-    };
-
     // Build tool registry (CLI mode: no bus/cron)
     let memory_store = Arc::new(MemoryStore::new().await);
     let sqlite_store = memory_store.sqlite_store().clone();
@@ -92,7 +79,6 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
     let tools = super::registry::build_tool_registry(super::registry::ToolRegistryConfig {
         config,
         workspace: workspace.clone(),
-        mcp_tools,
         subagent_manager: None,
         extra_tools: vec![],
         sqlite_store: Some(sqlite_store),

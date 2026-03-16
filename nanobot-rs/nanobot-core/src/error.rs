@@ -85,58 +85,6 @@ pub enum ProviderError {
     Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Errors from MCP (Model Context Protocol) operations
-#[derive(Debug, Error)]
-pub enum McpError {
-    /// Server not found
-    #[error("MCP server '{0}' not found")]
-    ServerNotFound(String),
-
-    /// Connection error (string message, for manually constructed errors)
-    #[error("Failed to connect to MCP server: {0}")]
-    ConnectionError(String),
-
-    /// I/O error with preserved source chain
-    #[error("MCP I/O error")]
-    IoError(#[from] std::io::Error),
-
-    /// JSON serialization error with preserved source chain
-    #[error("MCP JSON error")]
-    JsonError(#[from] serde_json::Error),
-
-    /// Tool call error
-    #[error("MCP tool call error: {0}")]
-    ToolCallError(String),
-
-    /// Timeout error
-    #[error("MCP operation timed out: {0}")]
-    TimeoutError(String),
-
-    /// JSON-RPC error
-    #[error("JSON-RPC error (code {code}): {message}")]
-    JsonRpcError { code: i64, message: String },
-
-    /// SSE (Server-Sent Events) error
-    #[error("SSE error: {0}")]
-    SseError(String),
-
-    /// WebSocket error
-    #[error("WebSocket error: {0}")]
-    WebSocketError(String),
-
-    /// Health check error
-    #[error("Health check failed for '{server}': {message}")]
-    HealthCheckError { server: String, message: String },
-
-    /// Retry exhausted error
-    #[error("Retry exhausted after {attempts} attempts: {message}")]
-    RetryExhausted { attempts: u32, message: String },
-
-    /// Internal error preserving the full error chain
-    #[error(transparent)]
-    Internal(Box<dyn std::error::Error + Send + Sync>),
-}
-
 /// Errors from channel operations
 #[derive(Debug, Error)]
 pub enum ChannelError {
@@ -230,12 +178,6 @@ impl From<anyhow::Error> for AgentError {
 impl From<anyhow::Error> for ProviderError {
     fn from(err: anyhow::Error) -> Self {
         ProviderError::Internal(err.into())
-    }
-}
-
-impl From<anyhow::Error> for McpError {
-    fn from(err: anyhow::Error) -> Self {
-        McpError::Internal(err.into())
     }
 }
 

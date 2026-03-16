@@ -77,8 +77,6 @@ pub struct ToolRegistryConfig {
     pub config: Config,
     /// Workspace path
     pub workspace: std::path::PathBuf,
-    /// MCP tools loaded from external servers
-    pub mcp_tools: Vec<Box<dyn nanobot_core::tools::Tool>>,
     /// Optional subagent manager for spawn tool
     pub subagent_manager: Option<Arc<SubagentManager>>,
     /// Extra tools to register (e.g., gateway-specific MessageTool, CronTool)
@@ -105,7 +103,6 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     let ToolRegistryConfig {
         config,
         workspace,
-        mcp_tools,
         subagent_manager,
         extra_tools,
         sqlite_store,
@@ -257,13 +254,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         },
     );
 
-    // MCP tools (metadata assigned by MCP manager)
-    for mcp_tool in mcp_tools {
-        tools.register(mcp_tool);
-    }
-
     // Memory search tool using filesystem-based search
-    // For advanced Tantivy-based full-text search, use the standalone tantivy-mcp server
     let memory_tool = MemorySearchTool::new();
 
     tools.register_with_metadata(
