@@ -109,8 +109,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         Some(msg) => {
             // Single message mode
             info!("Processing message: {}", msg);
-            let session_key =
-                SessionKey::new(gasket_core::bus::events::ChannelType::Cli, "direct");
+            let session_key = SessionKey::new(gasket_core::bus::events::ChannelType::Cli, "direct");
             if use_streaming {
                 agent
                     .process_direct_streaming(&msg, &session_key, |event| match event {

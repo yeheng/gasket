@@ -20,8 +20,7 @@ fn create_test_sender() -> gasket_core::channels::InboundSender {
 
 /// Create a raw mpsc sender for channels not yet migrated to InboundSender.
 #[allow(dead_code)]
-fn create_raw_test_sender() -> tokio::sync::mpsc::Sender<gasket_core::bus::events::InboundMessage>
-{
+fn create_raw_test_sender() -> tokio::sync::mpsc::Sender<gasket_core::bus::events::InboundMessage> {
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     std::mem::forget(rx);
     tx
