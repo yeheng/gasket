@@ -26,9 +26,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{debug, warn};
 
+use crate::config::ChannelsConfig;
 use crate::events::{ChannelType, OutboundMessage};
 use crate::middleware::ChannelError;
-use crate::config::ChannelsConfig;
 
 /// Trait for sending outbound messages to a specific channel.
 ///

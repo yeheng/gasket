@@ -92,7 +92,5 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
 /// Login to GitHub Copilot (stub when provider-copilot feature is disabled)
 #[cfg(not(feature = "provider-copilot"))]
 pub async fn cmd_auth_copilot(_pat: Option<String>, _client_id: Option<String>) -> Result<()> {
-    anyhow::bail!(
-        "Copilot support is not compiled in. Rebuild with --features provider-copilot"
-    );
+    anyhow::bail!("Copilot support is not compiled in. Rebuild with --features provider-copilot");
 }

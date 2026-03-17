@@ -1,8 +1,6 @@
 //! Google Gemini LLM provider
 
-use crate::base::{
-    ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta,
-};
+use crate::base::{ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta};
 use crate::common::build_http_client;
 use crate::streaming::sse_lines;
 use crate::{ChatRequest, ChatResponse, LlmProvider};
@@ -236,11 +234,7 @@ impl GeminiProvider {
             if let Some(fc) = part.get("functionCall") {
                 let name = fc["name"].as_str().unwrap_or("").to_string();
                 let args = fc.get("args").cloned().unwrap_or(json!({}));
-                tool_calls.push(crate::ToolCall::new(
-                    format!("call_{}", i),
-                    name,
-                    args,
-                ));
+                tool_calls.push(crate::ToolCall::new(format!("call_{}", i), name, args));
             }
         }
 

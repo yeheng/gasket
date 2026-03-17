@@ -24,10 +24,12 @@ pub use gasket_providers::{
 };
 
 // Re-export specialized providers
-#[cfg(feature = "provider-copilot")]
-pub use gasket_providers::{CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse};
 #[cfg(feature = "provider-gemini")]
 pub use gasket_providers::GeminiProvider;
+#[cfg(feature = "provider-copilot")]
+pub use gasket_providers::{
+    CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,
+};
 
 // Re-export model spec
 pub use gasket_providers::ModelSpec;

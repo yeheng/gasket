@@ -272,9 +272,7 @@ impl EmailConfig {
 
     /// Build email config, returning error if validation fails
     #[cfg(feature = "email")]
-    pub fn build_or_err(
-        &self,
-    ) -> Result<crate::email::EmailConfig, ChannelConfigError> {
+    pub fn build_or_err(&self) -> Result<crate::email::EmailConfig, ChannelConfigError> {
         if !self.has_valid_config() {
             return Err(ChannelConfigError::IncompleteEmailConfig);
         }

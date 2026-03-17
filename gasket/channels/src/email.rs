@@ -14,8 +14,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument, warn};
 
 use super::base::Channel;
-use crate::events::InboundMessage;
 use crate::events::ChannelType;
+use crate::events::InboundMessage;
 
 /// Email channel configuration
 #[derive(Debug, Clone)]

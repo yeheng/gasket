@@ -49,8 +49,8 @@ pub mod websocket {
 
 // Convenience re-exports
 pub use gasket_channels::{
-    Channel, ChannelError, InboundSender, OutboundSender, OutboundSenderRegistry,
-    SimpleAuthChecker, SimpleRateLimiter, log_inbound,
+    log_inbound, Channel, ChannelError, InboundSender, OutboundSender, OutboundSenderRegistry,
+    SimpleAuthChecker, SimpleRateLimiter,
 };
 
 use crate::bus::events::OutboundMessage;

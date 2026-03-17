@@ -7,8 +7,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::events::InboundMessage;
 use crate::events::ChannelType;
+use crate::events::InboundMessage;
 
 /// Slack channel configuration
 #[derive(Debug, Clone)]

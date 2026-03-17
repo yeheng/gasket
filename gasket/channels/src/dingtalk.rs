@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::events::InboundMessage;
 use crate::events::ChannelType;
+use crate::events::InboundMessage;
 use crate::middleware::InboundSender;
 
 /// DingTalk channel configuration

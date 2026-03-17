@@ -7,11 +7,11 @@ use std::sync::{Arc, RwLock};
 
 use tracing::{debug, info, warn};
 
-use gasket_providers::{OpenAICompatibleProvider, ProviderConfig};
+use crate::config::Config;
 #[cfg(feature = "provider-gemini")]
 use gasket_providers::GeminiProvider;
 use gasket_providers::LlmProvider;
-use crate::config::Config;
+use gasket_providers::{OpenAICompatibleProvider, ProviderConfig};
 
 /// Registry for managing LLM provider instances
 ///

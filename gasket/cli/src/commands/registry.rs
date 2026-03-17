@@ -9,16 +9,16 @@ use gasket_core::agent::AgentConfig;
 use gasket_core::config::{Config, ModelRegistry};
 use gasket_core::memory::SqliteStore;
 use gasket_core::providers::ProviderRegistry;
+#[cfg(feature = "tool-web-fetch")]
+use gasket_core::tools::WebFetchTool;
+#[cfg(feature = "tool-web-search")]
+use gasket_core::tools::WebSearchTool;
 use gasket_core::tools::{
     EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
     ToolMetadata, ToolRegistry, WriteFileTool,
 };
 #[cfg(feature = "tool-spawn")]
 use gasket_core::tools::{SpawnParallelTool, SpawnTool};
-#[cfg(feature = "tool-web-fetch")]
-use gasket_core::tools::WebFetchTool;
-#[cfg(feature = "tool-web-search")]
-use gasket_core::tools::WebSearchTool;
 
 /// Resolve the exec workspace directory from config or default to $HOME/.gasket.
 ///
@@ -244,13 +244,11 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
 
         // Spawn parallel tool
         let spawn_parallel_tool = match (&subagent_manager, &model_registry, &provider_registry) {
-            (Some(mgr), Some(model_reg), Some(provider_reg)) => {
-                SpawnParallelTool::with_registries(
-                    Arc::clone(mgr),
-                    Arc::clone(model_reg),
-                    Arc::clone(provider_reg),
-                )
-            }
+            (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnParallelTool::with_registries(
+                Arc::clone(mgr),
+                Arc::clone(model_reg),
+                Arc::clone(provider_reg),
+            ),
             (Some(mgr), _, _) => SpawnParallelTool::with_manager(Arc::clone(mgr)),
             _ => SpawnParallelTool::new(),
         };

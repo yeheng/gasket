@@ -10,8 +10,8 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::events::{InboundMessage, OutboundMessage};
 use crate::events::ChannelType::WebSocket as WebSocketChannel;
+use crate::events::{InboundMessage, OutboundMessage};
 
 type ConnectionId = String;
 type UserId = String;

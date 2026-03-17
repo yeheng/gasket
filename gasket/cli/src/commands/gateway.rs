@@ -15,9 +15,9 @@ use gasket_core::config::{load_config, ModelRegistry};
 use gasket_core::cron::CronService;
 use gasket_core::providers::ProviderRegistry;
 use gasket_core::token_tracker::ModelPricing;
-use gasket_core::tools::{MessageTool, ToolMetadata};
 #[cfg(feature = "tool-cron")]
 use gasket_core::tools::CronTool;
+use gasket_core::tools::{MessageTool, ToolMetadata};
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -137,24 +137,21 @@ pub async fn cmd_gateway() -> Result<()> {
         workspace: workspace.clone(),
         subagent_manager: Some(subagent_manager.clone()),
         extra_tools: {
-            let mut ext: Vec<(Box<dyn gasket_core::tools::Tool>, ToolMetadata)> = vec![
-                (
-                    Box::new(MessageTool::new(bus.outbound_sender()))
-                        as Box<dyn gasket_core::tools::Tool>,
-                    ToolMetadata {
-                        display_name: "Send Message".to_string(),
-                        category: "communication".to_string(),
-                        tags: vec!["message".to_string(), "send".to_string()],
-                        requires_approval: false,
-                        is_mutating: false,
-                    },
-                ),
-            ];
+            let mut ext: Vec<(Box<dyn gasket_core::tools::Tool>, ToolMetadata)> = vec![(
+                Box::new(MessageTool::new(bus.outbound_sender()))
+                    as Box<dyn gasket_core::tools::Tool>,
+                ToolMetadata {
+                    display_name: "Send Message".to_string(),
+                    category: "communication".to_string(),
+                    tags: vec!["message".to_string(), "send".to_string()],
+                    requires_approval: false,
+                    is_mutating: false,
+                },
+            )];
 
             #[cfg(feature = "tool-cron")]
             ext.push((
-                Box::new(CronTool::new(cron_service.clone()))
-                    as Box<dyn gasket_core::tools::Tool>,
+                Box::new(CronTool::new(cron_service.clone())) as Box<dyn gasket_core::tools::Tool>,
                 ToolMetadata {
                     display_name: "Schedule Task".to_string(),
                     category: "system".to_string(),
