@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::InboundMessage;
-use crate::bus::ChannelType;
-use crate::channels::middleware::InboundSender;
+use crate::events::InboundMessage;
+use crate::events::ChannelType;
+use crate::middleware::InboundSender;
 
 /// Feishu channel configuration
 #[derive(Debug, Clone)]

@@ -11,8 +11,15 @@ name = "gasket"
 path = "src/main.rs"
 
 [features]
-default = ["markdown", "all-channels"]
+default = ["markdown", "all-tools", "all-providers", "workspace-download"]
+
+# Rendering
 markdown = ["termimad"]
+
+# Telemetry (optional, for production/debugging)
+telemetry = ["tracing-opentelemetry", "opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp"]
+
+# Channels (for gateway mode)
 telegram = ["gasket-core/telegram"]
 discord = ["gasket-core/discord"]
 slack = ["gasket-core/slack"]
@@ -20,7 +27,25 @@ email = ["gasket-core/email"]
 feishu = ["gasket-core/feishu"]
 dingtalk = ["gasket-core/dingtalk"]
 wecom = ["gasket-core/wecom"]
-all-channels = ["gasket-core/all-channels"]
+all-channels = ["gasket-core/all-channels", "axum", "teloxide"]
+
+# Providers
+provider-gemini = ["gasket-core/provider-gemini"]
+provider-copilot = ["gasket-core/provider-copilot"]
+all-providers = ["provider-gemini", "provider-copilot"]
+
+# Tools
+tool-web-fetch = ["gasket-core/tool-web-fetch"]
+tool-web-search = ["gasket-core/tool-web-search"]
+tool-spawn = ["gasket-core/tool-spawn"]
+tool-cron = ["gasket-core/tool-cron"]
+all-tools = ["tool-web-fetch", "tool-web-search", "tool-spawn", "tool-cron"]
+
+# Workspace template download
+workspace-download = ["gasket-core/workspace-download"]
+
+# Full build (equivalent to old default)
+full = ["default", "all-channels", "telemetry"]
 
 [dependencies]
 gasket-core = { path = "../core" }
@@ -35,10 +60,10 @@ clap.workspace = true
 # Logging & Tracing
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tracing-opentelemetry.workspace = true
-opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
-opentelemetry-otlp.workspace = true
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
 
 # Error handling
 anyhow.workspace = true
@@ -78,7 +103,7 @@ teloxide = { workspace = true, optional = true }
 rustls = { version = "0.23", features = ["ring"] }
 
 # HTTP server
-axum = { workspace = true, features = ["ws"] }
+axum = { workspace = true, features = ["ws"], optional = true }
 
 # Archive extraction (for workspace template downloads)
 tempfile = "3"

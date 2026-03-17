@@ -26,8 +26,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{debug, warn};
 
-use crate::bus::events::{ChannelType, OutboundMessage};
-use crate::channels::middleware::ChannelError;
+use crate::events::{ChannelType, OutboundMessage};
+use crate::middleware::ChannelError;
 use crate::config::ChannelsConfig;
 
 /// Trait for sending outbound messages to a specific channel.
@@ -202,7 +202,7 @@ impl TelegramSender {
 #[async_trait]
 impl OutboundSender for TelegramSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        super::telegram::send_text_stateless(&self.token, &msg.chat_id, &msg.content)
+        crate::telegram::send_text_stateless(&self.token, &msg.chat_id, &msg.content)
             .await
             .map_err(|e| ChannelError::DeliveryFailed {
                 channel: "telegram".to_string(),
@@ -233,7 +233,7 @@ impl DiscordSender {
 #[async_trait]
 impl OutboundSender for DiscordSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        super::discord::send_message_stateless(&self.token, &msg.chat_id, &msg.content)
+        crate::discord::send_message_stateless(&self.token, &msg.chat_id, &msg.content)
             .await
             .map_err(|e| ChannelError::DeliveryFailed {
                 channel: "discord".to_string(),
@@ -264,7 +264,7 @@ impl SlackSender {
 #[async_trait]
 impl OutboundSender for SlackSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        super::slack::send_message_stateless(&self.bot_token, &msg.chat_id, &msg.content, None)
+        crate::slack::send_message_stateless(&self.bot_token, &msg.chat_id, &msg.content, None)
             .await
             .map_err(|e| ChannelError::DeliveryFailed {
                 channel: "slack".to_string(),
@@ -296,7 +296,7 @@ impl FeishuSender {
 #[async_trait]
 impl OutboundSender for FeishuSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        super::feishu::send_text_stateless(
+        crate::feishu::send_text_stateless(
             &self.app_id,
             &self.app_secret,
             &msg.chat_id,
@@ -343,7 +343,7 @@ impl EmailSender {
 impl OutboundSender for EmailSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
         let to = msg.chat_id.trim_start_matches("email:");
-        super::email::send_email_stateless(
+        crate::email::send_email_stateless(
             &self.smtp_host,
             self.smtp_port,
             &self.smtp_username,
@@ -387,7 +387,7 @@ impl DingTalkSender {
 #[async_trait]
 impl OutboundSender for DingTalkSender {
     async fn send(&self, msg: OutboundMessage) -> Result<(), ChannelError> {
-        super::dingtalk::send_message_stateless(
+        crate::dingtalk::send_message_stateless(
             &self.webhook_url,
             self.secret.as_deref(),
             &msg.content,

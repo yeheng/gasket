@@ -7,8 +7,8 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, info, instrument};
 
 use super::base::Channel;
-use crate::bus::events::InboundMessage;
-use crate::bus::ChannelType;
+use crate::events::InboundMessage;
+use crate::events::ChannelType;
 
 /// Telegram channel configuration
 #[derive(Debug, Clone)]

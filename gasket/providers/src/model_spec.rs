@@ -18,7 +18,7 @@ use std::str::FromStr;
 /// # Examples
 ///
 /// ```
-/// use gasket_core::providers::ModelSpec;
+/// use gasket_providers::ModelSpec;
 ///
 /// let spec: ModelSpec = "deepseek/deepseek-chat".parse().unwrap();
 /// assert_eq!(spec.provider(), Some("deepseek"));

@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
 use super::base::Channel;
-use crate::bus::events::InboundMessage;
-use crate::bus::ChannelType;
-use crate::channels::middleware::InboundSender;
-use crate::crypto::wecom::{compute_signature, decode_aes_key, decrypt_message};
+use crate::events::InboundMessage;
+use crate::events::ChannelType;
+use crate::middleware::InboundSender;
+use crate::crypto_wecom::{compute_signature, decode_aes_key, decrypt_message};
 
 // ── Configuration ────────────────────────────────────────────
 

@@ -1,11 +1,14 @@
 //! Auth 命令实现
 
 use anyhow::Result;
+#[cfg(feature = "provider-copilot")]
 use colored::Colorize;
 
+#[cfg(feature = "provider-copilot")]
 use gasket_core::config::ConfigLoader;
 
 /// Login to GitHub Copilot
+#[cfg(feature = "provider-copilot")]
 pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Result<()> {
     println!("{}\n", "GitHub Copilot Authentication".bold());
 
@@ -84,4 +87,12 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
     println!("\nYou can now use Copilot by setting your model to 'copilot/gpt-4o'");
 
     Ok(())
+}
+
+/// Login to GitHub Copilot (stub when provider-copilot feature is disabled)
+#[cfg(not(feature = "provider-copilot"))]
+pub async fn cmd_auth_copilot(_pat: Option<String>, _client_id: Option<String>) -> Result<()> {
+    anyhow::bail!(
+        "Copilot support is not compiled in. Rebuild with --features provider-copilot"
+    );
 }

@@ -1,54 +1,57 @@
-//! Channel integrations
+//! Channel integrations — re-exports from gasket-channels crate
 //!
-//! This module provides channel abstractions for message routing:
-//! - `base`: Core Channel trait for inbound channels
-//! - `middleware`: Rate limiting, auth, and logging utilities
-//! - `outbound`: Registry-based outbound message routing (preferred)
-//!
-//! # Outbound Routing
-//!
-//! Use `OutboundSenderRegistry` for extensible outbound message routing.
-//! The legacy `send_outbound` function is deprecated.
-//!
-//! ```ignore
-//! let registry = OutboundSenderRegistry::from_config(&config.channels);
-//! registry.register_custom("sms".to_string(), Arc::new(MySmsSender::new()));
-//! registry.send(msg).await?;
-//! ```
+//! This module re-exports the channel abstractions and implementations
+//! from the `gasket-channels` crate, maintaining backward compatibility
+//! for all `crate::channels::*` imports within gasket-core.
 
-pub mod base;
-pub mod middleware;
-pub mod outbound;
+pub mod base {
+    pub use gasket_channels::base::*;
+}
+pub mod middleware {
+    pub use gasket_channels::middleware::*;
+}
+pub mod outbound {
+    pub use gasket_channels::outbound::*;
+}
 
 #[cfg(feature = "telegram")]
-pub mod telegram;
-
+pub mod telegram {
+    pub use gasket_channels::telegram::*;
+}
 #[cfg(feature = "discord")]
-pub mod discord;
-
+pub mod discord {
+    pub use gasket_channels::discord::*;
+}
 #[cfg(feature = "slack")]
-pub mod slack;
-
+pub mod slack {
+    pub use gasket_channels::slack::*;
+}
 #[cfg(feature = "email")]
-pub mod email;
-
+pub mod email {
+    pub use gasket_channels::email::*;
+}
 #[cfg(feature = "dingtalk")]
-pub mod dingtalk;
-
+pub mod dingtalk {
+    pub use gasket_channels::dingtalk::*;
+}
 #[cfg(feature = "feishu")]
-pub mod feishu;
-
+pub mod feishu {
+    pub use gasket_channels::feishu::*;
+}
 #[cfg(feature = "wecom")]
-pub mod wecom;
-
+pub mod wecom {
+    pub use gasket_channels::wecom::*;
+}
 #[cfg(feature = "webhook")]
-pub mod websocket;
+pub mod websocket {
+    pub use gasket_channels::websocket::*;
+}
 
-pub use base::Channel;
-pub use middleware::{
-    log_inbound, ChannelError, InboundSender, SimpleAuthChecker, SimpleRateLimiter,
+// Convenience re-exports
+pub use gasket_channels::{
+    Channel, ChannelError, InboundSender, OutboundSender, OutboundSenderRegistry,
+    SimpleAuthChecker, SimpleRateLimiter, log_inbound,
 };
-pub use outbound::{OutboundSender, OutboundSenderRegistry};
 
 use crate::bus::events::OutboundMessage;
 use crate::config::ChannelsConfig;
@@ -57,12 +60,6 @@ use crate::error::ChannelError as CoreChannelError;
 /// Send an outbound message using the appropriate channel based on message.channel.
 ///
 /// **Deprecated**: Use `OutboundSenderRegistry` instead for better extensibility.
-///
-/// This function is kept for backward compatibility. New code should use:
-/// ```ignore
-/// let registry = OutboundSenderRegistry::from_config(config);
-/// registry.send(msg).await?;
-/// ```
 ///
 /// Routes to the appropriate channel's stateless send function.
 #[allow(unused_variables)]
@@ -153,7 +150,6 @@ pub async fn send_outbound(
 
         crate::bus::ChannelType::WebSocket => {
             // WebSocket outbound is handled by the WebSocket connection itself.
-            // This is a placeholder or can be used for logging.
             tracing::debug!("WebSocket outbound message: {}", msg.content);
             Ok(())
         }

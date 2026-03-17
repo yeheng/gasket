@@ -13,6 +13,8 @@ resolver = "2"
 members = [
     "core",
     "cli",
+    "providers",
+    "channels",
     "sandbox",
     "tantivy"
 ]
@@ -26,7 +28,10 @@ codegen-units = 1
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread", "macros", "sync", "time",
+    "fs", "io-util", "net", "process", "signal",
+] }
 tokio-util = "0.7"
 async-trait = "0.1"
 futures-util = "0.3.32"
@@ -87,6 +92,8 @@ rustls-native-certs = "0.8"
 
 # Internal crates
 gasket-core = { path = "core" }
+gasket-providers = { path = "providers" }
+gasket-channels = { path = "channels" }
 gasket-sandbox = { path = "sandbox" }
 
 # Markdown rendering

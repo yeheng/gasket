@@ -2,11 +2,16 @@
 
 use anyhow::Result;
 use clap::Parser;
+#[cfg(feature = "telemetry")]
 use opentelemetry::trace::TracerProvider;
+#[cfg(feature = "telemetry")]
 use opentelemetry_otlp::WithExportConfig;
 use rustls::crypto::ring::default_provider;
+#[cfg(feature = "telemetry")]
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
+#[cfg(feature = "telemetry")]
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::EnvFilter;
 
 mod cli;
 mod commands;
@@ -25,7 +30,12 @@ async fn main() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Try to initialize OpenTelemetry, fall back to plain logging if unavailable
-    if !init_telemetry(env_filter.clone()) {
+    #[cfg(feature = "telemetry")]
+    let otel_initialized = init_telemetry(env_filter.clone());
+    #[cfg(not(feature = "telemetry"))]
+    let otel_initialized = false;
+
+    if !otel_initialized {
         tracing_subscriber::fmt()
             .with_env_filter(env_filter)
             .with_ansi(true)
@@ -104,6 +114,7 @@ async fn main() -> Result<()> {
 /// Environment variables:
 /// - `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP endpoint URL (e.g., http://localhost:4317)
 /// - `OTEL_SDK_DISABLED=true`: Disable OpenTelemetry completely
+#[cfg(feature = "telemetry")]
 fn init_telemetry(env_filter: EnvFilter) -> bool {
     use tracing_subscriber::util::SubscriberInitExt;
 

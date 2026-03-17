@@ -1,11 +1,11 @@
 //! Google Gemini LLM provider
 
-use crate::providers::base::{
+use crate::base::{
     ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta,
 };
-use crate::providers::common::build_http_client;
-use crate::providers::streaming::sse_lines;
-use crate::providers::{ChatRequest, ChatResponse, LlmProvider};
+use crate::common::build_http_client;
+use crate::streaming::sse_lines;
+use crate::{ChatRequest, ChatResponse, LlmProvider};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::StreamExt;
@@ -236,7 +236,7 @@ impl GeminiProvider {
             if let Some(fc) = part.get("functionCall") {
                 let name = fc["name"].as_str().unwrap_or("").to_string();
                 let args = fc.get("args").cloned().unwrap_or(json!({}));
-                tool_calls.push(crate::providers::ToolCall::new(
+                tool_calls.push(crate::ToolCall::new(
                     format!("call_{}", i),
                     name,
                     args,
@@ -457,7 +457,7 @@ fn convert_gemini_chunk(value: serde_json::Value) -> ChatStreamChunk {
 
 #[cfg(test)]
 mod tests {
-    use crate::providers::ChatMessage;
+    use crate::ChatMessage;
 
     use super::*;
 

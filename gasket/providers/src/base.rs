@@ -398,13 +398,6 @@ impl ChatResponse {
             usage: None,
         }
     }
-
-    /// Get token usage, converting from TokenUsage if needed
-    pub fn token_usage(&self) -> Option<crate::token_tracker::TokenUsage> {
-        self.usage.as_ref().map(|u| {
-            crate::token_tracker::TokenUsage::from_api_fields(u.input_tokens, u.output_tokens)
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------

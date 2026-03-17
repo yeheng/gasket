@@ -15,7 +15,9 @@ use gasket_core::config::{load_config, ModelRegistry};
 use gasket_core::cron::CronService;
 use gasket_core::providers::ProviderRegistry;
 use gasket_core::token_tracker::ModelPricing;
-use gasket_core::tools::{CronTool, MessageTool, ToolMetadata};
+use gasket_core::tools::{MessageTool, ToolMetadata};
+#[cfg(feature = "tool-cron")]
+use gasket_core::tools::CronTool;
 
 /// Run the gateway command
 pub async fn cmd_gateway() -> Result<()> {
@@ -135,7 +137,7 @@ pub async fn cmd_gateway() -> Result<()> {
         workspace: workspace.clone(),
         subagent_manager: Some(subagent_manager.clone()),
         extra_tools: {
-            let ext: Vec<(Box<dyn gasket_core::tools::Tool>, ToolMetadata)> = vec![
+            let mut ext: Vec<(Box<dyn gasket_core::tools::Tool>, ToolMetadata)> = vec![
                 (
                     Box::new(MessageTool::new(bus.outbound_sender()))
                         as Box<dyn gasket_core::tools::Tool>,
@@ -147,18 +149,20 @@ pub async fn cmd_gateway() -> Result<()> {
                         is_mutating: false,
                     },
                 ),
-                (
-                    Box::new(CronTool::new(cron_service.clone()))
-                        as Box<dyn gasket_core::tools::Tool>,
-                    ToolMetadata {
-                        display_name: "Schedule Task".to_string(),
-                        category: "system".to_string(),
-                        tags: vec!["cron".to_string(), "schedule".to_string()],
-                        requires_approval: false,
-                        is_mutating: false,
-                    },
-                ),
             ];
+
+            #[cfg(feature = "tool-cron")]
+            ext.push((
+                Box::new(CronTool::new(cron_service.clone()))
+                    as Box<dyn gasket_core::tools::Tool>,
+                ToolMetadata {
+                    display_name: "Schedule Task".to_string(),
+                    category: "system".to_string(),
+                    tags: vec!["cron".to_string(), "schedule".to_string()],
+                    requires_approval: false,
+                    is_mutating: false,
+                },
+            ));
 
             ext
         },
@@ -240,15 +244,14 @@ pub async fn cmd_gateway() -> Result<()> {
         }));
     }
 
-    // Prepare ws_manager for router actor (needs to be defined before use)
-    #[cfg(any(feature = "all-channels"))]
+    // Prepare ws_manager for router actor (only needed with all-channels)
+    #[cfg(feature = "all-channels")]
     let ws_manager_for_router = Some(websocket_manager.clone());
-    #[cfg(not(any(feature = "all-channels")))]
-    let ws_manager_for_router = None::<Arc<gasket_core::channels::websocket::WebSocketManager>>;
 
     tasks.push(tokio::spawn(gasket_core::bus::run_outbound_actor(
         outbound_rx,
         outbound_registry,
+        #[cfg(feature = "all-channels")]
         ws_manager_for_router,
     )));
 

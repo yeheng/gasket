@@ -3,7 +3,6 @@
 use anyhow::Result;
 
 use gasket_core::config::ConfigLoader;
-use gasket_core::workspace::WorkspaceDownloader;
 
 /// Initialize nanobot configuration
 pub async fn cmd_onboard() -> Result<()> {
@@ -27,35 +26,46 @@ pub async fn cmd_onboard() -> Result<()> {
     }
 
     // Download workspace templates from GitHub
-    println!("\n📥 Downloading workspace templates from GitHub...");
-    let downloader = WorkspaceDownloader::new();
-    match downloader.download().await {
-        Ok(result) => {
-            // Display created files
-            for file in &result.created_files {
-                println!("  {} ✓", file);
-            }
-            // Display created directories
-            for dir in &result.created_dirs {
-                println!("  {}/ ✓", dir);
-            }
-            // Display skipped files
-            for file in &result.skipped_files {
-                println!("  {} (already exists, skipped)", file);
-            }
+    #[cfg(feature = "workspace-download")]
+    {
+        use gasket_core::workspace::WorkspaceDownloader;
 
-            if result.created_files.is_empty()
-                && result.created_dirs.is_empty()
-                && result.skipped_files.is_empty()
-            {
-                println!("  (no files to update)");
+        println!("\n📥 Downloading workspace templates from GitHub...");
+        let downloader = WorkspaceDownloader::new();
+        match downloader.download().await {
+            Ok(result) => {
+                // Display created files
+                for file in &result.created_files {
+                    println!("  {} ✓", file);
+                }
+                // Display created directories
+                for dir in &result.created_dirs {
+                    println!("  {}/ ✓", dir);
+                }
+                // Display skipped files
+                for file in &result.skipped_files {
+                    println!("  {} (already exists, skipped)", file);
+                }
+
+                if result.created_files.is_empty()
+                    && result.created_dirs.is_empty()
+                    && result.skipped_files.is_empty()
+                {
+                    println!("  (no files to update)");
+                }
+            }
+            Err(e) => {
+                println!("⚠️  Download failed: {}", e);
+                println!("You may need to manually create workspace files.");
+                println!("Templates are available at: https://github.com/yeheng/nanobot-rs/tree/main/workspace");
             }
         }
-        Err(e) => {
-            println!("⚠️  Download failed: {}", e);
-            println!("You may need to manually create workspace files.");
-            println!("Templates are available at: https://github.com/yeheng/nanobot-rs/tree/main/workspace");
-        }
+    }
+
+    #[cfg(not(feature = "workspace-download"))]
+    {
+        println!("\n⚠️  Workspace download is not compiled in.");
+        println!("Rebuild with --features workspace-download to enable template downloads.");
     }
 
     println!("\n🐈 Initialization complete!");

@@ -58,7 +58,9 @@ impl Config {
         }
 
         // Validate channels
-        errors.extend(self.channels.validate());
+        for err in self.channels.validate() {
+            errors.push(ConfigValidationError::from(err));
+        }
 
         if errors.is_empty() {
             Ok(())

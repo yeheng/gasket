@@ -8,17 +8,32 @@ description = "Core library for gasket AI assistant"
 
 [features]
 default = []
-telegram = ["teloxide"]
-discord = ["serenity"]
-slack = ["tokio-tungstenite"]
-email = ["lettre", "async-imap", "tokio-rustls", "rustls-native-certs"]
-dingtalk = ["sha2"]
-feishu = []
-wecom = ["sha1", "aes", "cbc", "quick-xml"]
-webhook = ["axum", "tower", "tower-http"]
+telegram = ["gasket-channels/telegram"]
+discord = ["gasket-channels/discord"]
+slack = ["gasket-channels/slack"]
+email = ["gasket-channels/email"]
+dingtalk = ["gasket-channels/dingtalk"]
+feishu = ["gasket-channels/feishu"]
+wecom = ["gasket-channels/wecom"]
+webhook = ["axum", "tower", "tower-http", "gasket-channels/webhook"]
 # Smart model selection based on task content analysis
 smart-model-selection = []
-all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
+all-channels = ["gasket-channels/all-channels"]
+
+# Provider variants
+provider-gemini = ["gasket-providers/provider-gemini"]
+provider-copilot = ["gasket-providers/provider-copilot"]
+all-providers = ["gasket-providers/all-providers"]
+
+# Tool variants
+tool-web-fetch = ["html2text"]
+tool-web-search = []
+tool-spawn = []
+tool-cron = []
+all-tools = ["tool-web-fetch", "tool-web-search", "tool-spawn", "tool-cron"]
+
+# Workspace template download
+workspace-download = ["tar", "flate2"]
 
 [dependencies]
 # Async
@@ -27,9 +42,6 @@ tokio-util.workspace = true
 async-trait.workspace = true
 futures-util = { workspace = true }
 futures = "0.3"
-
-# Concurrent data structures
-dashmap = "6.1"
 
 # Serialization
 serde.workspace = true
@@ -44,8 +56,6 @@ urlencoding = "2.1"
 
 # Logging & Tracing
 tracing.workspace = true
-tracing-opentelemetry.workspace = true
-opentelemetry.workspace = true
 
 # Error handling
 thiserror.workspace = true
@@ -66,33 +76,14 @@ uuid.workspace = true
 # Which (for checking binary existence)
 which = "8.0"
 
+# Concurrent data structures
+dashmap = "6.1"
+
+# Base64 (used by vault/crypto)
+base64 = "0.22"
+
 # HTML parsing
-html2text = "0.16"
-
-# Telegram (optional)
-teloxide = { workspace = true, optional = true }
-
-# Discord (optional)
-serenity = { workspace = true, optional = true }
-
-# WebSocket (for Slack and MCP WebSocket transport)
-tokio-tungstenite = { workspace = true, optional = true }
-
-# DingTalk (optional)
-base64 = { version = "0.22" }
-sha2 = { version = "0.10", optional = true }
-
-# WeCom (optional)
-sha1 = { version = "0.10", optional = true }
-aes = { version = "0.8", optional = true }
-cbc = { version = "0.1", optional = true }
-quick-xml = { version = "0.37", optional = true }
-
-# Email (optional)
-lettre = { workspace = true, optional = true }
-async-imap = { workspace = true, optional = true }
-tokio-rustls = { workspace = true, optional = true }
-rustls-native-certs = { workspace = true, optional = true }
+html2text = { version = "0.16", optional = true }
 
 # Webhook HTTP server (optional)
 axum = { workspace = true, optional = true, features = ["ws"] }
@@ -121,9 +112,15 @@ zeroize = { version = "1.7", features = ["zeroize_derive"] }
 # Sandbox module
 gasket-sandbox = { path = "../sandbox" }
 
+# Provider abstractions
+gasket-providers = { path = "../providers" }
+
+# Channel abstractions
+gasket-channels = { path = "../channels" }
+
 # Archive extraction (for workspace template downloads)
-tar = "0.4"
-flate2 = "1.0"
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1.0", optional = true }
 tokio-stream = "0.1.18"
 
 [dev-dependencies]
@@ -132,7 +129,3 @@ dotenvy = "0.15"
 rustls = { version = "0.23", features = ["ring"] }
 tempfile = "3"
 criterion = "0.5"
-
-[[bench]]
-name = "scanner_benchmark"
-harness = false

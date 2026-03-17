@@ -20,7 +20,7 @@ use tracing::{info, instrument};
 
 /// Errors that can occur when creating or using a provider.
 #[derive(Debug, Error)]
-pub enum ProviderError {
+pub enum ProviderBuildError {
     /// The provider name is unknown and no api_base was provided.
     #[error("Unknown provider '{name}'. Add it to PROVIDER_DEFAULTS or provide api_base.")]
     UnknownProvider {
@@ -30,9 +30,9 @@ pub enum ProviderError {
 }
 
 /// Result type for provider operations.
-pub type ProviderResult<T> = Result<T, ProviderError>;
+pub type ProviderResult<T> = Result<T, ProviderBuildError>;
 
-use super::{
+use crate::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
     ToolDefinition,
 };
@@ -191,7 +191,7 @@ impl OpenAICompatibleProvider {
     ) -> ProviderResult<Self> {
         let resolved_base = api_base
             .or_else(|| get_default_api_base(name).map(|s| s.to_string()))
-            .ok_or_else(|| ProviderError::UnknownProvider {
+            .ok_or_else(|| ProviderBuildError::UnknownProvider {
                 name: name.to_string(),
             })?;
 
@@ -353,7 +353,7 @@ impl LlmProvider for OpenAICompatibleProvider {
             .collect();
 
         // Convert API usage to ChatResponse usage
-        let usage = api_response.usage.map(|u| crate::providers::Usage {
+        let usage = api_response.usage.map(|u| crate::Usage {
             input_tokens: u.input_tokens,
             output_tokens: u.output_tokens,
             total_tokens: u.total_tokens,
@@ -410,7 +410,7 @@ impl LlmProvider for OpenAICompatibleProvider {
         }
 
         let byte_stream = response.bytes_stream();
-        let chunk_stream = super::streaming::parse_sse_stream(byte_stream);
+        let chunk_stream = crate::streaming::parse_sse_stream(byte_stream);
 
         Ok(Box::pin(chunk_stream))
     }
@@ -680,7 +680,7 @@ mod tests {
         );
         assert!(result.is_err());
         match result {
-            Err(ProviderError::UnknownProvider { name }) => {
+            Err(ProviderBuildError::UnknownProvider { name }) => {
                 assert_eq!(name, "unknown-provider");
             }
             _ => panic!("Expected UnknownProvider error"),

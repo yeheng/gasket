@@ -1,0 +1,38 @@
+[package]
+name = "gasket-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "LLM provider abstractions and implementations for gasket"
+
+[features]
+default = []
+provider-gemini = []
+provider-copilot = []
+all-providers = ["provider-gemini", "provider-copilot"]
+
+[dependencies]
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+futures-util = { workspace = true }
+futures = "0.3"
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# HTTP
+reqwest.workspace = true
+bytes = "1"
+
+# Logging & Tracing
+tracing.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# UUID
+uuid.workspace = true

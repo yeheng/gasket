@@ -27,3 +27,4 @@ nanobot
 *.lock
 .repomix*
 repomix*
+config.yaml

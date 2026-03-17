@@ -7,9 +7,10 @@ use std::sync::{Arc, RwLock};
 
 use tracing::{debug, info, warn};
 
-use super::common::{OpenAICompatibleProvider, ProviderConfig};
-use super::gemini::GeminiProvider;
-use super::LlmProvider;
+use gasket_providers::{OpenAICompatibleProvider, ProviderConfig};
+#[cfg(feature = "provider-gemini")]
+use gasket_providers::GeminiProvider;
+use gasket_providers::LlmProvider;
 use crate::config::Config;
 
 /// Registry for managing LLM provider instances
@@ -102,6 +103,7 @@ impl ProviderRegistry {
 
         // Create provider based on name/type
         let provider: Arc<dyn LlmProvider> = match name {
+            #[cfg(feature = "provider-gemini")]
             "gemini" => {
                 let api_key = config
                     .api_key
@@ -142,14 +144,14 @@ impl ProviderRegistry {
 
     /// Get default API base URL for known providers
     fn get_default_api_base(name: &str) -> String {
-        super::common::get_default_api_base(name)
+        gasket_providers::get_default_api_base(name)
             .unwrap_or_else(|| format!("https://api.{}.com/v1", name).leak())
             .to_string()
     }
 
     /// Get default model for known providers
     fn get_default_model(name: &str) -> String {
-        super::common::get_default_model(name)
+        gasket_providers::get_default_model(name)
             .unwrap_or("default")
             .to_string()
     }

@@ -48,6 +48,7 @@ pub fn build_provider(
             Ok(Arc::new(provider))
         }
         // GitHub Copilot requires special handling for OAuth token management
+        #[cfg(feature = "provider-copilot")]
         "copilot" => Ok(Arc::new(
             gasket_core::providers::CopilotProvider::with_proxy(
                 api_key,

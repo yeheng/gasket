@@ -6,7 +6,7 @@ use futures::stream::{Stream, StreamExt};
 use serde::Deserialize;
 use tracing::{debug, trace};
 
-use super::base::{ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta};
+use crate::base::{ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta};
 
 /// Parse a raw SSE byte stream into `ChatStreamChunk`s.
 ///
@@ -182,7 +182,7 @@ fn convert_chunk(chunk: OpenAIStreamChunk) -> ChatStreamChunk {
         .collect();
 
     // Convert usage if present (typically in the final chunk)
-    let usage = chunk.usage.map(|u| super::Usage {
+    let usage = chunk.usage.map(|u| crate::Usage {
         input_tokens: u.input_tokens,
         output_tokens: u.output_tokens,
         total_tokens: u.total_tokens,

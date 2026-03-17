@@ -22,9 +22,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
-use super::common::build_http_client;
-use super::copilot_oauth::CopilotOAuth;
-use super::{
+use crate::common::build_http_client;
+use crate::copilot_oauth::CopilotOAuth;
+use crate::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall, ToolDefinition,
 };
 
@@ -298,7 +298,7 @@ impl LlmProvider for CopilotProvider {
         }
 
         let byte_stream = response.bytes_stream();
-        let chunk_stream = super::streaming::parse_sse_stream(byte_stream);
+        let chunk_stream = crate::streaming::parse_sse_stream(byte_stream);
 
         Ok(Box::pin(chunk_stream))
     }

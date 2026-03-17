@@ -32,11 +32,14 @@ pub mod tools;
 pub mod vault;
 #[cfg(feature = "webhook")]
 pub mod webhook;
+#[cfg(feature = "workspace-download")]
 pub mod workspace;
 
 pub use config::Config;
 pub use error::{AgentError, ChannelError, PipelineError, ProviderError};
-pub use providers::{GeminiProvider, LlmProvider, OpenAICompatibleProvider};
+#[cfg(feature = "provider-gemini")]
+pub use providers::GeminiProvider;
+pub use providers::{LlmProvider, OpenAICompatibleProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};
 pub use vault::{InjectionReport, VaultError, VaultInjector, VaultStore};

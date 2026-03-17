@@ -11,9 +11,14 @@ use gasket_core::memory::SqliteStore;
 use gasket_core::providers::ProviderRegistry;
 use gasket_core::tools::{
     EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool, ReadFileTool,
-    SpawnParallelTool, SpawnTool, ToolMetadata, ToolRegistry, WebFetchTool, WebSearchTool,
-    WriteFileTool,
+    ToolMetadata, ToolRegistry, WriteFileTool,
 };
+#[cfg(feature = "tool-spawn")]
+use gasket_core::tools::{SpawnParallelTool, SpawnTool};
+#[cfg(feature = "tool-web-fetch")]
+use gasket_core::tools::WebFetchTool;
+#[cfg(feature = "tool-web-search")]
+use gasket_core::tools::WebSearchTool;
 
 /// Resolve the exec workspace directory from config or default to $HOME/.gasket.
 ///
@@ -110,6 +115,10 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
         provider_registry,
     } = registry_config;
 
+    // Suppress unused warnings when tool-spawn feature is disabled
+    #[cfg(not(feature = "tool-spawn"))]
+    let _ = (&subagent_manager, &model_registry, &provider_registry);
+
     let restrict = config.tools.restrict_to_workspace;
     let allowed_dir = if restrict {
         Some(workspace.to_path_buf())
@@ -143,6 +152,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             is_mutating: false,
         },
     );
+    #[cfg(feature = "tool-web-fetch")]
     tools.register_with_metadata(
         Box::new(
             WebFetchTool::with_config(Some(config.tools.web.clone())).unwrap_or_else(|e| {
@@ -161,6 +171,7 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
             is_mutating: false,
         },
     );
+    #[cfg(feature = "tool-web-search")]
     tools.register_with_metadata(
         Box::new(WebSearchTool::new(Some(config.tools.web.clone()))),
         ToolMetadata {
@@ -209,50 +220,55 @@ pub fn build_tool_registry(registry_config: ToolRegistryConfig) -> ToolRegistry 
     );
 
     // Spawn tool
-    let spawn_tool = match (&subagent_manager, &model_registry, &provider_registry) {
-        (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnTool::with_registries(
-            Arc::clone(mgr),
-            Arc::clone(model_reg),
-            Arc::clone(provider_reg),
-        ),
-        (Some(mgr), _, _) => SpawnTool::with_manager(Arc::clone(mgr)),
-        _ => SpawnTool::new(),
-    };
-    tools.register_with_metadata(
-        Box::new(spawn_tool),
-        ToolMetadata {
-            display_name: "Spawn Subagent".to_string(),
-            category: "system".to_string(),
-            tags: vec!["spawn".to_string(), "agent".to_string()],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
+    #[cfg(feature = "tool-spawn")]
+    {
+        let spawn_tool = match (&subagent_manager, &model_registry, &provider_registry) {
+            (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnTool::with_registries(
+                Arc::clone(mgr),
+                Arc::clone(model_reg),
+                Arc::clone(provider_reg),
+            ),
+            (Some(mgr), _, _) => SpawnTool::with_manager(Arc::clone(mgr)),
+            _ => SpawnTool::new(),
+        };
+        tools.register_with_metadata(
+            Box::new(spawn_tool),
+            ToolMetadata {
+                display_name: "Spawn Subagent".to_string(),
+                category: "system".to_string(),
+                tags: vec!["spawn".to_string(), "agent".to_string()],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
 
-    // Spawn parallel tool
-    let spawn_parallel_tool = match (&subagent_manager, &model_registry, &provider_registry) {
-        (Some(mgr), Some(model_reg), Some(provider_reg)) => SpawnParallelTool::with_registries(
-            Arc::clone(mgr),
-            Arc::clone(model_reg),
-            Arc::clone(provider_reg),
-        ),
-        (Some(mgr), _, _) => SpawnParallelTool::with_manager(Arc::clone(mgr)),
-        _ => SpawnParallelTool::new(),
-    };
-    tools.register_with_metadata(
-        Box::new(spawn_parallel_tool),
-        ToolMetadata {
-            display_name: "Spawn Parallel".to_string(),
-            category: "system".to_string(),
-            tags: vec![
-                "spawn".to_string(),
-                "parallel".to_string(),
-                "agent".to_string(),
-            ],
-            requires_approval: false,
-            is_mutating: false,
-        },
-    );
+        // Spawn parallel tool
+        let spawn_parallel_tool = match (&subagent_manager, &model_registry, &provider_registry) {
+            (Some(mgr), Some(model_reg), Some(provider_reg)) => {
+                SpawnParallelTool::with_registries(
+                    Arc::clone(mgr),
+                    Arc::clone(model_reg),
+                    Arc::clone(provider_reg),
+                )
+            }
+            (Some(mgr), _, _) => SpawnParallelTool::with_manager(Arc::clone(mgr)),
+            _ => SpawnParallelTool::new(),
+        };
+        tools.register_with_metadata(
+            Box::new(spawn_parallel_tool),
+            ToolMetadata {
+                display_name: "Spawn Parallel".to_string(),
+                category: "system".to_string(),
+                tags: vec![
+                    "spawn".to_string(),
+                    "parallel".to_string(),
+                    "agent".to_string(),
+                ],
+                requires_approval: false,
+                is_mutating: false,
+            },
+        );
+    }
 
     // Memory search tool using filesystem-based search
     let memory_tool = MemorySearchTool::new();

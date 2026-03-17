@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::thread;
 
-use tantivy_cli::index::{FieldDef, FieldType, IndexManager};
+use gasket_tantivy::index::{FieldDef, FieldType, IndexManager};
 
 /// Test basic index operations.
 #[test]
@@ -125,7 +125,7 @@ fn test_document_operations() {
         .expect("Failed to create index");
 
     // Add document (synchronous)
-    let doc = tantivy_cli::index::Document::new(
+    let doc = gasket_tantivy::index::Document::new(
         "doc1".to_string(),
         serde_json::json!({
             "text": "Hello world"
@@ -181,7 +181,7 @@ fn test_compact() {
 
     // Add documents
     for i in 0..10 {
-        let doc = tantivy_cli::index::Document::new(
+        let doc = gasket_tantivy::index::Document::new(
             format!("doc{}", i),
             serde_json::json!({
                 "text": format!("Document {}", i)
@@ -263,8 +263,8 @@ fn test_batch_operations() {
         .expect("Failed to create index");
 
     // Create batch of documents
-    let doc_inputs: Vec<tantivy_cli::index::BatchDocumentInput> = (0..100)
-        .map(|i| tantivy_cli::index::BatchDocumentInput {
+    let doc_inputs: Vec<gasket_tantivy::index::BatchDocumentInput> = (0..100)
+        .map(|i| gasket_tantivy::index::BatchDocumentInput {
             id: format!("doc{}", i),
             fields: serde_json::json!({
                 "text": format!("Document {}", i)
@@ -321,7 +321,7 @@ fn test_search() {
     ];
 
     for (id, text) in docs {
-        let doc = tantivy_cli::index::Document::new(
+        let doc = gasket_tantivy::index::Document::new(
             id.to_string(),
             serde_json::json!({ "text": text })
                 .as_object()
@@ -335,7 +335,7 @@ fn test_search() {
     manager.commit("search_test").expect("Failed to commit");
 
     // Search for "Hello"
-    let query = tantivy_cli::index::SearchQuery {
+    let query = gasket_tantivy::index::SearchQuery {
         text: Some("Hello".to_string()),
         filters: vec![],
         limit: 10,
@@ -368,7 +368,7 @@ fn test_persistence() {
             .create_index("persist_test", fields, None)
             .expect("Failed to create index");
 
-        let doc = tantivy_cli::index::Document::new(
+        let doc = gasket_tantivy::index::Document::new(
             "doc1".to_string(),
             serde_json::json!({ "text": "Persist this" })
                 .as_object()

@@ -44,16 +44,27 @@ pub async fn cmd_auth_status() -> Result<()> {
 
     for (name, provider_config) in &config.providers {
         let status = if name == "copilot" {
-            if let Some(ref token) = provider_config.api_key {
-                // Try to validate the token
-                let oauth = gasket_core::providers::CopilotOAuth::with_default_client_id();
-                match oauth.validate_pat(token).await {
-                    Ok(true) => format!("{} Authenticated", "✓".green()),
-                    Ok(false) => format!("{} Invalid token", "✗".red()),
-                    Err(_) => format!("{} Unable to verify", "?".yellow()),
+            #[cfg(feature = "provider-copilot")]
+            {
+                if let Some(ref token) = provider_config.api_key {
+                    // Try to validate the token
+                    let oauth = gasket_core::providers::CopilotOAuth::with_default_client_id();
+                    match oauth.validate_pat(token).await {
+                        Ok(true) => format!("{} Authenticated", "✓".green()),
+                        Ok(false) => format!("{} Invalid token", "✗".red()),
+                        Err(_) => format!("{} Unable to verify", "?".yellow()),
+                    }
+                } else {
+                    format!("{} No token configured", "✗".red())
                 }
-            } else {
-                format!("{} No token configured", "✗".red())
+            }
+            #[cfg(not(feature = "provider-copilot"))]
+            {
+                if provider_config.api_key.is_some() {
+                    format!("{} Configured (copilot feature disabled)", "✓".green())
+                } else {
+                    format!("{} No token configured", "✗".red())
+                }
             }
         } else if provider_config.api_key.is_some() {
             format!("{} Configured", "✓".green())

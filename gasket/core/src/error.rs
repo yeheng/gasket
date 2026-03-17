@@ -186,3 +186,16 @@ impl From<anyhow::Error> for ChannelError {
         ChannelError::Internal(err.into())
     }
 }
+
+impl From<gasket_channels::ChannelConfigError> for ConfigValidationError {
+    fn from(err: gasket_channels::ChannelConfigError) -> Self {
+        match err {
+            gasket_channels::ChannelConfigError::IncompleteEmailConfig => {
+                ConfigValidationError::IncompleteEmailConfig
+            }
+            gasket_channels::ChannelConfigError::InvalidChannelConfig(ch, msg) => {
+                ConfigValidationError::InvalidChannelConfig(ch, msg)
+            }
+        }
+    }
+}

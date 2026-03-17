@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tracing::{debug, warn};
 
-use crate::bus::events::InboundMessage;
+use crate::events::InboundMessage;
 
 // ── ChannelError ──────────────────────────────────────────
 
@@ -255,7 +255,7 @@ impl InboundSender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::ChannelType;
+    use crate::events::ChannelType;
     use chrono::Utc;
 
     fn make_inbound(sender: &str) -> InboundMessage {
