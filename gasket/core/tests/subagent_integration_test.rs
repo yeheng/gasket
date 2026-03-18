@@ -8,6 +8,7 @@ use gasket_core::bus::events::OutboundMessage;
 use gasket_core::providers::ProviderRegistry;
 use gasket_core::tools::ToolRegistry;
 
+#[allow(dead_code)]
 async fn create_test_manager() -> SubagentManager {
     let registry = ProviderRegistry::new();
     let provider = registry

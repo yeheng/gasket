@@ -21,6 +21,7 @@ use crate::error::{Result, SandboxError};
 /// - `/tmp`      → tmpfs (size-limited)
 /// - `/dev`      → minimal devtmpfs
 /// - `/proc`     → new proc namespace
+#[allow(dead_code)]
 pub struct LinuxBwrapBackend {
     bwrap_path: PathBuf,
     tmp_size_mb: u32,

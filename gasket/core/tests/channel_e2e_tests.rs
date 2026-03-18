@@ -31,6 +31,7 @@ fn load_env() -> bool {
 }
 
 /// Helper: read an env var or skip the test
+#[allow(dead_code)]
 macro_rules! env_or_skip {
     ($key:expr) => {
         match std::env::var($key) {
