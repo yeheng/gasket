@@ -6,7 +6,6 @@ use std::sync::Arc;
 use gasket_core::bus::events::SessionKey;
 use gasket_core::bus::ChannelType;
 use gasket_core::providers::MessageRole;
-use gasket_core::LlmProvider;
 use gasket_core::Tool;
 
 /// Create a test sender for inbound messages (middleware-aware).
@@ -59,10 +58,9 @@ async fn test_agent_initialization() {
     let provider: Arc<dyn gasket_core::providers::LlmProvider> = Arc::from(provider);
 
     let tools = Arc::new(gasket_core::tools::ToolRegistry::new());
-    let agent =
-        gasket_core::agent::AgentLoop::new(provider, workspace.clone(), config, tools)
-            .await
-            .unwrap();
+    let agent = gasket_core::agent::AgentLoop::new(provider, workspace.clone(), config, tools)
+        .await
+        .unwrap();
 
     assert_eq!(agent.model(), "gpt-4o");
     assert_eq!(agent.workspace(), &workspace);
@@ -494,7 +492,6 @@ async fn test_cron_tool_schema() {
 
 #[tokio::test]
 async fn test_provider_trait() {
-    use gasket_core::providers::LlmProvider;
 
     let provider = gasket_core::providers::build_rig_provider(
         "openai",

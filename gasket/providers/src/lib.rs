@@ -57,6 +57,6 @@ pub use copilot_oauth::{CopilotOAuth, CopilotTokenResponse, DeviceCodeResponse};
 
 // Re-export rig adapters
 pub use rig_adapter::{
-    build_rig_provider, to_rig_messages, to_rig_tool_def, RigAnthropicProvider, RigDeepSeekProvider,
-    RigOllamaProvider, RigOpenAIProvider, RigOpenRouterProvider,
+    build_rig_provider, to_rig_messages, to_rig_tool_def, RigAnthropicProvider,
+    RigDeepSeekProvider, RigOllamaProvider, RigOpenAIProvider, RigOpenRouterProvider,
 };

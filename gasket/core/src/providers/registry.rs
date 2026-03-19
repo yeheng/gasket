@@ -106,13 +106,9 @@ impl ProviderRegistry {
         let default_model = Self::get_default_model(name);
 
         // Use rig adapter to create provider
-        let provider = gasket_providers::build_rig_provider(
-            name,
-            api_key,
-            &default_model,
-            api_base,
-        )
-        .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", name))?;
+        let provider =
+            gasket_providers::build_rig_provider(name, api_key, &default_model, api_base)
+                .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", name))?;
 
         Ok(Arc::from(provider))
     }

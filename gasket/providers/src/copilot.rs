@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::utils::build_http_client;
 use crate::copilot_oauth::CopilotOAuth;
+use crate::utils::build_http_client;
 use crate::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ToolCall, ToolDefinition,
 };

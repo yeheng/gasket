@@ -22,8 +22,8 @@ pub use gasket_providers::build_http_client;
 
 // Re-export rig adapters
 pub use gasket_providers::{
-    build_rig_provider, to_rig_messages, to_rig_tool_def, RigAnthropicProvider, RigDeepSeekProvider,
-    RigOllamaProvider, RigOpenAIProvider, RigOpenRouterProvider,
+    build_rig_provider, to_rig_messages, to_rig_tool_def, RigAnthropicProvider,
+    RigDeepSeekProvider, RigOllamaProvider, RigOpenAIProvider, RigOpenRouterProvider,
 };
 
 // Re-export specialized providers

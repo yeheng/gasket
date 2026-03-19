@@ -3,19 +3,12 @@
 //! 将 rig 的 StreamingResult 转换为 gasket 的 ChatStream。
 
 use futures::StreamExt;
-use rig::{
-    completion::GetTokenUsage,
-    streaming::StreamedAssistantContent,
-};
+use rig::{completion::GetTokenUsage, streaming::StreamedAssistantContent};
 
-use crate::{
-    ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta, Usage,
-};
+use crate::{ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, ToolCallDelta, Usage};
 
 /// 将 rig 的 StreamingResult (MultiTurnStreamItem) 转换为 gasket 的 ChatStream
-pub fn convert_rig_multi_turn_stream<R>(
-    mut stream: rig::agent::StreamingResult<R>,
-) -> ChatStream
+pub fn convert_rig_multi_turn_stream<R>(mut stream: rig::agent::StreamingResult<R>) -> ChatStream
 where
     R: Clone + Unpin + GetTokenUsage + Send + 'static,
 {

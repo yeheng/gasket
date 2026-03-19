@@ -2,16 +2,10 @@
 //!
 //! 提供消息类型转换、响应构建等通用功能。
 
-use rig::{
-    completion::Usage as RigUsage,
-    message::AssistantContent,
-    OneOrMany,
-};
+use rig::{completion::Usage as RigUsage, message::AssistantContent, OneOrMany};
 use tracing::debug;
 
-use crate::{
-    ChatMessage, ChatResponse, MessageRole, ToolCall, ToolDefinition, Usage,
-};
+use crate::{ChatMessage, ChatResponse, MessageRole, ToolCall, ToolDefinition, Usage};
 
 /// 将 gasket ChatMessage 转换为 rig Message
 ///
@@ -189,7 +183,9 @@ mod tests {
         match &rig_messages[0] {
             rig::message::Message::Assistant { content, .. } => {
                 let items: Vec<_> = content.iter().collect();
-                assert!(items.iter().any(|item| matches!(item, AssistantContent::ToolCall(_))));
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, AssistantContent::ToolCall(_))));
             }
             _ => panic!("Expected assistant message"),
         }
@@ -228,11 +224,7 @@ mod tests {
     fn test_build_chat_response_with_tool_call() {
         let contents = vec![
             AssistantContent::text("Let me check that."),
-            AssistantContent::tool_call(
-                "call_123",
-                "search",
-                json!({"query": "rust lang"}),
-            ),
+            AssistantContent::tool_call("call_123", "search", json!({"query": "rust lang"})),
         ];
         let response = build_chat_response(contents, None);
 
