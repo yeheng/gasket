@@ -116,3 +116,7 @@ dialoguer = "0.11"
 
 # Concurrent data structures
 dashmap = "6"
+
+# Rig framework
+rig-core = { version = "0.32", features = ["derive"] }
+schemars = "0.8"

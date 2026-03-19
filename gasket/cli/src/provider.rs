@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use gasket_core::config::Config;
-use gasket_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
+use gasket_core::providers::{LlmProvider, ModelSpec};
 
 /// Provider information returned by find_provider
 pub struct ProviderInfo {
@@ -32,44 +32,29 @@ pub fn build_provider(
     provider_config: &gasket_core::config::ProviderConfig,
     model: &str,
 ) -> Result<Arc<dyn LlmProvider>> {
-    let proxy_enabled = provider_config.proxy_enabled();
-
-    match name {
-        // MiniMax requires special handling for group_id header
-        "minimax" => {
-            let provider = OpenAICompatibleProvider::minimax(
-                api_key,
-                provider_config.api_base.clone(),
-                model,
-                None,
-                proxy_enabled,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to create MiniMax provider: {}", e))?;
-            Ok(Arc::new(provider))
-        }
-        // GitHub Copilot requires special handling for OAuth token management
-        #[cfg(feature = "provider-copilot")]
-        "copilot" => Ok(Arc::new(
+    // GitHub Copilot requires special handling for OAuth token management
+    #[cfg(feature = "provider-copilot")]
+    if name == "copilot" {
+        return Ok(Arc::new(
             gasket_core::providers::CopilotProvider::with_proxy(
                 api_key,
                 provider_config.api_base.clone(),
                 Some(model.to_string()),
-                proxy_enabled,
+                provider_config.proxy_enabled(),
             ),
-        )),
-        // All other providers use the generic from_name constructor
-        _ => {
-            let provider = OpenAICompatibleProvider::from_name(
-                name,
-                api_key,
-                provider_config.api_base.clone(),
-                Some(model.to_string()),
-                proxy_enabled,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to create provider '{}': {}", name, e))?;
-            Ok(Arc::new(provider))
-        }
+        ));
     }
+
+    // Use rig adapter for all other providers
+    let provider = gasket_core::providers::build_rig_provider(
+        name,
+        Some(api_key.to_string()),
+        model,
+        provider_config.api_base.clone(),
+    )
+    .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", name))?;
+
+    Ok(Arc::from(provider))
 }
 
 /// Get the default model name for a provider.

@@ -7,7 +7,7 @@ pub mod registry;
 
 // Re-export the streaming module
 pub mod streaming {
-    pub use gasket_providers::streaming::*;
+    pub use gasket_providers::{parse_sse_stream, sse_lines};
 }
 
 // Re-export all base types
@@ -17,15 +17,16 @@ pub use gasket_providers::{
     ToolCall, ToolCallDelta, ToolDefinition, Usage,
 };
 
-// Re-export common types
+// Re-export utility functions
+pub use gasket_providers::build_http_client;
+
+// Re-export rig adapters
 pub use gasket_providers::{
-    build_http_client, get_default_api_base, get_default_model, parse_json_args,
-    OpenAICompatibleProvider, ProviderBuildError, ProviderConfig, ProviderResult,
+    build_rig_provider, to_rig_messages, to_rig_tool_def, RigAnthropicProvider, RigDeepSeekProvider,
+    RigOllamaProvider, RigOpenAIProvider, RigOpenRouterProvider,
 };
 
 // Re-export specialized providers
-#[cfg(feature = "provider-gemini")]
-pub use gasket_providers::GeminiProvider;
 #[cfg(feature = "provider-copilot")]
 pub use gasket_providers::{
     CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,

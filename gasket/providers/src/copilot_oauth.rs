@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info};
 
-use crate::common::build_http_client;
+use crate::utils::build_http_client;
 
 /// Default GitHub App Client ID for Copilot
 /// This is the official GitHub Copilot extension's client ID

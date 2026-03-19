@@ -36,3 +36,10 @@ anyhow.workspace = true
 
 # UUID
 uuid.workspace = true
+
+# Rig framework
+rig-core.workspace = true
+schemars.workspace = true
+
+# Async stream
+async-stream = "0.3"

@@ -37,9 +37,7 @@ pub mod workspace;
 
 pub use config::Config;
 pub use error::{AgentError, ChannelError, PipelineError, ProviderError};
-#[cfg(feature = "provider-gemini")]
-pub use providers::GeminiProvider;
-pub use providers::{LlmProvider, OpenAICompatibleProvider};
+pub use providers::{LlmProvider};
 pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
 pub use tools::{MessageTool, Tool, ToolRegistry};
 pub use vault::{InjectionReport, VaultError, VaultInjector, VaultStore};

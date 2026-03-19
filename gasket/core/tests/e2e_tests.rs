@@ -47,18 +47,20 @@ async fn test_agent_initialization() {
         session_idle_timeout_secs: 300,
     };
 
-    let provider = gasket_core::providers::OpenAICompatibleProvider::from_name(
+    let provider = gasket_core::providers::build_rig_provider(
         "openai",
-        "test-key",
+        Some("test-key".to_string()),
+        "gpt-4o",
         None,
-        Some("gpt-4o".to_string()),
-        true,
     )
     .expect("openai should be known provider");
 
+    // Convert Box to Arc for use with AgentLoop
+    let provider: Arc<dyn gasket_core::providers::LlmProvider> = Arc::from(provider);
+
     let tools = Arc::new(gasket_core::tools::ToolRegistry::new());
     let agent =
-        gasket_core::agent::AgentLoop::new(Arc::new(provider), workspace.clone(), config, tools)
+        gasket_core::agent::AgentLoop::new(provider, workspace.clone(), config, tools)
             .await
             .unwrap();
 
@@ -493,14 +495,12 @@ async fn test_cron_tool_schema() {
 #[tokio::test]
 async fn test_provider_trait() {
     use gasket_core::providers::LlmProvider;
-    use gasket_core::providers::OpenAICompatibleProvider;
 
-    let provider = OpenAICompatibleProvider::from_name(
+    let provider = gasket_core::providers::build_rig_provider(
         "openai",
-        "test-key",
+        Some("test-key".to_string()),
+        "gpt-4o",
         None,
-        Some("gpt-4o".to_string()),
-        true,
     )
     .expect("openai should be known provider");
 
@@ -510,14 +510,11 @@ async fn test_provider_trait() {
 
 #[tokio::test]
 async fn test_openrouter_provider() {
-    use gasket_core::providers::OpenAICompatibleProvider;
-
-    let provider = OpenAICompatibleProvider::from_name(
+    let provider = gasket_core::providers::build_rig_provider(
         "openrouter",
-        "sk-or-test",
+        Some("sk-or-test".to_string()),
+        "anthropic/claude-sonnet-4",
         None,
-        Some("anthropic/claude-sonnet-4".to_string()),
-        true,
     )
     .expect("openrouter should be known provider");
 
@@ -527,14 +524,11 @@ async fn test_openrouter_provider() {
 
 #[tokio::test]
 async fn test_anthropic_provider() {
-    use gasket_core::providers::OpenAICompatibleProvider;
-
-    let provider = OpenAICompatibleProvider::from_name(
+    let provider = gasket_core::providers::build_rig_provider(
         "anthropic",
-        "sk-ant-test",
+        Some("sk-ant-test".to_string()),
+        "claude-sonnet-4-20250514",
         None,
-        Some("claude-sonnet-4-20250514".to_string()),
-        true,
     )
     .expect("anthropic should be known provider");
 

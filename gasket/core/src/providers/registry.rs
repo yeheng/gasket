@@ -8,10 +8,7 @@ use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-#[cfg(feature = "provider-gemini")]
-use gasket_providers::GeminiProvider;
 use gasket_providers::LlmProvider;
-use gasket_providers::{OpenAICompatibleProvider, ProviderConfig};
 
 /// Registry for managing LLM provider instances
 ///
@@ -101,59 +98,36 @@ impl ProviderRegistry {
             anyhow::bail!("Provider {} is not available (missing API key)", name);
         }
 
-        // Create provider based on name/type
-        let provider: Arc<dyn LlmProvider> = match name {
-            #[cfg(feature = "provider-gemini")]
-            "gemini" => {
-                let api_key = config
-                    .api_key
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Gemini API key not configured"))?;
-                Arc::new(GeminiProvider::with_config(
-                    api_key.clone(),
-                    config.api_base.clone(),
-                    None, // Use default model
-                    config.proxy_enabled(),
-                ))
-            }
-            _ => {
-                // Use OpenAI-compatible provider for most providers
-                let api_key = config
-                    .api_key
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("API key not configured for {}", name))?;
+        // Get API key and base URL
+        let api_key = config.api_key.clone();
+        let api_base = config.api_base.clone();
 
-                let provider_config = ProviderConfig {
-                    name: name.to_string(),
-                    api_base: config
-                        .api_base
-                        .clone()
-                        .unwrap_or_else(|| Self::get_default_api_base(name)),
-                    api_key: api_key.clone(),
-                    default_model: Self::get_default_model(name),
-                    extra_headers: HashMap::new(),
-                    proxy_enabled: config.proxy_enabled(),
-                };
+        // Get default model for this provider
+        let default_model = Self::get_default_model(name);
 
-                Arc::new(OpenAICompatibleProvider::new(provider_config))
-            }
-        };
+        // Use rig adapter to create provider
+        let provider = gasket_providers::build_rig_provider(
+            name,
+            api_key,
+            &default_model,
+            api_base,
+        )
+        .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", name))?;
 
-        Ok(provider)
-    }
-
-    /// Get default API base URL for known providers
-    fn get_default_api_base(name: &str) -> String {
-        gasket_providers::get_default_api_base(name)
-            .unwrap_or_else(|| format!("https://api.{}.com/v1", name).leak())
-            .to_string()
+        Ok(Arc::from(provider))
     }
 
     /// Get default model for known providers
     fn get_default_model(name: &str) -> String {
-        gasket_providers::get_default_model(name)
-            .unwrap_or("default")
-            .to_string()
+        // Default models for known providers
+        match name {
+            "openai" => "gpt-4o".to_string(),
+            "anthropic" => "claude-sonnet-4-20250514".to_string(),
+            "deepseek" => "deepseek-chat".to_string(),
+            "openrouter" => "anthropic/claude-sonnet-4".to_string(),
+            "ollama" => "llama3".to_string(),
+            _ => "default".to_string(),
+        }
     }
 
     /// Check if a provider is configured

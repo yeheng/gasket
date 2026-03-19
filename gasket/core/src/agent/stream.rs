@@ -9,7 +9,7 @@ use futures::stream::Stream;
 use futures::StreamExt;
 use tracing::{debug, trace};
 
-use crate::providers::{parse_json_args, ChatResponse, ToolCall, ToolCallDelta};
+use crate::providers::{ChatResponse, ToolCall, ToolCallDelta};
 
 /// Events emitted during streaming.
 #[derive(Debug)]
@@ -96,7 +96,8 @@ impl ToolCallAccumulator {
             .pending
             .into_values()
             .map(|partial| {
-                let arguments = parse_json_args(&partial.arguments);
+                let arguments = serde_json::from_str(&partial.arguments)
+                    .unwrap_or_else(|_| serde_json::json!({}));
                 ToolCall::new(partial.id, partial.name, arguments)
             })
             .collect();
