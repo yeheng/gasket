@@ -12,11 +12,7 @@
 
 use std::sync::Arc;
 
-use rig::{
-    completion::ToolDefinition,
-    tool::ToolError,
-    wasm_compat::WasmBoxedFuture,
-};
+use rig::{completion::ToolDefinition, tool::ToolError, wasm_compat::WasmBoxedFuture};
 use serde_json::Value;
 
 use super::{Tool, ToolResult};
@@ -51,11 +47,10 @@ impl<T: Tool + Send + Sync> rig::tool::ToolDyn for GasketToolAsRig<T> {
     fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
         Box::pin(async move {
             // Parse args from JSON string
-            let args_value: Value = serde_json::from_str(&args)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Failed to parse tool args as JSON: {}, using raw string", e);
-                    Value::String(args)
-                });
+            let args_value: Value = serde_json::from_str(&args).unwrap_or_else(|e| {
+                tracing::warn!("Failed to parse tool args as JSON: {}, using raw string", e);
+                Value::String(args)
+            });
 
             // Execute the tool
             let result: ToolResult = self.0.execute(args_value).await;
@@ -95,13 +90,14 @@ impl rig::tool::ToolDyn for ArcToolWrapper {
 
     fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
         Box::pin(async move {
-            let args_value: Value = serde_json::from_str(&args)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Failed to parse tool args as JSON: {}", e);
-                    Value::String(args)
-                });
+            let args_value: Value = serde_json::from_str(&args).unwrap_or_else(|e| {
+                tracing::warn!("Failed to parse tool args as JSON: {}", e);
+                Value::String(args)
+            });
 
-            self.0.execute(args_value).await
+            self.0
+                .execute(args_value)
+                .await
                 .map_err(|e| ToolError::ToolCallError(Box::new(e)))
         })
     }
@@ -159,16 +155,18 @@ impl ToolWrapper {
     /// Execute the tool
     pub async fn call(&self, args: Value) -> Result<String, ToolError> {
         match self {
-            Self::Gasket(t) => {
-                t.execute(args).await.map_err(|e| ToolError::ToolCallError(Box::new(e)))
-            }
+            Self::Gasket(t) => t
+                .execute(args)
+                .await
+                .map_err(|e| ToolError::ToolCallError(Box::new(e))),
             Self::Rig(t) => {
                 let args_str = serde_json::to_string(&args).unwrap_or_default();
                 t.call(args_str).await
             }
-            Self::Arc(t) => {
-                t.execute(args).await.map_err(|e| ToolError::ToolCallError(Box::new(e)))
-            }
+            Self::Arc(t) => t
+                .execute(args)
+                .await
+                .map_err(|e| ToolError::ToolCallError(Box::new(e))),
         }
     }
 }

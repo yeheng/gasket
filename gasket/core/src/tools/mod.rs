@@ -38,7 +38,9 @@ pub use history_search::HistorySearchTool;
 pub use memory_search::MemorySearchTool;
 pub use message::MessageTool;
 pub use registry::ToolRegistry;
-pub use rig_compat::{ArcToolWrapper, GasketToolAsRig, ToolWrapper, definitions_to_toolset, to_toolset_from_tools};
+pub use rig_compat::{
+    definitions_to_toolset, to_toolset_from_tools, ArcToolWrapper, GasketToolAsRig, ToolWrapper,
+};
 pub use shell::ExecTool;
 pub use spawn::SpawnTool;
 pub use spawn_parallel::SpawnParallelTool;
