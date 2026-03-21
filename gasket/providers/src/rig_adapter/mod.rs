@@ -11,6 +11,7 @@
 //! - Anthropic
 //! - Ollama (本地模型)
 //! - OpenRouter (统一访问多个提供商)
+//! - Zhipu (智谱 GLM 系列，OpenAI 兼容接口)
 
 // 子模块
 mod anthropic;
@@ -21,6 +22,7 @@ mod ollama;
 mod openai;
 mod openrouter;
 mod streaming;
+mod zhipu;
 
 // Re-export 公共接口
 pub use anthropic::RigAnthropicProvider;
@@ -30,3 +32,4 @@ pub use deepseek::RigDeepSeekProvider;
 pub use ollama::RigOllamaProvider;
 pub use openai::RigOpenAIProvider;
 pub use openrouter::RigOpenRouterProvider;
+pub use zhipu::RigZhipuProvider;

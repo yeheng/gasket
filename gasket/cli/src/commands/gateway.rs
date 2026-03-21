@@ -243,6 +243,7 @@ pub async fn cmd_gateway() -> Result<()> {
     #[cfg(feature = "all-channels")]
     let ws_manager_for_router = Some(websocket_manager.clone());
 
+    #[cfg(feature = "all-channels")]
     tasks.push(tokio::spawn(gasket_core::bus::run_outbound_actor(
         outbound_rx,
         outbound_registry,

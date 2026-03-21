@@ -11,7 +11,7 @@ name = "gasket"
 path = "src/main.rs"
 
 [features]
-default = ["markdown", "all-providers", "workspace-download"]
+default = ["markdown", "all-providers", "workspace-download", "all-channels"]
 
 # Rendering
 markdown = ["termimad"]

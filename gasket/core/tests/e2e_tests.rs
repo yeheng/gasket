@@ -315,17 +315,22 @@ fn test_simple_schema_with_array() {
 
 #[tokio::test]
 async fn test_config_defaults() {
-    use gasket_core::config::Config;
+    use gasket_core::config::{AgentDefaults, Config};
 
     let config = Config::default();
 
-    // Agent defaults have sensible default values
-    assert_eq!(config.agents.defaults.temperature, 0.7);
-    assert_eq!(config.agents.defaults.max_tokens, 4096);
-    assert_eq!(config.agents.defaults.max_iterations, 20);
-    assert_eq!(config.agents.defaults.memory_window, 50);
-    assert!(config.agents.defaults.streaming);
-    assert!(!config.agents.defaults.thinking_enabled);
+    // Agent defaults now only contains model reference
+    // Runtime configuration is defined in ModelConfig or uses constants
+    assert!(config.agents.defaults.model.is_none());
+
+    // Verify the constants are available
+    assert_eq!(AgentDefaults::DEFAULT_TEMPERATURE, 0.7);
+    assert_eq!(AgentDefaults::DEFAULT_MAX_TOKENS, 4096);
+    assert_eq!(AgentDefaults::DEFAULT_MAX_ITERATIONS, 20);
+    assert_eq!(AgentDefaults::DEFAULT_MEMORY_WINDOW, 50);
+    assert!(AgentDefaults::DEFAULT_STREAMING);
+    assert!(!AgentDefaults::DEFAULT_THINKING_ENABLED);
+
     assert!(!config.tools.restrict_to_workspace);
 }
 
@@ -341,11 +346,7 @@ async fn test_config_deserialization() {
         },
         "agents": {
             "defaults": {
-                "model": "gpt-4o",
-                "temperature": 0.5,
-                "max_tokens": 2048,
-                "max_iterations": 10,
-                "memory_window": 30
+                "model": "openai/gpt-4o"
             }
         },
         "tools": {
@@ -359,11 +360,10 @@ async fn test_config_deserialization() {
         config.providers.get("openrouter").unwrap().api_key,
         Some("sk-or-test".to_string())
     );
-    assert_eq!(config.agents.defaults.model, Some("gpt-4o".to_string()));
-    assert_eq!(config.agents.defaults.temperature, 0.5);
-    assert_eq!(config.agents.defaults.max_tokens, 2048);
-    assert_eq!(config.agents.defaults.max_iterations, 10);
-    assert_eq!(config.agents.defaults.memory_window, 30);
+    assert_eq!(
+        config.agents.defaults.model,
+        Some("openai/gpt-4o".to_string())
+    );
     assert!(config.tools.restrict_to_workspace);
 }
 

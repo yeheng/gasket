@@ -38,7 +38,7 @@ pub struct ModelProfile {
     #[serde(default)]
     pub capabilities: Vec<String>,
 
-    /// Temperature override (optional, uses agent default if not set)
+    /// Temperature override (optional, uses ModelConfig or global default if not set)
     #[serde(default)]
     pub temperature: Option<f32>,
 
@@ -77,67 +77,41 @@ impl ModelProfile {
     }
 }
 
-/// Default agent settings
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Default agent settings - simplified to only model reference
+///
+/// Runtime configuration (temperature, max_tokens, etc.) is now defined
+/// in ModelConfig under each ProviderConfig, allowing per-model settings.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentDefaults {
-    /// Model to use
+    /// Model to use - format: "provider_id/model_id" or "model_profile_id"
+    /// Examples:
+    /// - "openai/gpt-4o" - direct provider/model reference
+    /// - "coder" - references a ModelProfile by ID
     #[serde(default)]
     pub model: Option<String>,
-
-    /// Temperature for generation
-    #[serde(default = "default_temperature")]
-    pub temperature: f32,
-
-    /// Maximum tokens to generate
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: u32,
-
-    /// Maximum tool call iterations
-    #[serde(default = "default_max_iterations")]
-    pub max_iterations: u32,
-
-    /// Memory window size
-    #[serde(default = "default_memory_window")]
-    pub memory_window: usize,
-
-    /// Enable thinking/reasoning mode for deep reasoning models (GLM-5, DeepSeek R1, etc.)
-    #[serde(default)]
-    pub thinking_enabled: bool,
-
-    /// Enable streaming mode for progressive output (default: true)
-    #[serde(default = "default_streaming")]
-    pub streaming: bool,
 }
 
-impl Default for AgentDefaults {
-    fn default() -> Self {
-        Self {
-            model: None,
-            temperature: default_temperature(),
-            max_tokens: default_max_tokens(),
-            max_iterations: default_max_iterations(),
-            memory_window: default_memory_window(),
-            thinking_enabled: false,
-            streaming: default_streaming(),
-        }
-    }
-}
+/// Global default values for runtime configuration
+///
+/// These are used as fallbacks when not specified in ModelConfig or ModelProfile.
+impl AgentDefaults {
+    /// Default temperature for generation
+    pub const DEFAULT_TEMPERATURE: f32 = 0.7;
 
-// Default value functions
-fn default_temperature() -> f32 {
-    0.7
-}
-fn default_max_tokens() -> u32 {
-    4096
-}
-fn default_max_iterations() -> u32 {
-    20
-}
-fn default_memory_window() -> usize {
-    50
-}
-fn default_streaming() -> bool {
-    true
+    /// Default maximum tokens to generate
+    pub const DEFAULT_MAX_TOKENS: u32 = 4096;
+
+    /// Default maximum tool call iterations
+    pub const DEFAULT_MAX_ITERATIONS: u32 = 20;
+
+    /// Default memory window size
+    pub const DEFAULT_MEMORY_WINDOW: usize = 50;
+
+    /// Default streaming mode
+    pub const DEFAULT_STREAMING: bool = true;
+
+    /// Default thinking mode
+    pub const DEFAULT_THINKING_ENABLED: bool = false;
 }
 
 #[cfg(test)]
@@ -145,35 +119,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_agent_defaults() {
+    fn test_agent_defaults_model_only() {
         let yaml = r#"
 defaults:
-  model: anthropic/claude-opus-4-5
-  temperature: 0.5
-  max_tokens: 8192
+  model: openai/gpt-4o
 "#;
         let agents: AgentsConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(
-            agents.defaults.model,
-            Some("anthropic/claude-opus-4-5".to_string())
-        );
-        assert_eq!(agents.defaults.temperature, 0.5);
-        assert_eq!(agents.defaults.max_tokens, 8192);
-        // Default values
-        assert_eq!(agents.defaults.max_iterations, 20);
-        assert_eq!(agents.defaults.memory_window, 50);
-        assert!(agents.defaults.streaming);
-        assert!(!agents.defaults.thinking_enabled);
+        assert_eq!(agents.defaults.model, Some("openai/gpt-4o".to_string()));
     }
 
     #[test]
     fn test_agent_defaults_empty() {
         let yaml = "";
         let agents: AgentsConfig = serde_yaml::from_str(yaml).unwrap();
-        // All defaults
         assert!(agents.defaults.model.is_none());
-        assert_eq!(agents.defaults.temperature, 0.7);
-        assert_eq!(agents.defaults.max_tokens, 4096);
+    }
+
+    #[test]
+    fn test_agent_defaults_constants() {
+        assert_eq!(AgentDefaults::DEFAULT_TEMPERATURE, 0.7);
+        assert_eq!(AgentDefaults::DEFAULT_MAX_TOKENS, 4096);
+        assert_eq!(AgentDefaults::DEFAULT_MAX_ITERATIONS, 20);
+        assert_eq!(AgentDefaults::DEFAULT_MEMORY_WINDOW, 50);
+        assert!(AgentDefaults::DEFAULT_STREAMING);
+        assert!(!AgentDefaults::DEFAULT_THINKING_ENABLED);
     }
 
     #[test]

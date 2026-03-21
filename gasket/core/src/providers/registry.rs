@@ -7,8 +7,35 @@ use std::sync::{Arc, RwLock};
 
 use tracing::{debug, info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, ProviderType};
 use gasket_providers::LlmProvider;
+
+/// Build a provider based on ProviderType
+fn build_provider_from_type(
+    provider_type: &ProviderType,
+    name: &str,
+    api_key: Option<String>,
+    model: &str,
+    api_base: Option<String>,
+) -> anyhow::Result<Box<dyn LlmProvider>> {
+    match provider_type {
+        ProviderType::Openai => {
+            // OpenAI-compatible providers: openai, deepseek, zhipu, ollama, openrouter
+            gasket_providers::build_rig_provider(name, api_key, model, api_base)
+                .ok_or_else(|| anyhow::anyhow!("Unknown OpenAI-compatible provider: {}", name))
+        }
+        ProviderType::Gemini => {
+            // Gemini provider - uses OpenAI-compatible API through rig
+            gasket_providers::build_rig_provider(name, api_key, model, api_base)
+                .ok_or_else(|| anyhow::anyhow!("Unknown Gemini provider: {}", name))
+        }
+        ProviderType::Anthropic => {
+            // Anthropic provider
+            gasket_providers::build_rig_provider(name, api_key, model, api_base)
+                .ok_or_else(|| anyhow::anyhow!("Unknown Anthropic provider: {}", name))
+        }
+    }
+}
 
 /// Registry for managing LLM provider instances
 ///
@@ -102,27 +129,45 @@ impl ProviderRegistry {
         let api_key = config.api_key.clone();
         let api_base = config.api_base.clone();
 
-        // Get default model for this provider
-        let default_model = Self::get_default_model(name);
+        // Get default model for this provider based on provider type
+        let default_model = Self::get_default_model_for_type(&config.provider_type, name);
 
-        // Use rig adapter to create provider
-        let provider =
-            gasket_providers::build_rig_provider(name, api_key, &default_model, api_base)
-                .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", name))?;
+        // Use rig adapter to create provider based on ProviderType
+        let provider = build_provider_from_type(
+            &config.provider_type,
+            name,
+            api_key,
+            &default_model,
+            api_base,
+        )?;
 
         Ok(Arc::from(provider))
     }
 
-    /// Get default model for known providers
-    fn get_default_model(name: &str) -> String {
-        // Default models for known providers
-        match name {
-            "openai" => "gpt-4o".to_string(),
-            "anthropic" => "claude-sonnet-4-20250514".to_string(),
-            "deepseek" => "deepseek-chat".to_string(),
-            "openrouter" => "anthropic/claude-sonnet-4".to_string(),
-            "ollama" => "llama3".to_string(),
-            _ => "default".to_string(),
+    /// Get default model for known provider types
+    fn get_default_model_for_type(
+        provider_type: &crate::config::ProviderType,
+        name: &str,
+    ) -> String {
+        // Default models for known provider types
+        match provider_type {
+            crate::config::ProviderType::Openai => match name {
+                "openai" => "gpt-4o".to_string(),
+                "deepseek" => "deepseek-chat".to_string(),
+                "zhipu" => "glm-4".to_string(),
+                "ollama" => "llama3".to_string(),
+                "openrouter" => "anthropic/claude-sonnet-4".to_string(),
+                "tencent" => "hunyuan-lite".to_string(),
+                _ => "gpt-4o".to_string(),
+            },
+            crate::config::ProviderType::Gemini => match name {
+                "gemini" => "gemini-2.0-flash".to_string(),
+                _ => "gemini-2.0-flash".to_string(),
+            },
+            crate::config::ProviderType::Anthropic => match name {
+                "anthropic" => "claude-sonnet-4-20250514".to_string(),
+                _ => "claude-sonnet-4-20250514".to_string(),
+            },
         }
     }
 

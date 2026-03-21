@@ -39,13 +39,13 @@ use crate::channels::OutboundSenderRegistry;
 pub async fn run_outbound_actor(
     mut rx: mpsc::Receiver<OutboundMessage>,
     registry: Arc<OutboundSenderRegistry>,
-    #[cfg(feature = "webhook")] websocket_manager: Option<
+    #[cfg(feature = "all-channels")] websocket_manager: Option<
         Arc<crate::channels::websocket::WebSocketManager>,
     >,
 ) {
     tracing::info!("Outbound Actor started");
     while let Some(msg) = rx.recv().await {
-        #[cfg(feature = "webhook")]
+        #[cfg(feature = "all-channels")]
         if let crate::bus::events::ChannelType::WebSocket = msg.channel {
             if let Some(ref manager) = websocket_manager {
                 manager.send(msg).await;

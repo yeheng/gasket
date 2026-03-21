@@ -42,7 +42,6 @@ pub mod feishu {
 pub mod wecom {
     pub use gasket_channels::wecom::*;
 }
-#[cfg(feature = "webhook")]
 pub mod websocket {
     pub use gasket_channels::websocket::*;
 }

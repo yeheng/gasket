@@ -1,9 +1,13 @@
-//! DeepSeek provider adapter using rig
+//! Zhipu (智谱) provider adapter using rig's OpenAI-compatible client
 //!
-//! DeepSeek 的特色是支持 reasoning_content (链式思考)，
-//! 通过 rig 的 Reasoning 类型支持此功能。
+//! 智谱 AI 提供 OpenAI 兼容接口，Base URL: https://open.bigmodel.cn/api/paas/v4/
+//! 支持的模型：glm-5, glm-4.7, glm-4.6v 等
 //!
-//! ## 重要：使用 CompletionModel API
+//! ## 重要：使用 CompletionsClient + CompletionModel API
+//!
+//! Rig 0.32.0+ 默认使用 Responses API (`/v1/responses`)，但智谱只支持传统的
+//! Chat Completions API (`/v1/chat/completions`)。因此我们使用 `CompletionsClient`
+//! 而不是默认的 `Client`。
 //!
 //! 我们使用 `client.completion_model()` 而不是 `client.agent()`，因为：
 //! 1. Gasket 的 AgentExecutor 控制多轮对话循环
@@ -19,30 +23,48 @@ use crate::{ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, Mes
 use super::convert::build_chat_response;
 use super::streaming::convert_rig_stream;
 
-/// DeepSeek provider adapter using rig
+/// 智谱 AI 默认 Base URL
+/// 注意：如果是 coding 端点，路径为 /api/coding/paas/v4
+/// 通用 OpenAI 兼容端点为 /api/paas/v4/
+const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+
+/// Zhipu (智谱) provider adapter
 ///
-/// DeepSeek 的特色是支持 reasoning_content (链式思考)，
-/// 通过 rig 的 Reasoning 类型支持此功能。
-pub struct RigDeepSeekProvider {
-    client: rig::providers::deepseek::Client,
+/// 使用 rig 的 OpenAI-compatible CompletionsClient 访问智谱 AI 的 GLM 系列模型。
+///
+/// # 注意
+///
+/// 使用 `CompletionsClient` 而非默认的 `Client`，因为智谱不支持 OpenAI 的 Responses API。
+///
+/// # Example
+///
+/// ```ignore
+/// use gasket_providers::rig_adapter::RigZhipuProvider;
+///
+/// let provider = RigZhipuProvider::new("your-api-key", "glm-5");
+/// let response = provider.chat(request).await?;
+/// ```
+pub struct RigZhipuProvider {
+    // 使用 CompletionsClient 而非 Client，因为智谱不支持 Responses API
+    client: rig::providers::openai::CompletionsClient,
     model_name: String,
 }
 
-impl RigDeepSeekProvider {
-    /// 创建新的 DeepSeek provider
+impl RigZhipuProvider {
+    /// 创建新的智谱 provider
     ///
     /// # Arguments
-    /// * `api_key` - DeepSeek API key
-    /// * `model` - 模型名称 (e.g., "deepseek-chat", "deepseek-reasoner")
-    /// * `base_url` - 可选的自定义 API base URL
-    pub fn new(api_key: &str, model: &str, base_url: Option<&str>) -> Self {
-        let mut builder = rig::providers::deepseek::Client::builder().api_key(api_key);
+    /// * `api_key` - 智谱 AI API key
+    /// * `model` - 模型名称 (e.g., "glm-5", "glm-4.7", "glm-4.6v")
+    pub fn new(api_key: &str, model: &str) -> Self {
+        // 使用 CompletionsClient::builder() 而非 Client::builder()
+        // 这样会使用 /v1/chat/completions 端点而非 /v1/responses
+        let client = rig::providers::openai::CompletionsClient::builder()
+            .api_key(api_key)
+            .base_url(ZHIPU_BASE_URL)
+            .build()
+            .expect("Failed to build Zhipu client");
 
-        if let Some(url) = base_url {
-            builder = builder.base_url(url);
-        }
-
-        let client = builder.build().expect("Failed to build DeepSeek client");
         Self {
             client,
             model_name: model.to_string(),
@@ -50,20 +72,41 @@ impl RigDeepSeekProvider {
     }
 
     /// 从环境变量创建 provider
+    ///
+    /// 读取 `ZHIPU_API_KEY` 环境变量
     pub fn from_env(model: &str) -> Self {
-        let api_key = std::env::var("DEEPSEEK_API_KEY")
-            .expect("DEEPSEEK_API_KEY environment variable not set");
-        let base_url = std::env::var("DEEPSEEK_BASE_URL").ok();
-        Self::new(&api_key, model, base_url.as_deref())
+        let api_key =
+            std::env::var("ZHIPU_API_KEY").expect("ZHIPU_API_KEY environment variable not set");
+        Self::new(&api_key, model)
+    }
+
+    /// 使用自定义 base_url 创建 provider
+    ///
+    /// # Arguments
+    /// * `api_key` - 智谱 AI API key
+    /// * `model` - 模型名称
+    /// * `base_url` - 自定义 base URL
+    pub fn with_base_url(api_key: &str, model: &str, base_url: &str) -> Self {
+        let client = rig::providers::openai::CompletionsClient::builder()
+            .api_key(api_key)
+            .base_url(base_url)
+            .build()
+            .expect("Failed to build Zhipu client");
+
+        Self {
+            client,
+            model_name: model.to_string(),
+        }
     }
 
     /// 将 gasket ChatRequest 转换为 rig CompletionRequestBuilder
     fn build_request(
         &self,
         request: ChatRequest,
-    ) -> rig::completion::CompletionRequestBuilder<rig::providers::deepseek::CompletionModel> {
+    ) -> rig::completion::CompletionRequestBuilder<rig::providers::openai::CompletionModel> {
         use rig::completion::{CompletionModel, ToolDefinition};
 
+        // 获取 CompletionModel
         let model = self.client.completion_model(&self.model_name);
 
         // 找到最后一条用户消息作为 prompt
@@ -113,7 +156,7 @@ impl RigDeepSeekProvider {
             if !rig_tools.is_empty() {
                 let tool_count = rig_tools.len();
                 builder = builder.tools(rig_tools);
-                debug!("[RigDeepSeek] Added {} tools to request", tool_count);
+                debug!("[RigZhipu] Added {} tools to request", tool_count);
             }
         }
 
@@ -177,9 +220,9 @@ fn convert_message_to_rig(msg: &ChatMessage) -> Option<rig::message::Message> {
 }
 
 #[async_trait]
-impl LlmProvider for RigDeepSeekProvider {
+impl LlmProvider for RigZhipuProvider {
     fn name(&self) -> &str {
-        "deepseek"
+        "zhipu"
     }
 
     fn default_model(&self) -> &str {
@@ -190,12 +233,12 @@ impl LlmProvider for RigDeepSeekProvider {
     async fn chat(&self, request: ChatRequest) -> anyhow::Result<ChatResponse> {
         let builder = self.build_request(request);
         let response = builder.send().await.map_err(|e| {
-            info!("[RigDeepSeek] Chat error: {}", e);
-            anyhow::anyhow!("DeepSeek chat error: {}", e)
+            info!("[RigZhipu] Chat error: {}", e);
+            anyhow::anyhow!("Zhipu chat error: {}", e)
         })?;
 
         info!(
-            "[RigDeepSeek] Chat response: choice_count={}, usage={:?}",
+            "[RigZhipu] Chat response: choice_count={}, usage={:?}",
             response.choice.len(),
             response.usage
         );
@@ -208,15 +251,15 @@ impl LlmProvider for RigDeepSeekProvider {
 
     #[instrument(skip(self, request), fields(provider = %self.name(), model = %request.model))]
     async fn chat_stream(&self, request: ChatRequest) -> anyhow::Result<ChatStream> {
-        debug!("[RigDeepSeek] Starting stream request");
+        debug!("[RigZhipu] Starting stream request");
 
         let builder = self.build_request(request);
         let stream = builder.stream().await.map_err(|e| {
-            info!("[RigDeepSeek] Stream error: {}", e);
-            anyhow::anyhow!("DeepSeek stream error: {}", e)
+            info!("[RigZhipu] Stream error: {}", e);
+            anyhow::anyhow!("Zhipu stream error: {}", e)
         })?;
 
-        debug!("[RigDeepSeek] Stream started successfully");
+        debug!("[RigZhipu] Stream started successfully");
         Ok(convert_rig_stream(stream))
     }
 }

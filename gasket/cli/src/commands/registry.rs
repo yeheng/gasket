@@ -48,26 +48,22 @@ pub fn resolve_exec_workspace(config: &Config, fallback: &std::path::Path) -> st
 }
 
 /// Build AgentConfig from the config file, applying defaults for zero-valued fields.
-pub fn build_agent_config(config: &Config) -> AgentConfig {
+///
+/// Runtime configuration priority:
+/// 1. ModelProfile overrides (if using a named model profile)
+/// 2. ModelConfig runtime settings (per-model configuration)
+/// 3. AgentDefaults constants (global fallback)
+pub fn build_agent_config(_config: &Config) -> AgentConfig {
     let defaults = AgentConfig::default();
     AgentConfig {
         model: String::new(), // caller overrides with resolved model
-        max_iterations: match config.agents.defaults.max_iterations {
-            0 => defaults.max_iterations,
-            v => v,
-        },
-        temperature: config.agents.defaults.temperature,
-        max_tokens: match config.agents.defaults.max_tokens {
-            0 => defaults.max_tokens,
-            v => v,
-        },
-        memory_window: match config.agents.defaults.memory_window {
-            0 => defaults.memory_window,
-            v => v,
-        },
+        max_iterations: defaults.max_iterations,
+        temperature: defaults.temperature,
+        max_tokens: defaults.max_tokens,
+        memory_window: defaults.memory_window,
         max_tool_result_chars: defaults.max_tool_result_chars,
-        thinking_enabled: config.agents.defaults.thinking_enabled,
-        streaming: config.agents.defaults.streaming,
+        thinking_enabled: defaults.thinking_enabled,
+        streaming: defaults.streaming,
         subagent_timeout_secs: defaults.subagent_timeout_secs,
         session_idle_timeout_secs: defaults.session_idle_timeout_secs,
     }

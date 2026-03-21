@@ -72,8 +72,7 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
             client_id,
             models: Default::default(),
             default_currency: Some("USD".to_string()),
-            provider_type: gasket_core::config::ProviderType::Builtin,
-            api_compatibility: gasket_core::config::ApiCompatibility::Openai,
+            provider_type: gasket_core::config::ProviderType::Openai,
             proxy_enabled: None,
         },
     );

@@ -1,35 +1,29 @@
 //! Provider configuration schemas
 //!
-//! LLM provider configuration (OpenAI, OpenRouter, Anthropic, etc.)
+//! LLM provider configuration (OpenAI, Anthropic, Gemini, etc.)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Provider type enumeration
+/// Provider type enumeration - determines which API protocol adapter to use
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
-    /// Built-in provider with known defaults (OpenAI, Anthropic, Gemini, etc.)
-    #[default]
-    Builtin,
-    /// Custom provider with OpenAI or Anthropic compatible API
-    Custom,
-}
-
-/// API compatibility mode for custom providers
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ApiCompatibility {
-    /// OpenAI-compatible API format
+    /// OpenAI-compatible API (GPT, Grok, DeepSeek, Zhipu, Ollama, OpenRouter, Tencent HunYuan, etc.)
     #[default]
     Openai,
-    /// Anthropic-compatible API format
+    /// Google Gemini API
+    Gemini,
+    /// Anthropic Claude API
     Anthropic,
 }
 
-/// Model-specific configuration including pricing
+/// Model-specific configuration including pricing and runtime settings
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelConfig {
+    // ========================================================================
+    // Pricing Configuration
+    // ========================================================================
     /// Price per million input tokens
     #[serde(default, alias = "priceInputPerMillion")]
     pub price_input_per_million: Option<f64>,
@@ -41,6 +35,40 @@ pub struct ModelConfig {
     /// Currency code (e.g., "USD", "CNY")
     #[serde(default)]
     pub currency: Option<String>,
+
+    // ========================================================================
+    // Model Identity
+    // ========================================================================
+    /// Model identifier (e.g., "gpt-4o", "claude-sonnet-4-20250514")
+    #[serde(default, alias = "modelId")]
+    pub model_id: Option<String>,
+
+    // ========================================================================
+    // Runtime Configuration (optional, overrides AgentDefaults)
+    // ========================================================================
+    /// Temperature for generation (0.0 - 2.0)
+    #[serde(default)]
+    pub temperature: Option<f32>,
+
+    /// Maximum tokens to generate
+    #[serde(default, alias = "maxTokens")]
+    pub max_tokens: Option<u32>,
+
+    /// Maximum tool call iterations
+    #[serde(default, alias = "maxIterations")]
+    pub max_iterations: Option<u32>,
+
+    /// Memory window size (number of messages to keep in context)
+    #[serde(default, alias = "memoryWindow")]
+    pub memory_window: Option<usize>,
+
+    /// Enable thinking/reasoning mode for deep reasoning models
+    #[serde(default, alias = "thinkingEnabled")]
+    pub thinking_enabled: Option<bool>,
+
+    /// Enable streaming mode for progressive output
+    #[serde(default)]
+    pub streaming: Option<bool>,
 }
 
 impl ModelConfig {
@@ -68,6 +96,16 @@ impl ModelConfig {
             _ => None,
         }
     }
+
+    /// Check if this model has runtime configuration
+    pub fn has_runtime_config(&self) -> bool {
+        self.temperature.is_some()
+            || self.max_tokens.is_some()
+            || self.max_iterations.is_some()
+            || self.memory_window.is_some()
+            || self.thinking_enabled.is_some()
+            || self.streaming.is_some()
+    }
 }
 
 /// Provider configuration (OpenAI, OpenRouter, Anthropic, etc.)
@@ -89,15 +127,11 @@ pub struct ProviderConfig {
     /// Default currency for model pricing (can be overridden per-model)
     pub default_currency: Option<String>,
 
-    /// Model-specific configurations (including pricing)
+    /// Model-specific configurations (including pricing and runtime settings)
     pub models: HashMap<String, ModelConfig>,
 
-    /// Provider type: builtin (default) or custom
+    /// Provider type: determines which API protocol adapter to use
     pub provider_type: ProviderType,
-
-    /// API compatibility mode for custom providers (openai or anthropic)
-    /// Only relevant when provider_type is Custom
-    pub api_compatibility: ApiCompatibility,
 
     /// Whether to enable HTTP proxy for this provider.
     /// When `true` (default), proxy settings from environment variables
@@ -120,7 +154,6 @@ impl std::fmt::Debug for ProviderConfig {
             .field("default_currency", &self.default_currency)
             .field("models", &self.models)
             .field("provider_type", &self.provider_type)
-            .field("api_compatibility", &self.api_compatibility)
             .field("proxy_enabled", &self.proxy_enabled)
             .finish()
     }
@@ -164,11 +197,68 @@ impl ProviderConfig {
         let model_cfg = self.models.get(model_name)?;
         model_cfg.get_pricing(self.default_currency.as_deref())
     }
+
+    /// Get runtime configuration for a specific model.
+    ///
+    /// Returns the model's runtime configuration if available.
+    pub fn get_runtime_config_for_model(&self, model_name: &str) -> Option<&ModelConfig> {
+        self.models
+            .get(model_name)
+            .filter(|cfg| cfg.has_runtime_config())
+    }
+}
+
+impl Serialize for ProviderConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut s = serializer.serialize_struct("ProviderConfig", 8)?;
+        s.serialize_field("apiKey", &self.api_key)?;
+        s.serialize_field("apiBase", &self.api_base)?;
+        s.serialize_field("supportsThinking", &self.supports_thinking)?;
+        s.serialize_field("clientId", &self.client_id)?;
+        s.serialize_field("defaultCurrency", &self.default_currency)?;
+        s.serialize_field("models", &self.models)?;
+        s.serialize_field("providerType", &self.provider_type)?;
+        s.serialize_field("proxyEnabled", &self.proxy_enabled)?;
+        s.end()
+    }
 }
 
 // ============================================================================
 // Backward Compatibility - Legacy Provider Config Parsing
 // ============================================================================
+
+/// Legacy provider type for backward compatibility.
+///
+/// Old format had: Builtin, Custom
+/// New format has: Openai, Gemini, Anthropic
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ProviderTypeLegacy {
+    #[default]
+    Builtin,
+    Custom,
+    // Also accept new formats for backward compatibility
+    Openai,
+    Gemini,
+    Anthropic,
+}
+
+impl From<ProviderTypeLegacy> for ProviderType {
+    fn from(legacy: ProviderTypeLegacy) -> Self {
+        match legacy {
+            ProviderTypeLegacy::Builtin => ProviderType::Openai,
+            ProviderTypeLegacy::Custom => ProviderType::Openai,
+            ProviderTypeLegacy::Openai => ProviderType::Openai,
+            ProviderTypeLegacy::Gemini => ProviderType::Gemini,
+            ProviderTypeLegacy::Anthropic => ProviderType::Anthropic,
+        }
+    }
+}
 
 /// Legacy provider config for backward compatibility.
 ///
@@ -216,11 +306,7 @@ struct LegacyProviderConfig {
 
     /// Provider type: builtin (default) or custom
     #[serde(default, alias = "type")]
-    provider_type: ProviderType,
-
-    /// API compatibility mode for custom providers (openai or anthropic)
-    #[serde(default, alias = "apiCompatibility")]
-    api_compatibility: ApiCompatibility,
+    provider_type: ProviderTypeLegacy,
 
     /// Whether to enable proxy for this provider (default: true)
     #[serde(default, alias = "proxyEnabled")]
@@ -246,8 +332,12 @@ impl From<LegacyProviderConfig> for ProviderConfig {
                     price_input_per_million: Some(input),
                     price_output_per_million: Some(output),
                     currency: legacy.currency.clone(),
+                    ..Default::default()
                 });
         }
+
+        // Convert legacy provider_type to new ProviderType
+        let provider_type = legacy.provider_type.into();
 
         ProviderConfig {
             api_key: legacy.api_key,
@@ -256,8 +346,7 @@ impl From<LegacyProviderConfig> for ProviderConfig {
             client_id: legacy.client_id,
             default_currency,
             models,
-            provider_type: legacy.provider_type,
-            api_compatibility: legacy.api_compatibility,
+            provider_type,
             proxy_enabled: legacy.proxy_enabled,
         }
     }
@@ -273,27 +362,6 @@ impl<'de> Deserialize<'de> for ProviderConfig {
     }
 }
 
-impl Serialize for ProviderConfig {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-
-        let mut s = serializer.serialize_struct("ProviderConfig", 9)?;
-        s.serialize_field("apiKey", &self.api_key)?;
-        s.serialize_field("apiBase", &self.api_base)?;
-        s.serialize_field("supportsThinking", &self.supports_thinking)?;
-        s.serialize_field("clientId", &self.client_id)?;
-        s.serialize_field("defaultCurrency", &self.default_currency)?;
-        s.serialize_field("models", &self.models)?;
-        s.serialize_field("type", &self.provider_type)?;
-        s.serialize_field("apiCompatibility", &self.api_compatibility)?;
-        s.serialize_field("proxyEnabled", &self.proxy_enabled)?;
-        s.end()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,6 +372,7 @@ mod tests {
             price_input_per_million: Some(1.0),
             price_output_per_million: Some(2.0),
             currency: Some("USD".to_string()),
+            ..Default::default()
         };
         assert!(complete.has_pricing());
 
@@ -311,8 +380,26 @@ mod tests {
             price_input_per_million: Some(1.0),
             price_output_per_million: None,
             currency: None,
+            ..Default::default()
         };
         assert!(!partial.has_pricing());
+    }
+
+    #[test]
+    fn test_model_config_has_runtime_config() {
+        let with_runtime = ModelConfig {
+            temperature: Some(0.7),
+            max_tokens: Some(4096),
+            ..Default::default()
+        };
+        assert!(with_runtime.has_runtime_config());
+
+        let without_runtime = ModelConfig {
+            price_input_per_million: Some(1.0),
+            price_output_per_million: Some(2.0),
+            ..Default::default()
+        };
+        assert!(!without_runtime.has_runtime_config());
     }
 
     #[test]
@@ -321,6 +408,7 @@ mod tests {
             price_input_per_million: Some(1.0),
             price_output_per_million: Some(2.0),
             currency: Some("CNY".to_string()),
+            ..Default::default()
         };
         let pricing = config.get_pricing(None).unwrap();
         assert_eq!(pricing.price_input_per_million, 1.0);
@@ -332,6 +420,7 @@ mod tests {
             price_input_per_million: Some(1.0),
             price_output_per_million: Some(2.0),
             currency: None,
+            ..Default::default()
         };
         let pricing = config.get_pricing(Some("EUR")).unwrap();
         assert_eq!(pricing.currency, "EUR");
@@ -437,6 +526,9 @@ models:
   gpt-4o:
     priceInputPerMillion: 2.5
     priceOutputPerMillion: 10.0
+    modelId: gpt-4o
+    temperature: 0.7
+    maxTokens: 4096
 "#;
         let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(provider.api_key, Some("sk-xxx".to_string()));
@@ -452,6 +544,12 @@ models:
         assert_eq!(pricing.price_input_per_million, 2.5);
         assert_eq!(pricing.price_output_per_million, 10.0);
         assert_eq!(pricing.currency, "EUR");
+
+        // Check runtime config
+        let model = provider.models.get("gpt-4o").unwrap();
+        assert_eq!(model.model_id, Some("gpt-4o".to_string()));
+        assert_eq!(model.temperature, Some(0.7));
+        assert_eq!(model.max_tokens, Some(4096));
     }
 
     #[test]
@@ -504,6 +602,33 @@ models:
     }
 
     #[test]
+    fn test_provider_type_new_format() {
+        // Test new provider type: openai
+        let yaml = r#"
+provider_type: openai
+api_key: sk-xxx
+"#;
+        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(provider.provider_type, ProviderType::Openai);
+
+        // Test new provider type: gemini
+        let yaml = r#"
+provider_type: gemini
+api_key: xxx
+"#;
+        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(provider.provider_type, ProviderType::Gemini);
+
+        // Test new provider type: anthropic
+        let yaml = r#"
+provider_type: anthropic
+api_key: sk-ant-xxx
+"#;
+        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(provider.provider_type, ProviderType::Anthropic);
+    }
+
+    #[test]
     fn test_serialization() {
         let provider = ProviderConfig {
             api_key: Some("sk-xxx".to_string()),
@@ -519,12 +644,18 @@ models:
                         price_input_per_million: Some(2.5),
                         price_output_per_million: Some(10.0),
                         currency: None,
+                        model_id: Some("gpt-4o".to_string()),
+                        temperature: Some(0.7),
+                        max_tokens: Some(4096),
+                        max_iterations: None,
+                        memory_window: None,
+                        thinking_enabled: None,
+                        streaming: Some(true),
                     },
                 );
                 m
             },
-            provider_type: ProviderType::Builtin,
-            api_compatibility: ApiCompatibility::Openai,
+            provider_type: ProviderType::Openai,
             proxy_enabled: Some(true),
         };
 
@@ -533,6 +664,7 @@ models:
         assert!(yaml.contains("supportsThinking: true"));
         assert!(yaml.contains("defaultCurrency: USD"));
         assert!(yaml.contains("gpt-4o"));
+        assert!(yaml.contains("providerType: openai"));
     }
 
     #[test]
@@ -545,78 +677,31 @@ models:
         assert!(provider.client_id.is_none());
         assert!(provider.default_currency.is_none());
         assert!(provider.models.is_empty());
-        assert_eq!(provider.provider_type, ProviderType::Builtin);
-        assert_eq!(provider.api_compatibility, ApiCompatibility::Openai);
+        assert_eq!(provider.provider_type, ProviderType::Openai);
     }
 
     #[test]
-    fn test_custom_provider_type() {
-        // Test custom provider with OpenAI compatibility
-        let yaml = r#"
-type: custom
-apiCompatibility: openai
-api_key: sk-custom
-api_base: https://custom.api.com/v1
-"#;
-        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(provider.provider_type, ProviderType::Custom);
-        assert_eq!(provider.api_compatibility, ApiCompatibility::Openai);
-        assert_eq!(provider.api_key, Some("sk-custom".to_string()));
-        assert_eq!(
-            provider.api_base,
-            Some("https://custom.api.com/v1".to_string())
-        );
-    }
-
-    #[test]
-    fn test_custom_provider_anthropic_compatibility() {
-        // Test custom provider with Anthropic compatibility
-        let yaml = r#"
-type: custom
-apiCompatibility: anthropic
-api_key: sk-ant-custom
-api_base: https://anthropic-compatible.api.com/v1
-"#;
-        let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(provider.provider_type, ProviderType::Custom);
-        assert_eq!(provider.api_compatibility, ApiCompatibility::Anthropic);
-    }
-
-    #[test]
-    fn test_builtin_provider_default() {
-        // Builtin is the default
+    fn test_provider_type_default() {
+        // Default should be Openai
         let yaml = r#"
 api_key: sk-xxx
 "#;
         let provider: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(provider.provider_type, ProviderType::Builtin);
-        assert_eq!(provider.api_compatibility, ApiCompatibility::Openai);
+        assert_eq!(provider.provider_type, ProviderType::Openai);
     }
 
     #[test]
     fn test_provider_type_serialization() {
         assert_eq!(
-            serde_yaml::to_string(&ProviderType::Builtin)
-                .unwrap()
-                .trim(),
-            "builtin"
-        );
-        assert_eq!(
-            serde_yaml::to_string(&ProviderType::Custom).unwrap().trim(),
-            "custom"
-        );
-    }
-
-    #[test]
-    fn test_api_compatibility_serialization() {
-        assert_eq!(
-            serde_yaml::to_string(&ApiCompatibility::Openai)
-                .unwrap()
-                .trim(),
+            serde_yaml::to_string(&ProviderType::Openai).unwrap().trim(),
             "openai"
         );
         assert_eq!(
-            serde_yaml::to_string(&ApiCompatibility::Anthropic)
+            serde_yaml::to_string(&ProviderType::Gemini).unwrap().trim(),
+            "gemini"
+        );
+        assert_eq!(
+            serde_yaml::to_string(&ProviderType::Anthropic)
                 .unwrap()
                 .trim(),
             "anthropic"
