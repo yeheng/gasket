@@ -14,7 +14,7 @@ pub use super::channel::{
     ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, SlackConfig,
     TelegramConfig,
 };
-pub use super::provider::{ModelConfig, ProviderConfig};
+pub use super::provider::ProviderConfig;
 pub use super::tools::{
     CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
     WebToolsConfig,

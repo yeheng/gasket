@@ -1,14 +1,37 @@
 //! Common provider functionality for OpenAI-compatible APIs
 //!
 //! This module provides a generic, reusable provider implementation for any
-//! LLM service that speaks the OpenAI-compatible API format. Instead of
-//! copy-pasting a new file per vendor, instantiate `OpenAICompatibleProvider`
-//! with the right config.
+//! LLM service that speaks the OpenAI-compatible API format.
 //!
-//! # Adding a new provider
+//! # Usage
 //!
-//! To add support for a new OpenAI-compatible provider, simply add an entry
-//! to the `PROVIDER_DEFAULTS` map below. No code changes needed.
+//! All providers require explicit `api_base` configuration. No implicit
+//! defaults are provided - you must specify the API endpoint.
+//!
+//! ```ignore
+//! use gasket_providers::{OpenAICompatibleProvider, ProviderConfig};
+//! use std::collections::HashMap;
+//!
+//! // Using the constructor directly
+//! let config = ProviderConfig {
+//!     name: "my-provider".to_string(),
+//!     api_base: "https://api.example.com/v1".to_string(),
+//!     api_key: "your-api-key".to_string(),
+//!     default_model: "model-id".to_string(),
+//!     extra_headers: HashMap::new(),
+//!     proxy_enabled: true,
+//! };
+//! let provider = OpenAICompatibleProvider::new(config);
+//!
+//! // Using from_name helper
+//! let provider = OpenAICompatibleProvider::from_name(
+//!     "openai",
+//!     "your-api-key",
+//!     "https://api.openai.com/v1".to_string(),
+//!     Some("gpt-4o".to_string()),
+//!     true,
+//! );
+//! ```
 
 use std::collections::HashMap;
 
@@ -21,10 +44,10 @@ use tracing::{info, instrument};
 /// Errors that can occur when creating or using a provider.
 #[derive(Debug, Error)]
 pub enum ProviderBuildError {
-    /// The provider name is unknown and no api_base was provided.
-    #[error("Unknown provider '{name}'. Add it to PROVIDER_DEFAULTS or provide api_base.")]
-    UnknownProvider {
-        /// The provider name that was not recognized
+    /// The provider is missing the required api_base configuration.
+    #[error("Provider '{name}' is missing required 'api_base' configuration")]
+    MissingApiBase {
+        /// The provider name that was missing api_base
         name: String,
     },
 }
@@ -36,65 +59,6 @@ use crate::{
     ChatMessage, ChatRequest, ChatResponse, ChatStream, LlmProvider, ThinkingConfig, ToolCall,
     ToolDefinition,
 };
-
-/// Default configuration for known providers
-///
-/// This is data, not code. Adding a new provider just means adding a row here.
-static PROVIDER_DEFAULTS: &[(&str, &str, Option<&str>)] = &[
-    // (name, api_base, default_model)
-    ("openai", "https://api.openai.com/v1", Some("gpt-4o")),
-    (
-        "openrouter",
-        "https://openrouter.ai/api/v1",
-        Some("anthropic/claude-sonnet-4"),
-    ),
-    (
-        "anthropic",
-        "https://api.anthropic.com/v1",
-        Some("claude-sonnet-4-20250514"),
-    ),
-    (
-        "dashscope",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        Some("qwen-max"),
-    ),
-    ("moonshot", "https://api.moonshot.cn/v1", Some("kimi-k2.5")),
-    (
-        "zhipu",
-        "https://open.bigmodel.cn/api/paas/v4",
-        Some("glm-5"),
-    ),
-    (
-        "zhipu_coding",
-        "https://open.bigmodel.cn/api/coding/paas/v4",
-        Some("glm-5"),
-    ),
-    ("minimax", "https://api.minimax.chat/v1", Some("M2.2")),
-    (
-        "deepseek",
-        "https://api.deepseek.com/v1",
-        Some("deepseek-chat"),
-    ),
-    // Local providers (no API key required by default)
-    ("ollama", "http://localhost:11434/v1", Some("llama3")),
-    ("litellm", "http://localhost:4000/v1", Some("gpt-4o")),
-];
-
-/// Get default API base URL for a provider name
-pub fn get_default_api_base(name: &str) -> Option<&'static str> {
-    PROVIDER_DEFAULTS
-        .iter()
-        .find(|(n, _, _)| *n == name)
-        .map(|(_, url, _)| *url)
-}
-
-/// Get default model for a provider name
-pub fn get_default_model(name: &str) -> Option<&'static str> {
-    PROVIDER_DEFAULTS
-        .iter()
-        .find(|(n, _, _)| *n == name)
-        .and_then(|(_, _, model)| *model)
-}
 
 /// Build an HTTP client with optional proxy support.
 ///
@@ -129,12 +93,12 @@ pub fn build_http_client(proxy_enabled: bool) -> Client {
     })
 }
 
-/// Common provider configuration
+/// Common provider configuration for OpenAI-compatible providers
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
     /// Provider display name (e.g. "openai", "dashscope")
     pub name: String,
-    /// API base URL (e.g. "https://api.openai.com/v1")
+    /// API base URL (e.g. "https://api.openai.com/v1") - REQUIRED
     pub api_base: String,
     /// API key
     pub api_key: String,
@@ -168,81 +132,71 @@ impl OpenAICompatibleProvider {
         Self { client, config }
     }
 
-    /// Create a provider by name, looking up defaults from PROVIDER_DEFAULTS.
+    /// Create a provider by name with explicit configuration.
     ///
-    /// This is the recommended way to create providers. The URL and default model
-    /// are looked up from the data table, so adding new providers requires no code changes.
+    /// All providers require explicit `api_base` configuration.
     ///
-    /// # Errors
+    /// # Arguments
     ///
-    /// Returns `ProviderError::UnknownProvider` if the provider name is not in
-    /// `PROVIDER_DEFAULTS` and no `api_base` is provided.
+    /// * `name` - Provider display name
+    /// * `api_key` - API key for authentication
+    /// * `api_base` - **Required** API base URL (e.g., "https://api.openai.com/v1")
+    /// * `default_model` - Optional default model ID (defaults to "default")
+    /// * `proxy_enabled` - Whether to enable HTTP proxy
     ///
     /// # Example
     /// ```ignore
-    /// let provider = OpenAICompatibleProvider::from_name("dashscope", "your-api-key", None, None, true)?;
+    /// let provider = OpenAICompatibleProvider::from_name(
+    ///     "openai",
+    ///     "your-api-key",
+    ///     "https://api.openai.com/v1".to_string(),
+    ///     Some("gpt-4o".to_string()),
+    ///     true,
+    /// );
     /// ```
     pub fn from_name(
         name: &str,
         api_key: impl Into<String>,
-        api_base: Option<String>,
+        api_base: String,
         default_model: Option<String>,
         proxy_enabled: bool,
-    ) -> ProviderResult<Self> {
-        let resolved_base = api_base
-            .or_else(|| get_default_api_base(name).map(|s| s.to_string()))
-            .ok_or_else(|| ProviderBuildError::UnknownProvider {
-                name: name.to_string(),
-            })?;
+    ) -> Self {
+        let resolved_model = default_model.unwrap_or_else(|| "default".to_string());
 
-        let resolved_model = default_model
-            .or_else(|| get_default_model(name).map(|s| s.to_string()))
-            .unwrap_or_else(|| "default".to_string());
-
-        Ok(Self::new(ProviderConfig {
+        Self::new(ProviderConfig {
             name: name.to_string(),
-            api_base: resolved_base,
+            api_base,
             api_key: api_key.into(),
             default_model: resolved_model,
             extra_headers: HashMap::new(),
             proxy_enabled,
-        }))
+        })
     }
 
     /// Create a provider by name with extra headers (e.g., for MiniMax's X-Group-Id)
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProviderError::UnknownProvider` if the provider name is not in
-    /// `PROVIDER_DEFAULTS` and no `api_base` is provided.
     pub fn from_name_with_headers(
         name: &str,
         api_key: impl Into<String>,
-        api_base: Option<String>,
+        api_base: String,
         default_model: Option<String>,
         extra_headers: HashMap<String, String>,
         proxy_enabled: bool,
-    ) -> ProviderResult<Self> {
-        let mut provider = Self::from_name(name, api_key, api_base, default_model, proxy_enabled)?;
+    ) -> Self {
+        let mut provider = Self::from_name(name, api_key, api_base, default_model, proxy_enabled);
         provider.config.extra_headers = extra_headers;
-        Ok(provider)
+        provider
     }
 
     // -- Special constructors --
 
     /// Create a MiniMax provider
-    ///
-    /// # Errors
-    ///
-    /// Returns `ProviderError::UnknownProvider` if MiniMax is not in
-    /// `PROVIDER_DEFAULTS` (which should never happen).
     pub fn minimax(
         api_key: impl Into<String>,
-        api_base: Option<String>,
+        api_base: String,
         default_model: impl Into<String>,
         group_id: Option<String>,
         proxy_enabled: bool,
-    ) -> ProviderResult<Self> {
+    ) -> Self {
         let mut extra_headers = HashMap::new();
         if let Some(gid) = group_id {
             extra_headers.insert("X-Group-Id".to_string(), gid);
@@ -510,11 +464,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "openai",
             "test-key",
-            None,
+            "https://api.openai.com/v1".to_string(),
             Some("gpt-4o".to_string()),
             true,
-        )
-        .expect("openai should be known provider");
+        );
         assert_eq!(provider.name(), "openai");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "https://api.openai.com/v1");
@@ -525,11 +478,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "openrouter",
             "sk-or-test",
-            None,
+            "https://openrouter.ai/api/v1".to_string(),
             Some("anthropic/claude-sonnet-4".to_string()),
             true,
-        )
-        .expect("openrouter should be known provider");
+        );
         assert_eq!(provider.name(), "openrouter");
         assert_eq!(provider.api_base(), "https://openrouter.ai/api/v1");
     }
@@ -539,11 +491,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "anthropic",
             "sk-ant-test",
-            None,
+            "https://api.anthropic.com/v1".to_string(),
             Some("claude-sonnet-4-20250514".to_string()),
             true,
-        )
-        .expect("anthropic should be known provider");
+        );
         assert_eq!(provider.name(), "anthropic");
         assert_eq!(provider.api_base(), "https://api.anthropic.com/v1");
     }
@@ -553,11 +504,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "dashscope",
             "test-key",
-            None,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
             Some("qwen-max".to_string()),
             true,
-        )
-        .expect("dashscope should be known provider");
+        );
         assert_eq!(provider.name(), "dashscope");
         assert_eq!(provider.default_model(), "qwen-max");
         assert_eq!(
@@ -571,11 +521,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "moonshot",
             "test-key",
-            None,
+            "https://api.moonshot.cn/v1".to_string(),
             Some("moonshot-v1-8k".to_string()),
             true,
-        )
-        .expect("moonshot should be known provider");
+        );
         assert_eq!(provider.name(), "moonshot");
         assert_eq!(provider.api_base(), "https://api.moonshot.cn/v1");
     }
@@ -585,11 +534,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "zhipu",
             "test-jwt",
-            None,
+            "https://open.bigmodel.cn/api/paas/v4".to_string(),
             Some("GLM-5".to_string()),
             true,
-        )
-        .expect("zhipu should be known provider");
+        );
         assert_eq!(provider.name(), "zhipu");
         assert_eq!(provider.default_model(), "GLM-5");
         assert_eq!(provider.api_base(), "https://open.bigmodel.cn/api/paas/v4");
@@ -599,12 +547,11 @@ mod tests {
     fn test_minimax_provider() {
         let provider = OpenAICompatibleProvider::minimax(
             "test-key",
-            None,
+            "https://api.minimax.chat/v1".to_string(),
             "abab6.5-chat",
             Some("group123".to_string()),
             true,
-        )
-        .expect("minimax should be known provider");
+        );
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "abab6.5-chat");
     }
@@ -614,11 +561,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "ollama",
             "ollama",
-            None,
+            "http://localhost:11434/v1".to_string(),
             Some("llama2".to_string()),
             true,
-        )
-        .expect("ollama should be known provider");
+        );
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "llama2");
         assert_eq!(provider.api_base(), "http://localhost:11434/v1");
@@ -629,11 +575,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "ollama",
             "ollama",
-            Some("http://192.168.1.100:11434/v1".to_string()),
+            "http://192.168.1.100:11434/v1".to_string(),
             Some("mistral".to_string()),
             true,
-        )
-        .expect("ollama should be known provider");
+        );
         assert_eq!(provider.name(), "ollama");
         assert_eq!(provider.default_model(), "mistral");
         assert_eq!(provider.api_base(), "http://192.168.1.100:11434/v1");
@@ -644,11 +589,10 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "litellm",
             "", // LiteLLM may not require API key
-            None,
+            "http://localhost:4000/v1".to_string(),
             Some("gpt-4o".to_string()),
             true,
-        )
-        .expect("litellm should be known provider");
+        );
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "gpt-4o");
         assert_eq!(provider.api_base(), "http://localhost:4000/v1");
@@ -659,45 +603,24 @@ mod tests {
         let provider = OpenAICompatibleProvider::from_name(
             "litellm",
             "sk-test-key",
-            Some("http://192.168.1.100:4000/v1".to_string()),
+            "http://192.168.1.100:4000/v1".to_string(),
             Some("claude-3-opus".to_string()),
             true,
-        )
-        .expect("litellm should be known provider");
+        );
         assert_eq!(provider.name(), "litellm");
         assert_eq!(provider.default_model(), "claude-3-opus");
         assert_eq!(provider.api_base(), "http://192.168.1.100:4000/v1");
     }
 
     #[test]
-    fn test_unknown_provider_error() {
-        let result = OpenAICompatibleProvider::from_name(
-            "unknown-provider",
-            "test-key",
-            None, // No api_base provided
-            None,
-            true,
-        );
-        assert!(result.is_err());
-        match result {
-            Err(ProviderBuildError::UnknownProvider { name }) => {
-                assert_eq!(name, "unknown-provider");
-            }
-            _ => panic!("Expected UnknownProvider error"),
-        }
-    }
-
-    #[test]
-    fn test_unknown_provider_with_custom_base() {
-        // Unknown provider with custom api_base should succeed
+    fn test_custom_provider() {
         let provider = OpenAICompatibleProvider::from_name(
             "custom-provider",
             "test-key",
-            Some("https://custom.api.com/v1".to_string()),
+            "https://custom.api.com/v1".to_string(),
             Some("custom-model".to_string()),
             true,
-        )
-        .expect("unknown provider with api_base should succeed");
+        );
         assert_eq!(provider.name(), "custom-provider");
         assert_eq!(provider.api_base(), "https://custom.api.com/v1");
         assert_eq!(provider.default_model(), "custom-model");

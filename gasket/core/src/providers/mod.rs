@@ -19,8 +19,8 @@ pub use gasket_providers::{
 
 // Re-export common types
 pub use gasket_providers::{
-    build_http_client, get_default_api_base, get_default_model, parse_json_args,
-    OpenAICompatibleProvider, ProviderBuildError, ProviderConfig, ProviderResult,
+    build_http_client, parse_json_args, OpenAICompatibleProvider, ProviderBuildError,
+    ProviderConfig, ProviderResult,
 };
 
 // Re-export specialized providers

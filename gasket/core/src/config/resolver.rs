@@ -95,10 +95,10 @@ impl VaultPlaceholderResolve for ProviderConfig {
         }
 
         // Resolve api_base
-        if let Some(ref api_base) = self.api_base {
-            let (resolved, errors) = resolve_string_placeholders(api_base, store);
+        if !self.api_base.is_empty() {
+            let (resolved, errors) = resolve_string_placeholders(&self.api_base, store);
             if errors.is_empty() {
-                self.api_base = Some(resolved);
+                self.api_base = resolved;
             }
             unresolved.extend(errors);
         }

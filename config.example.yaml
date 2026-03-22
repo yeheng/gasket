@@ -1,31 +1,67 @@
 # Nanobot Configuration Example
-# This file demonstrates the dynamic LLM model switching feature
+# This file demonstrates the provider configuration format
 
 # Provider configurations
+# All providers require:
+#   - type: openai | anthropic | gemini (protocol type)
+#   - api_base: The API endpoint URL (required)
+#   - api_key: Your API key (optional for local providers)
 providers:
+  # OpenAI - uses OpenAI-compatible protocol
   openai:
-    api_key: "${OPENAI_API_KEY}"
+    type: openai
     api_base: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"
 
+  # Anthropic - /v1 endpoint is OpenAI-compatible
   anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"
+    type: openai
     api_base: "https://api.anthropic.com/v1"
+    api_key: "${ANTHROPIC_API_KEY}"
 
+  # Zhipu (智谱) - Chinese LLM provider
   zhipu:
-    api_key: "${ZHIPU_API_KEY}"
+    type: openai
     api_base: "https://open.bigmodel.cn/api/paas/v4"
+    api_key: "${ZHIPU_API_KEY}"
 
+  # DeepSeek - with model-level configuration
   deepseek:
-    api_key: "${DEEPSEEK_API_KEY}"
+    type: openai
     api_base: "https://api.deepseek.com/v1"
+    api_key: "${DEEPSEEK_API_KEY}"
+    default_currency: USD
+    models:
+      deepseek-chat:
+        price_input_per_million: 0.5
+        price_output_per_million: 1.0
+      deepseek-reasoner:
+        price_input_per_million: 2.0
+        price_output_per_million: 8.0
+        thinking_enabled: true
+        max_tokens: 8192
 
+  # OpenRouter - multi-provider gateway
   openrouter:
-    api_key: "${OPENROUTER_API_KEY}"
+    type: openai
     api_base: "https://openrouter.ai/api/v1"
+    api_key: "${OPENROUTER_API_KEY}"
 
+  # Google Gemini - uses native Gemini protocol
+  gemini:
+    type: gemini
+    api_base: "https://generativelanguage.googleapis.com/v1beta"
+    api_key: "${GOOGLE_API_KEY}"
+
+  # Ollama - local provider (no API key needed)
   ollama:
-    # Local provider - no API key needed
+    type: openai
     api_base: "http://localhost:11434/v1"
+
+  # LiteLLM - local proxy server
+  litellm:
+    type: openai
+    api_base: "http://localhost:4000/v1"
 
 # Agent configuration with model profiles
 agents:
@@ -70,8 +106,8 @@ agents:
 
     # Reasoning model for complex analysis
     reasoner:
-      provider: "openai"
-      model: "o1-mini"
+      provider: "deepseek"
+      model: "deepseek-reasoner"
       description: "Advanced reasoning for complex problems, math, and logic"
       capabilities: ["reasoning", "math", "analysis"]
       temperature: 0.7

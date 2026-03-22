@@ -159,7 +159,7 @@ impl ConfigLoader {
                 if is_api_key {
                     entry.api_key = Some(value);
                 } else {
-                    entry.api_base = Some(value);
+                    entry.api_base = value;
                 }
             }
         }

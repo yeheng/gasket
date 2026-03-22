@@ -50,11 +50,10 @@ async fn test_agent_initialization() {
     let provider = gasket_core::providers::OpenAICompatibleProvider::from_name(
         "openai",
         "test-key",
-        None,
+        "https://api.openai.com/v1".to_string(),
         Some("gpt-4o".to_string()),
         true,
-    )
-    .expect("openai should be known provider");
+    );
 
     let tools = Arc::new(gasket_core::tools::ToolRegistry::new());
     let agent =
@@ -498,11 +497,10 @@ async fn test_provider_trait() {
     let provider = OpenAICompatibleProvider::from_name(
         "openai",
         "test-key",
-        None,
+        "https://api.openai.com/v1".to_string(),
         Some("gpt-4o".to_string()),
         true,
-    )
-    .expect("openai should be known provider");
+    );
 
     assert_eq!(provider.name(), "openai");
     assert_eq!(provider.default_model(), "gpt-4o");
@@ -515,11 +513,10 @@ async fn test_openrouter_provider() {
     let provider = OpenAICompatibleProvider::from_name(
         "openrouter",
         "sk-or-test",
-        None,
+        "https://openrouter.ai/api/v1".to_string(),
         Some("anthropic/claude-sonnet-4".to_string()),
         true,
-    )
-    .expect("openrouter should be known provider");
+    );
 
     assert_eq!(provider.name(), "openrouter");
     assert_eq!(provider.default_model(), "anthropic/claude-sonnet-4");
@@ -532,11 +529,10 @@ async fn test_anthropic_provider() {
     let provider = OpenAICompatibleProvider::from_name(
         "anthropic",
         "sk-ant-test",
-        None,
+        "https://api.anthropic.com/v1".to_string(),
         Some("claude-sonnet-4-20250514".to_string()),
         true,
-    )
-    .expect("anthropic should be known provider");
+    );
 
     assert_eq!(provider.name(), "anthropic");
     assert_eq!(provider.default_model(), "claude-sonnet-4-20250514");

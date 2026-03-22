@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use gasket_core::config::Config;
+use gasket_core::config::{Config, ProviderType};
 use gasket_core::providers::{LlmProvider, ModelSpec, OpenAICompatibleProvider};
 
 /// Provider information returned by find_provider
@@ -14,7 +14,7 @@ pub struct ProviderInfo {
     pub model: String,
     /// Provider name (e.g., "zhipu", "deepseek")
     pub provider_name: String,
-    /// Whether this provider supports thinking/reasoning mode
+    /// Whether this provider supports thinking/reasoning mode for the selected model
     pub supports_thinking: bool,
     /// Pricing configuration (if configured)
     pub pricing: Option<(f64, f64, String)>, // (input_price, output_price, currency)
@@ -24,50 +24,81 @@ pub struct ProviderInfo {
 ///
 /// # Errors
 ///
-/// Returns an error if the provider configuration is invalid (e.g., unknown provider
-/// without api_base).
+/// Returns an error if the provider configuration is invalid (e.g., missing api_base).
 pub fn build_provider(
     name: &str,
     api_key: &str,
     provider_config: &gasket_core::config::ProviderConfig,
     model: &str,
 ) -> Result<Arc<dyn LlmProvider>> {
+    // Validate api_base is configured
+    if provider_config.api_base.is_empty() {
+        anyhow::bail!(
+            "Provider '{}' is missing required 'api_base' configuration. \
+             Please add 'api_base' to your provider config in ~/.gasket/config.yaml",
+            name
+        );
+    }
+
     let proxy_enabled = provider_config.proxy_enabled();
 
-    match name {
-        // MiniMax requires special handling for group_id header
-        "minimax" => {
-            let provider = OpenAICompatibleProvider::minimax(
-                api_key,
-                provider_config.api_base.clone(),
-                model,
-                None,
-                proxy_enabled,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to create MiniMax provider: {}", e))?;
-            Ok(Arc::new(provider))
+    // Create provider based on provider_type
+    match provider_config.provider_type {
+        ProviderType::Gemini => {
+            // Gemini provider (requires feature flag)
+            #[cfg(feature = "provider-gemini")]
+            {
+                let provider = gasket_core::providers::GeminiProvider::with_config(
+                    api_key.to_string(),
+                    Some(provider_config.api_base.clone()),
+                    Some(model.to_string()),
+                    proxy_enabled,
+                );
+                Ok(Arc::new(provider))
+            }
+            #[cfg(not(feature = "provider-gemini"))]
+            {
+                anyhow::bail!(
+                    "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+                );
+            }
         }
-        // GitHub Copilot requires special handling for OAuth token management
-        #[cfg(feature = "provider-copilot")]
-        "copilot" => Ok(Arc::new(
-            gasket_core::providers::CopilotProvider::with_proxy(
-                api_key,
-                provider_config.api_base.clone(),
-                Some(model.to_string()),
-                proxy_enabled,
-            ),
-        )),
-        // All other providers use the generic from_name constructor
-        _ => {
-            let provider = OpenAICompatibleProvider::from_name(
-                name,
-                api_key,
-                provider_config.api_base.clone(),
-                Some(model.to_string()),
-                proxy_enabled,
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to create provider '{}': {}", name, e))?;
-            Ok(Arc::new(provider))
+        ProviderType::Anthropic | ProviderType::Openai => {
+            // OpenAI-compatible provider (includes Anthropic's /v1 endpoint)
+            match name {
+                // MiniMax requires special handling for group_id header
+                "minimax" => {
+                    let provider = OpenAICompatibleProvider::minimax(
+                        api_key,
+                        provider_config.api_base.clone(),
+                        model,
+                        None,
+                        proxy_enabled,
+                    );
+                    Ok(Arc::new(provider))
+                }
+                // GitHub Copilot requires special handling for OAuth token management
+                #[cfg(feature = "provider-copilot")]
+                "copilot" => Ok(Arc::new(
+                    gasket_core::providers::CopilotProvider::with_proxy(
+                        api_key,
+                        Some(provider_config.api_base.clone()),
+                        Some(model.to_string()),
+                        proxy_enabled,
+                    ),
+                )),
+                // All other providers use the generic from_name constructor
+                _ => {
+                    let provider = OpenAICompatibleProvider::from_name(
+                        name,
+                        api_key,
+                        provider_config.api_base.clone(),
+                        Some(model.to_string()),
+                        proxy_enabled,
+                    );
+                    Ok(Arc::new(provider))
+                }
+            }
         }
     }
 }
@@ -85,6 +116,7 @@ pub fn get_default_model_for_provider(name: &str) -> &'static str {
         "ollama" => "llama3",
         "litellm" => "gpt-4o", // LiteLLM proxies to configured models
         "copilot" => "gpt-4o",
+        "gemini" => "gemini-2.0-flash",
         _ => "gpt-4o",
     }
 }
@@ -186,7 +218,9 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
     };
 
     let provider = build_provider(&provider_name, api_key, provider_config, &model)?;
-    let supports_thinking = provider_config.supports_thinking();
+
+    // Check thinking support for the specific model
+    let supports_thinking = provider_config.thinking_enabled_for_model(&model);
 
     // Get pricing configuration if available (model-level overrides provider-level)
     let pricing = provider_config.get_pricing_for_model(&model).map(|p| {

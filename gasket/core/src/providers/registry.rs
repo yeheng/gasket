@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use tracing::{debug, info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, ProviderType};
 #[cfg(feature = "provider-gemini")]
 use gasket_providers::GeminiProvider;
 use gasket_providers::LlmProvider;
@@ -101,59 +101,55 @@ impl ProviderRegistry {
             anyhow::bail!("Provider {} is not available (missing API key)", name);
         }
 
-        // Create provider based on name/type
-        let provider: Arc<dyn LlmProvider> = match name {
+        // Validate api_base is configured
+        if config.api_base.is_empty() {
+            anyhow::bail!(
+                "Provider '{}' is missing required 'api_base' configuration. \
+                 Please add 'api_base' to your provider config in ~/.gasket/config.yaml",
+                name
+            );
+        }
+
+        // Create provider based on provider_type
+        let provider: Arc<dyn LlmProvider> = match config.provider_type {
             #[cfg(feature = "provider-gemini")]
-            "gemini" => {
+            ProviderType::Gemini => {
                 let api_key = config
                     .api_key
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Gemini API key not configured"))?;
                 Arc::new(GeminiProvider::with_config(
                     api_key.clone(),
-                    config.api_base.clone(),
+                    Some(config.api_base.clone()),
                     None, // Use default model
                     config.proxy_enabled(),
                 ))
             }
-            _ => {
-                // Use OpenAI-compatible provider for most providers
-                let api_key = config
-                    .api_key
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("API key not configured for {}", name))?;
+            ProviderType::Anthropic | ProviderType::Openai => {
+                // Use OpenAI-compatible provider for Anthropic and OpenAI types
+                // (Anthropic's /v1 endpoint is OpenAI-compatible)
+                let api_key = config.api_key.as_deref().unwrap_or("");
 
                 let provider_config = ProviderConfig {
                     name: name.to_string(),
-                    api_base: config
-                        .api_base
-                        .clone()
-                        .unwrap_or_else(|| Self::get_default_api_base(name)),
-                    api_key: api_key.clone(),
-                    default_model: Self::get_default_model(name),
+                    api_base: config.api_base.clone(),
+                    api_key: api_key.to_string(),
+                    default_model: "default".to_string(),
                     extra_headers: HashMap::new(),
                     proxy_enabled: config.proxy_enabled(),
                 };
 
                 Arc::new(OpenAICompatibleProvider::new(provider_config))
             }
+            #[cfg(not(feature = "provider-gemini"))]
+            ProviderType::Gemini => {
+                anyhow::bail!(
+                    "Gemini provider is not compiled in. Rebuild with --features provider-gemini"
+                );
+            }
         };
 
         Ok(provider)
-    }
-
-    /// Get default API base URL for known providers
-    fn get_default_api_base(name: &str) -> String {
-        gasket_providers::get_default_api_base(name)
-            .unwrap_or_else(|| format!("https://api.{}.com/v1", name).leak())
-            .to_string()
-    }
-
-    /// Get default model for known providers
-    fn get_default_model(name: &str) -> String {
-        gasket_providers::get_default_model(name)
-            .unwrap_or("default")
-            .to_string()
     }
 
     /// Check if a provider is configured
@@ -231,6 +227,7 @@ impl Default for ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ModelConfig, ProviderConfig};
 
     #[test]
     fn test_empty_registry() {
@@ -246,8 +243,9 @@ mod tests {
         let mut registry = ProviderRegistry::new();
         registry.configs.insert(
             "test".to_string(),
-            crate::config::ProviderConfig {
+            ProviderConfig {
                 api_key: Some("test-key".to_string()),
+                api_base: "https://api.example.com/v1".to_string(),
                 ..Default::default()
             },
         );
@@ -263,8 +261,9 @@ mod tests {
         // Provider with API key
         registry.configs.insert(
             "openai".to_string(),
-            crate::config::ProviderConfig {
+            ProviderConfig {
                 api_key: Some("sk-test".to_string()),
+                api_base: "https://api.openai.com/v1".to_string(),
                 ..Default::default()
             },
         );
@@ -272,8 +271,9 @@ mod tests {
         // Provider without API key
         registry.configs.insert(
             "empty".to_string(),
-            crate::config::ProviderConfig {
+            ProviderConfig {
                 api_key: None,
+                api_base: "https://api.example.com/v1".to_string(),
                 ..Default::default()
             },
         );
@@ -281,11 +281,77 @@ mod tests {
         // Local provider (doesn't need API key)
         registry.configs.insert(
             "ollama".to_string(),
-            crate::config::ProviderConfig::default(),
+            ProviderConfig {
+                api_base: "http://localhost:11434/v1".to_string(),
+                ..Default::default()
+            },
         );
 
         assert!(registry.is_available("openai"));
         assert!(!registry.is_available("empty"));
         assert!(registry.is_available("ollama")); // Local provider
+    }
+
+    #[test]
+    fn test_provider_with_gemini_type() {
+        let mut registry = ProviderRegistry::new();
+        registry.configs.insert(
+            "gemini".to_string(),
+            ProviderConfig {
+                provider_type: ProviderType::Gemini,
+                api_key: Some("test-key".to_string()),
+                api_base: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+                ..Default::default()
+            },
+        );
+
+        assert!(registry.contains("gemini"));
+        assert!(registry.is_available("gemini"));
+    }
+
+    #[test]
+    fn test_provider_with_anthropic_type() {
+        let mut registry = ProviderRegistry::new();
+        registry.configs.insert(
+            "anthropic".to_string(),
+            ProviderConfig {
+                provider_type: ProviderType::Anthropic,
+                api_key: Some("sk-ant-test".to_string()),
+                api_base: "https://api.anthropic.com/v1".to_string(),
+                ..Default::default()
+            },
+        );
+
+        assert!(registry.contains("anthropic"));
+        assert!(registry.is_available("anthropic"));
+    }
+
+    #[test]
+    fn test_provider_with_model_configs() {
+        let mut registry = ProviderRegistry::new();
+        let mut models = HashMap::new();
+        models.insert(
+            "deepseek-reasoner".to_string(),
+            ModelConfig {
+                thinking_enabled: Some(true),
+                max_tokens: Some(8192),
+                ..Default::default()
+            },
+        );
+
+        registry.configs.insert(
+            "deepseek".to_string(),
+            ProviderConfig {
+                provider_type: ProviderType::Openai,
+                api_key: Some("sk-test".to_string()),
+                api_base: "https://api.deepseek.com/v1".to_string(),
+                models,
+                ..Default::default()
+            },
+        );
+
+        let config = registry.get_config("deepseek").unwrap();
+        assert!(config.thinking_enabled_for_model("deepseek-reasoner"));
+        assert!(!config.thinking_enabled_for_model("other-model"));
     }
 }

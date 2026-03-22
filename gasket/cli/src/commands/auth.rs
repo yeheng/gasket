@@ -7,6 +7,10 @@ use colored::Colorize;
 #[cfg(feature = "provider-copilot")]
 use gasket_core::config::ConfigLoader;
 
+/// GitHub Copilot API base URL
+#[cfg(feature = "provider-copilot")]
+const COPILOT_API_BASE: &str = "https://api.githubcopilot.com";
+
 /// Login to GitHub Copilot
 #[cfg(feature = "provider-copilot")]
 pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) -> Result<()> {
@@ -62,18 +66,16 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
         }
     };
 
-    // Save to config
+    // Save to config with new explicit format
     config.providers.insert(
         "copilot".to_string(),
         gasket_core::config::ProviderConfig {
+            provider_type: gasket_core::config::ProviderType::Openai,
+            api_base: COPILOT_API_BASE.to_string(),
             api_key: Some(access_token),
-            api_base: None,
-            supports_thinking: None,
             client_id,
             models: Default::default(),
             default_currency: Some("USD".to_string()),
-            provider_type: gasket_core::config::ProviderType::Builtin,
-            api_compatibility: gasket_core::config::ApiCompatibility::Openai,
             proxy_enabled: None,
         },
     );
