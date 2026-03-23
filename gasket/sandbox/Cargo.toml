@@ -52,9 +52,6 @@ dirs = { workspace = true }
 # Concurrent data structures
 dashmap = { workspace = true }
 
-# Interactive CLI (for approval prompts)
-dialoguer = { workspace = true }
-
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"

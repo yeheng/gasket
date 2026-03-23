@@ -32,8 +32,6 @@ pub mod tools;
 pub mod vault;
 #[cfg(feature = "webhook")]
 pub mod webhook;
-#[cfg(feature = "workspace-download")]
-pub mod workspace;
 
 pub use config::Config;
 pub use error::{AgentError, ChannelError, PipelineError, ProviderError};

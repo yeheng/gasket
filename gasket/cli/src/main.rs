@@ -15,7 +15,11 @@ use tracing_subscriber::EnvFilter;
 
 mod cli;
 mod commands;
+mod interaction;
 mod provider;
+
+#[cfg(feature = "workspace-download")]
+mod workspace_downloader;
 
 use cli::{AuthCommands, ChannelsCommands, Cli, Commands, CronCommands, VaultCommands};
 

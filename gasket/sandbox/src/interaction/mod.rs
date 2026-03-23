@@ -1,10 +1,16 @@
 //! User interaction for approval requests
 //!
-//! Provides CLI and WebSocket-based interaction for user confirmations.
-
-mod cli;
-
-pub use cli::CliInteraction;
+//! Provides the `ApprovalInteraction` trait for user confirmations.
+//!
+//! ## Built-in Implementations
+//!
+//! - `DenyAllInteraction`: Always denies approval requests
+//! - `AllowAllInteraction`: Always allows approval requests
+//!
+//! ## Custom Implementations
+//!
+//! For interactive approval (e.g., CLI prompts, WebSocket UI), implement
+//! this trait in your application layer and inject it into the sandbox.
 
 use async_trait::async_trait;
 
@@ -12,9 +18,15 @@ use crate::approval::{ApprovalRequest, PermissionLevel};
 use crate::error::Result;
 
 /// Approval interaction trait
+///
+/// Implement this trait to provide custom approval interaction behavior.
+/// The sandbox will call `confirm()` when it needs user approval for
+/// sensitive operations.
 #[async_trait]
 pub trait ApprovalInteraction: Send + Sync {
     /// Request user confirmation for an operation
+    ///
+    /// Returns the permission level granted by the user.
     async fn confirm(&self, request: &ApprovalRequest) -> Result<PermissionLevel>;
 }
 

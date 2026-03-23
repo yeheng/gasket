@@ -11,6 +11,8 @@ description = "A lightweight personal AI assistant framework"
 [workspace]
 resolver = "2"
 members = [
+    "types",
+    "vault",
     "core",
     "cli",
     "providers",
@@ -91,6 +93,7 @@ tokio-rustls = "0.26"
 rustls-native-certs = "0.8"
 
 # Internal crates
+gasket-types = { path = "types" }
 gasket-core = { path = "core" }
 gasket-providers = { path = "providers" }
 gasket-channels = { path = "channels" }

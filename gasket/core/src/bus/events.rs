@@ -1,7 +1,7 @@
-//! Message events — re-exports from gasket-channels
+//! Message events — re-exports from gasket-types
 //!
 //! All event types (ChannelType, SessionKey, InboundMessage, OutboundMessage, etc.)
-//! are canonically defined in `gasket-channels::events` and re-exported here
+//! are canonically defined in `gasket-types::events` and re-exported here
 //! to maintain backward compatibility for `crate::bus::events::*` imports.
 
-pub use gasket_channels::events::*;
+pub use gasket_types::events::*;

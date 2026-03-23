@@ -63,7 +63,7 @@ pub use approval::{
 };
 
 #[cfg(feature = "approval")]
-pub use interaction::CliInteraction;
+pub use interaction::{AllowAllInteraction, ApprovalInteraction, DenyAllInteraction};
 
 #[cfg(feature = "audit")]
 pub use audit::{AuditEvent, AuditEventType, AuditLog};

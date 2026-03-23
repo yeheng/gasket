@@ -25,10 +25,11 @@ provider-gemini = ["gasket-providers/provider-gemini"]
 provider-copilot = ["gasket-providers/provider-copilot"]
 all-providers = ["gasket-providers/all-providers"]
 
-# Workspace template download
-workspace-download = ["tar", "flate2"]
-
 [dependencies]
+# Internal crates
+gasket-types = { path = "../types" }
+gasket-vault = { path = "../vault" }
+
 # Async
 tokio.workspace = true
 tokio-util.workspace = true
@@ -96,12 +97,6 @@ tiktoken-rs = "0.9"
 # Regex for vault placeholder scanning
 regex = "1"
 
-# Encryption dependencies
-chacha20poly1305 = "0.10"
-argon2 = { version = "0.5", features = ["std"] }
-rand = "0.8"
-zeroize = { version = "1.7", features = ["zeroize_derive"] }
-
 # Sandbox module
 gasket-sandbox = { path = "../sandbox" }
 
@@ -111,9 +106,6 @@ gasket-providers = { path = "../providers" }
 # Channel abstractions
 gasket-channels = { path = "../channels" }
 
-# Archive extraction (for workspace template downloads)
-tar = { version = "0.4", optional = true }
-flate2 = { version = "1.0", optional = true }
 tokio-stream = "0.1.18"
 
 [dev-dependencies]

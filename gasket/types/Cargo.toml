@@ -1,0 +1,18 @@
+[package]
+name = "gasket-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared types and events for gasket"
+
+[dependencies]
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Time
+chrono.workspace = true
+
+# Error handling
+thiserror.workspace = true

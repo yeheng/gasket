@@ -19,6 +19,9 @@ webhook = ["axum", "dashmap"]
 all-channels = ["telegram", "discord", "slack", "email", "dingtalk", "feishu", "wecom", "webhook"]
 
 [dependencies]
+# Internal crates
+gasket-types = { path = "../types" }
+
 # Async
 tokio.workspace = true
 async-trait.workspace = true

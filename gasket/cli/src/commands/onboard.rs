@@ -28,7 +28,7 @@ pub async fn cmd_onboard() -> Result<()> {
     // Download workspace templates from GitHub
     #[cfg(feature = "workspace-download")]
     {
-        use gasket_core::workspace::WorkspaceDownloader;
+        use crate::workspace_downloader::WorkspaceDownloader;
 
         println!("\n📥 Downloading workspace templates from GitHub...");
         let downloader = WorkspaceDownloader::new();

@@ -13,11 +13,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dialoguer::{Confirm, Select};
+use gasket_sandbox::approval::{ApprovalRequest, PermissionLevel};
+use gasket_sandbox::{ApprovalInteraction, SandboxError};
 use tokio::time::timeout;
-
-use super::ApprovalInteraction;
-use crate::approval::{ApprovalRequest, PermissionLevel};
-use crate::error::{Result, SandboxError};
 
 /// Default timeout for user interaction (5 minutes)
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -69,7 +67,7 @@ impl CliInteraction {
     }
 
     /// Run the interactive prompt (blocking)
-    fn run_prompt(&self, request: &ApprovalRequest) -> Result<PermissionLevel> {
+    fn run_prompt(&self, request: &ApprovalRequest) -> Result<PermissionLevel, SandboxError> {
         self.display_request(request);
 
         // First, ask if the user wants to allow this operation
@@ -122,7 +120,7 @@ impl Default for CliInteraction {
 
 #[async_trait]
 impl ApprovalInteraction for CliInteraction {
-    async fn confirm(&self, request: &ApprovalRequest) -> Result<PermissionLevel> {
+    async fn confirm(&self, request: &ApprovalRequest) -> Result<PermissionLevel, SandboxError> {
         // Clone request for the blocking task
         let request = request.clone();
         let timeout_duration = self.timeout;
