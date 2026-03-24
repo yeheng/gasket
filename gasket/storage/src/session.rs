@@ -22,6 +22,24 @@ pub struct MessageRow {
     pub tools_used: Option<String>,
 }
 
+// ── Embedding conversion utilities (copied from search module to avoid dependency) ──
+
+/// Convert a float slice to a byte slice (zero-copy).
+#[inline]
+fn embedding_to_bytes(embedding: &[f32]) -> &[u8] {
+    bytemuck::cast_slice(embedding)
+}
+
+/// Convert a byte slice back to a float slice (zero-copy).
+///
+/// # Panics
+///
+/// Panics if `bytes.len()` is not a multiple of 4 (i.e. not aligned to `f32`).
+#[inline]
+fn bytes_to_embedding(bytes: &[u8]) -> &[f32] {
+    bytemuck::cast_slice(bytes)
+}
+
 impl SqliteStore {
     // ── Session API (Legacy Blob - for migration only) ──
 
@@ -268,7 +286,7 @@ impl SqliteStore {
         session_key: &str,
         embedding: &[f32],
     ) -> anyhow::Result<()> {
-        let embedding_bytes = crate::search::embedding_to_bytes(embedding);
+        let embedding_bytes = embedding_to_bytes(embedding);
         sqlx::query(
             "INSERT OR REPLACE INTO session_embeddings (message_id, session_key, embedding) VALUES ($1, $2, $3)",
         )
@@ -309,7 +327,7 @@ impl SqliteStore {
             let embedding_blob: Vec<u8> = row.get("embedding");
 
             // Convert BLOB back to Vec<f32>
-            let embedding = crate::search::bytes_to_embedding(&embedding_blob).to_vec();
+            let embedding = bytes_to_embedding(&embedding_blob).to_vec();
             result.push((message_id, content, embedding));
         }
         Ok(result)

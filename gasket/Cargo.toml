@@ -13,6 +13,8 @@ resolver = "2"
 members = [
     "types",
     "vault",
+    "storage",
+    "semantic",
     "core",
     "cli",
     "providers",
@@ -94,6 +96,8 @@ rustls-native-certs = "0.8"
 
 # Internal crates
 gasket-types = { path = "types" }
+gasket-storage = { path = "storage" }
+gasket-semantic = { path = "semantic" }
 gasket-core = { path = "core" }
 gasket-providers = { path = "providers" }
 gasket-channels = { path = "channels" }

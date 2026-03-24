@@ -4,13 +4,16 @@
 //! - Message types (InboundMessage, OutboundMessage)
 //! - Channel identifiers (ChannelType, SessionKey)
 //! - WebSocket streaming messages
+//! - Tool trait and base types
 //!
 //! By keeping these types in a separate crate, we avoid circular dependencies
-//! between `gasket-core` and `gasket-channels`.
+//! between `gasket-core` and other crates.
 
 pub mod events;
+pub mod tool;
 
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, SessionKey,
     SessionKeyParseError, WebSocketMessage,
 };
+pub use tool::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};

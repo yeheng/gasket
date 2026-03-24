@@ -5,9 +5,9 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use gasket_storage::{query, Row, SqliteRow};
 use serde::Deserialize;
 use serde_json::Value;
-use sqlx::Row;
 use tracing::debug;
 
 use super::{simple_schema, Tool, ToolError, ToolResult};
@@ -185,7 +185,7 @@ impl HistorySearchTool {
         debug!("history_search: executing SQL: {}", sql);
 
         // Build query
-        let mut query = sqlx::query(&sql);
+        let mut query = query(&sql);
 
         // Bind parameters
         if let Some(ref q) = parsed.query {
@@ -209,8 +209,8 @@ impl HistorySearchTool {
         }
 
         // Execute query
-        let rows: Vec<sqlx::sqlite::SqliteRow> = query
-            .fetch_all(&self.db.pool)
+        let rows: Vec<SqliteRow> = query
+            .fetch_all(&self.db.pool())
             .await
             .map_err(|e| ToolError::ExecutionError(format!("Database query failed: {}", e)))?;
 

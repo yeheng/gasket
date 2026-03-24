@@ -1,14 +1,15 @@
-//! SQLite-backed store for machine-state persistence.
+//! SQLite-backed storage for gasket machine-state persistence.
 //!
-//! The `SqliteStore` is split across several files for clarity:
-//! - `mod.rs` — core struct, construction, schema migration
-//! - `kv.rs` — key-value store API
-//! - `session.rs` — session metadata, messages, and summaries API
-//! - `cron.rs` — cron job persistence API
+//! This crate provides persistent storage for machine-state:
+//! - Sessions and conversation messages
+//! - Session summaries
+//! - Cron jobs
+//! - Key-value store
+//! - Session embeddings (for semantic history recall)
 //!
 //! **Note:** Explicit long-term memory (facts, preferences, decisions) lives
 //! exclusively in `~/.gasket/memory/*.md` files. SQLite only stores
-//! machine-state (sessions, summaries, cron jobs, kv).
+//! machine-state.
 
 mod cron;
 mod kv;
@@ -17,12 +18,21 @@ mod session;
 use std::path::PathBuf;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::SqlitePool;
 use tracing::debug;
 
 pub use cron::CronJobRow;
-#[allow(unused_imports)]
 pub use session::{MessageRow, SessionMeta};
+
+// Re-export sqlx types for consumers that need direct pool access
+pub use sqlx::sqlite::SqliteRow;
+pub use sqlx::{query, query_as, Row, SqlitePool};
+
+/// Get the default configuration directory (`~/.gasket`).
+pub fn config_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".gasket")
+}
 
 /// SQLite-backed store for machine-state persistence.
 ///
@@ -33,14 +43,14 @@ pub use session::{MessageRow, SessionMeta};
 /// **Not** used for explicit long-term memory — that lives in Markdown files.
 #[derive(Clone)]
 pub struct SqliteStore {
-    pub(crate) pool: SqlitePool,
+    pool: SqlitePool,
 }
 
 impl SqliteStore {
     /// Create a new `SqliteStore` with the default database path
     /// (`~/.gasket/nanobot.db`).
     pub async fn new() -> anyhow::Result<Self> {
-        let path = crate::config::config_dir().join("nanobot.db");
+        let path = config_dir().join("nanobot.db");
         Self::with_path(path).await
     }
 
@@ -110,6 +120,7 @@ impl SqliteStore {
     /// - `kv_store` — generic key-value persistence
     /// - `sessions` / `session_messages` / `session_summaries` — conversation history
     /// - `cron_jobs` — scheduled tasks
+    /// - `session_embeddings` — semantic history recall
     ///
     /// Explicit long-term memory lives exclusively in `~/.gasket/memory/*.md` files
     /// (Single Source of Truth — no SQLite `memories` table).

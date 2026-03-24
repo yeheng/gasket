@@ -25,7 +25,10 @@ mod spawn_parallel;
 mod web_fetch;
 mod web_search;
 
-pub use base::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};
+// Re-export tool trait and base types from gasket-types
+pub use gasket_types::{simple_schema, Tool, ToolError, ToolMetadata, ToolResult};
+
+// Re-export tool implementations
 pub use cron::CronTool;
 pub use filesystem::{EditFileTool, ListDirTool, ReadFileTool, WriteFileTool};
 pub use history_search::HistorySearchTool;

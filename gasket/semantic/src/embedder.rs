@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```no_run
-//! use gasket_core::search::TextEmbedder;
+//! use gasket_semantic::TextEmbedder;
 //!
 //! let embedder = TextEmbedder::new().unwrap();
 //! let vector = embedder.embed("hello world").unwrap();

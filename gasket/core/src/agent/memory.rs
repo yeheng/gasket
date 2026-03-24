@@ -8,7 +8,7 @@
 //! SQLite is only used for machine-state.
 
 use crate::memory::SqliteStore;
-use sqlx::SqlitePool;
+use gasket_storage::SqlitePool;
 
 /// Memory store — thin wrapper over `SqliteStore` for machine-state.
 ///

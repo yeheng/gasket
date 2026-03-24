@@ -44,6 +44,9 @@ pub fn top_k_similar<'a>(
 // ── bytemuck helpers for BLOB serialisation ──────────────────────────
 
 /// Convert a float slice to a byte slice (zero-copy).
+///
+/// This function is only available when the `local-embedding` feature is enabled.
+#[cfg(feature = "local-embedding")]
 #[inline]
 pub fn embedding_to_bytes(embedding: &[f32]) -> &[u8] {
     bytemuck::cast_slice(embedding)
@@ -51,12 +54,29 @@ pub fn embedding_to_bytes(embedding: &[f32]) -> &[u8] {
 
 /// Convert a byte slice back to a float slice (zero-copy).
 ///
+/// This function is only available when the `local-embedding` feature is enabled.
+///
 /// # Panics
 ///
 /// Panics if `bytes.len()` is not a multiple of 4 (i.e. not aligned to `f32`).
+#[cfg(feature = "local-embedding")]
 #[inline]
 pub fn bytes_to_embedding(bytes: &[u8]) -> &[f32] {
     bytemuck::cast_slice(bytes)
+}
+
+// When local-embedding is not enabled, provide stub implementations
+// that return empty slices (these should not be called in practice)
+#[cfg(not(feature = "local-embedding"))]
+#[inline]
+pub fn embedding_to_bytes(_embedding: &[f32]) -> &[u8] {
+    &[]
+}
+
+#[cfg(not(feature = "local-embedding"))]
+#[inline]
+pub fn bytes_to_embedding(_bytes: &[u8]) -> &[f32] {
+    &[]
 }
 
 #[cfg(test)]
@@ -116,6 +136,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "local-embedding")]
     fn test_bytemuck_roundtrip() {
         let original = vec![0.1f32, 0.2, 0.3, 0.4, 0.5];
         let bytes = embedding_to_bytes(&original);
@@ -124,6 +145,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "local-embedding")]
     fn test_bytemuck_empty() {
         let empty: Vec<f32> = vec![];
         let bytes = embedding_to_bytes(&empty);

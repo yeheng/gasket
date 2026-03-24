@@ -29,6 +29,8 @@ all-providers = ["gasket-providers/all-providers"]
 # Internal crates
 gasket-types = { path = "../types" }
 gasket-vault = { path = "../vault" }
+gasket-storage = { path = "../storage" }
+gasket-semantic = { path = "../semantic", features = ["local-embedding"] }
 
 # Async
 tokio.workspace = true
@@ -82,9 +84,6 @@ html2text = { version = "0.16" }
 # Bytes for HTTP body handling
 bytes = "1"
 
-# SQLite (async)
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
-
 # Concurrency
 parking_lot = "0.12"
 
@@ -93,12 +92,6 @@ tiktoken-rs = "0.9"
 
 # Regex for vault placeholder scanning
 regex = "1"
-
-# Offline text embedding (ONNX-based, ~20MB model weights)
-fastembed = "5.13.0"
-
-# Zero-copy byte casting for embeddings
-bytemuck = "1"
 
 # Sandbox module
 gasket-sandbox = { path = "../sandbox" }

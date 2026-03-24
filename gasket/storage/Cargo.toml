@@ -1,0 +1,41 @@
+[package]
+name = "gasket-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SQLite-backed storage for gasket machine-state persistence"
+
+[dependencies]
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Logging & Tracing
+tracing.workspace = true
+
+# Error handling
+anyhow.workspace = true
+
+# Time
+chrono.workspace = true
+
+# UUID
+uuid.workspace = true
+
+# SQLite (async)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# Configuration directory
+dirs.workspace = true
+
+# Zero-copy byte casting for embeddings
+bytemuck = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
