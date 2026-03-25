@@ -280,35 +280,34 @@ impl<'a> SubagentTaskBuilder<'a> {
                 });
             };
 
-            let agent =
-                match AgentLoop::builder(provider, workspace.clone(), agent_config, tools) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!(
-                            "[Subagent {}] Failed to initialize: {}",
-                            self.subagent_id, e
+            let agent = match AgentLoop::builder(provider, workspace.clone(), agent_config, tools) {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(
+                        "[Subagent {}] Failed to initialize: {}",
+                        self.subagent_id, e
+                    );
+                    if let Some(ref tx) = event_tx {
+                        send_error_event(
+                            tx,
+                            &self.subagent_id,
+                            &format!("Agent initialization failed: {}", e),
                         );
-                        if let Some(ref tx) = event_tx {
-                            send_error_event(
-                                tx,
-                                &self.subagent_id,
-                                &format!("Agent initialization failed: {}", e),
-                            );
-                        }
-                        let _ = result_tx
-                            .send(SubagentResult {
-                                id: self.subagent_id.clone(),
-                                task: task_clone.clone(),
-                                response: send_error(
-                                    &format!("Agent initialization failed: {}", e),
-                                    &model_name,
-                                ),
-                                model: Some(model_name.clone()),
-                            })
-                            .await;
-                        return;
                     }
-                };
+                    let _ = result_tx
+                        .send(SubagentResult {
+                            id: self.subagent_id.clone(),
+                            task: task_clone.clone(),
+                            response: send_error(
+                                &format!("Agent initialization failed: {}", e),
+                                &model_name,
+                            ),
+                            model: Some(model_name.clone()),
+                        })
+                        .await;
+                    return;
+                }
+            };
 
             // Apply hooks if provided
             let mut agent = if let Some(ref hooks) = hooks {

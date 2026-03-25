@@ -481,7 +481,11 @@ impl AgentLoop {
         };
 
         // ── 2. BeforeRequest hooks (can modify input or abort) ─────
-        match self.hooks.execute(HookPoint::BeforeRequest, &mut ctx).await? {
+        match self
+            .hooks
+            .execute(HookPoint::BeforeRequest, &mut ctx)
+            .await?
+        {
             HookAction::Abort(msg) => {
                 return Ok(AgentResponse {
                     content: msg,
@@ -549,7 +553,9 @@ impl AgentLoop {
             tool_calls: None,
             token_usage: None,
         };
-        self.hooks.execute(HookPoint::AfterHistory, &mut ctx).await?;
+        self.hooks
+            .execute(HookPoint::AfterHistory, &mut ctx)
+            .await?;
 
         // ── 10. BeforeLLM hooks (vault injection, etc.) ────────────
         self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
@@ -579,7 +585,9 @@ impl AgentLoop {
             tool_calls: Some(&tools_used),
             token_usage: result.token_usage.as_ref(),
         };
-        self.hooks.execute(HookPoint::AfterResponse, &mut ctx).await?;
+        self.hooks
+            .execute(HookPoint::AfterResponse, &mut ctx)
+            .await?;
 
         // ── 13. Save assistant message (trait dispatch) ──────────
         let history_content = redact_secrets(&result.content, &local_vault_values);
@@ -674,7 +682,11 @@ impl AgentLoop {
         };
 
         // ── 2. BeforeRequest hooks (can modify input or abort) ─────
-        match self.hooks.execute(HookPoint::BeforeRequest, &mut ctx).await? {
+        match self
+            .hooks
+            .execute(HookPoint::BeforeRequest, &mut ctx)
+            .await?
+        {
             HookAction::Abort(msg) => {
                 let (_tx, rx) = tokio::sync::mpsc::channel(1);
                 let handle = tokio::spawn(async move {
@@ -739,7 +751,9 @@ impl AgentLoop {
             tool_calls: None,
             token_usage: None,
         };
-        self.hooks.execute(HookPoint::AfterHistory, &mut ctx).await?;
+        self.hooks
+            .execute(HookPoint::AfterHistory, &mut ctx)
+            .await?;
         self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
 
         // Get vault values for log redaction
