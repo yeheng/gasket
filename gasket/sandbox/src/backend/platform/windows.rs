@@ -110,8 +110,7 @@ impl SandboxBackend for WindowsFallbackBackend {
             truncated.truncate(max_output);
             truncated.push_str(&format!(
                 "\n\n[OUTPUT TRUNCATED: {} bytes exceeded limit of {} bytes]",
-                original_len,
-                max_output
+                original_len, max_output
             ));
             truncated
         } else {
