@@ -207,14 +207,10 @@ impl HookRegistry {
         hooks: &[Arc<dyn PipelineHook>],
         ctx: &ReadonlyContext<'_>,
     ) -> Result<HookAction, AgentError> {
-        let results = futures::future::join_all(
-            hooks
-                .iter()
-                .map(|h| {
-                    debug!("[Hook] Running {} at {:?}", h.name(), h.point());
-                    h.run_parallel(ctx)
-                }),
-        )
+        let results = futures::future::join_all(hooks.iter().map(|h| {
+            debug!("[Hook] Running {} at {:?}", h.name(), h.point());
+            h.run_parallel(ctx)
+        }))
         .await;
 
         for result in results {
@@ -423,9 +419,7 @@ mod tests {
             token_usage: None,
         };
 
-        let result = registry
-            .execute(HookPoint::BeforeRequest, &mut ctx)
-            .await;
+        let result = registry.execute(HookPoint::BeforeRequest, &mut ctx).await;
         assert!(matches!(result, Ok(HookAction::Continue)));
         assert_eq!(ctx.messages.len(), 2);
     }
@@ -447,9 +441,7 @@ mod tests {
             token_usage: None,
         };
 
-        let result = registry
-            .execute(HookPoint::BeforeRequest, &mut ctx)
-            .await;
+        let result = registry.execute(HookPoint::BeforeRequest, &mut ctx).await;
         assert!(matches!(result, Ok(HookAction::Abort(_))));
         if let Ok(HookAction::Abort(msg)) = result {
             assert_eq!(msg, "test abort");
@@ -476,9 +468,7 @@ mod tests {
             token_usage: None,
         };
 
-        let result = registry
-            .execute(HookPoint::AfterResponse, &mut ctx)
-            .await;
+        let result = registry.execute(HookPoint::AfterResponse, &mut ctx).await;
         assert!(matches!(result, Ok(HookAction::Continue)));
     }
 
@@ -539,9 +529,7 @@ mod tests {
             token_usage: None,
         };
 
-        let result = registry
-            .execute(HookPoint::BeforeRequest, &mut ctx)
-            .await;
+        let result = registry.execute(HookPoint::BeforeRequest, &mut ctx).await;
         assert!(matches!(result, Ok(HookAction::Continue)));
     }
 

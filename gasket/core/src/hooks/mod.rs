@@ -23,11 +23,13 @@
 //!   Hooks run concurrently with readonly access, fire-and-forget.
 
 mod external;
+mod history;
 mod registry;
 mod types;
 mod vault;
 
 pub use external::{ExternalHookInput, ExternalHookOutput, ExternalHookRunner, ExternalShellHook};
+pub use history::HistoryRecallHook;
 pub use registry::{HookBuilder, HookRegistry, PipelineHook};
 pub use types::{
     ExecutionStrategy, HookAction, HookContext, HookPoint, MutableContext, ReadonlyContext,

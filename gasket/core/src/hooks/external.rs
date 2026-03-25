@@ -400,7 +400,12 @@ impl PipelineHook for ExternalShellHook {
         let response = ctx.response.unwrap_or("");
         let tools = ctx
             .tool_calls
-            .map(|t| t.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))
+            .map(|t| {
+                t.iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
 
         self.runner
