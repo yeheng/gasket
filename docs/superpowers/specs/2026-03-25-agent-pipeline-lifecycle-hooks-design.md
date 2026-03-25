@@ -500,15 +500,15 @@ impl AgentLoop {
         let result = self.run_agent_loop_with_hooks(full_messages, &session_key_str).await?;
 
         // 8. AfterResponse Hook
-        let view = ReadonlyContext {
+        let mut ctx_for_response = MutableContext {
             session_key: &session_key_str,
-            messages: &result.messages,
+            messages: &mut result.messages,
             user_input: Some(content),
             response: Some(&result.content),
             tool_calls: None,
             token_usage: result.token_usage.as_ref(),
         };
-        self.hooks.execute(HookPoint::AfterResponse, &mut ctx).await?;
+        self.hooks.execute(HookPoint::AfterResponse, &mut ctx_for_response).await?;
 
         // 9. 保存 assistant message
         self.context.save_message(
