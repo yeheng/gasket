@@ -566,7 +566,21 @@ impl AgentLoop {
         // ── 11. Run agent loop ─────────────────────────────────────
         let result = self.run_agent_loop(messages, &local_vault_values).await?;
 
-        // ── 12. AfterResponse hooks (audit, logging, etc.) ────────
+        // ── 12. Save assistant message FIRST (critical data safety) ───────
+        // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
+        // This ensures that if external shell hooks hang or panic, the expensive
+        // LLM response is already saved to SQLite and won't be lost.
+        let history_content = redact_secrets(&result.content, &local_vault_values);
+        self.context
+            .save_message(
+                session_key,
+                "assistant",
+                &history_content,
+                Some(result.tools_used.clone()),
+            )
+            .await?;
+
+        // ── 13. AfterResponse hooks (audit, logging, etc.) ────────
         let tools_used: Vec<crate::hooks::ToolCallInfo> = result
             .tools_used
             .iter()
@@ -587,17 +601,6 @@ impl AgentLoop {
         };
         self.hooks
             .execute(HookPoint::AfterResponse, &mut ctx)
-            .await?;
-
-        // ── 13. Save assistant message (trait dispatch) ──────────
-        let history_content = redact_secrets(&result.content, &local_vault_values);
-        self.context
-            .save_message(
-                session_key,
-                "assistant",
-                &history_content,
-                Some(result.tools_used.clone()),
-            )
             .await?;
 
         // Log token usage if available
@@ -787,7 +790,24 @@ impl AgentLoop {
                 .execute_stream_with_options(messages, event_tx, &options)
                 .await?;
 
-            // ── AfterResponse hooks ───────────────────────────────
+            // Save to history FIRST (critical data safety)
+            // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
+            // This ensures that if external shell hooks hang or panic, the expensive
+            // LLM response is already saved to SQLite and won't be lost.
+            let history_content = redact_secrets(&result.content, &local_vault_values);
+            if let Err(e) = context
+                .save_message(
+                    &session_key_clone,
+                    "assistant",
+                    &history_content,
+                    Some(result.tools_used.clone()),
+                )
+                .await
+            {
+                warn!("Failed to persist assistant message: {}", e);
+            }
+
+            // AfterResponse hooks (audit, logging, etc.)
             let tools_used: Vec<crate::hooks::ToolCallInfo> = result
                 .tools_used
                 .iter()
@@ -808,20 +828,6 @@ impl AgentLoop {
             };
             if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
                 warn!("AfterResponse hook failed (ignored): {}", e);
-            }
-
-            // Save to history
-            let history_content = redact_secrets(&result.content, &local_vault_values);
-            if let Err(e) = context
-                .save_message(
-                    &session_key_clone,
-                    "assistant",
-                    &history_content,
-                    Some(result.tools_used.clone()),
-                )
-                .await
-            {
-                warn!("Failed to persist assistant message: {}", e);
             }
 
             // Log token usage if available
