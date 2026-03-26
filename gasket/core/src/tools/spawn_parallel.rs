@@ -286,7 +286,9 @@ impl Tool for SpawnParallelTool {
                     .with_cancellation_token(cancellation_token.clone())
                     .spawn(result_tx.clone())
                     .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e))
+                    })?;
             } else {
                 // No model profile matched, use default provider
                 info!(
@@ -301,7 +303,9 @@ impl Tool for SpawnParallelTool {
                     .with_cancellation_token(cancellation_token.clone())
                     .spawn(result_tx.clone())
                     .await
-                    .map_err(|e| ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e)))?;
+                    .map_err(|e| {
+                        ToolError::ExecutionError(format!("Failed to spawn subagent: {}", e))
+                    })?;
             }
         }
 
@@ -327,7 +331,10 @@ impl Tool for SpawnParallelTool {
             .outbound_tx
             .clone()
             .unwrap_or_else(|| manager.outbound_sender());
-        let session_key = _ctx.session_key.clone().or_else(|| manager.get_session_key());
+        let session_key = _ctx
+            .session_key
+            .clone()
+            .or_else(|| manager.get_session_key());
 
         // Spawn a background task to forward events to WebSocket in real-time
         // Move task_id_map into the task for [Task N] labeling

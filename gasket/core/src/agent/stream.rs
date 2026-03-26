@@ -182,7 +182,10 @@ pub fn stream_events(
                         if !reasoning.is_empty() {
                             reasoning_content.push_str(reasoning);
                             // Check if channel is still open
-                            if tx.try_send(StreamEvent::Reasoning(reasoning.clone())).is_err() {
+                            if tx
+                                .try_send(StreamEvent::Reasoning(reasoning.clone()))
+                                .is_err()
+                            {
                                 debug!(
                                     "[StreamEvents] Channel closed during reasoning, aborting LLM stream"
                                 );

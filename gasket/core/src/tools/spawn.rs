@@ -232,7 +232,10 @@ impl Tool for SpawnTool {
             .outbound_tx
             .clone()
             .unwrap_or_else(|| manager.outbound_sender());
-        let session_key = _ctx.session_key.clone().or_else(|| manager.get_session_key());
+        let session_key = _ctx
+            .session_key
+            .clone()
+            .or_else(|| manager.get_session_key());
 
         // Track whether we're at the start of a new line (for prefix insertion)
         let mut at_line_start = true;

@@ -282,7 +282,10 @@ mod tests {
     fn test_disabled_tool_rejects_all() {
         let tool = ExecTool::default().with_enabled(false);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(serde_json::json!({"command": "echo hi"}), &ToolContext::empty()));
+        let result = rt.block_on(tool.execute(
+            serde_json::json!({"command": "echo hi"}),
+            &ToolContext::empty(),
+        ));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("disabled"));
     }
@@ -291,7 +294,10 @@ mod tests {
     fn test_enabled_tool_runs_commands() {
         let tool = ExecTool::default().with_enabled(true);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(serde_json::json!({"command": "echo hi"}), &ToolContext::empty()));
+        let result = rt.block_on(tool.execute(
+            serde_json::json!({"command": "echo hi"}),
+            &ToolContext::empty(),
+        ));
         assert!(result.is_ok());
         assert!(result.unwrap().contains("hi"));
     }
@@ -300,7 +306,10 @@ mod tests {
     fn test_workspace_restriction_warns_but_runs() {
         let tool = ExecTool::new("/tmp", Duration::from_secs(60), true);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(serde_json::json!({"command": "ls -la"}), &ToolContext::empty()));
+        let result = rt.block_on(tool.execute(
+            serde_json::json!({"command": "ls -la"}),
+            &ToolContext::empty(),
+        ));
         assert!(result.is_ok());
     }
 
@@ -337,7 +346,10 @@ mod tests {
         config.policy.denylist = vec!["rm -rf /".to_string()];
         let tool = ExecTool::from_config("/tmp", &config, false);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(tool.execute(serde_json::json!({"command": "rm -rf /"}), &ToolContext::empty()));
+        let result = rt.block_on(tool.execute(
+            serde_json::json!({"command": "rm -rf /"}),
+            &ToolContext::empty(),
+        ));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("denied"));
     }
@@ -360,7 +372,8 @@ mod tests {
         ];
 
         for cmd in injection_attempts {
-            let result = rt.block_on(tool.execute(serde_json::json!({"command": cmd}), &ToolContext::empty()));
+            let result = rt
+                .block_on(tool.execute(serde_json::json!({"command": cmd}), &ToolContext::empty()));
             assert!(
                 result.is_err(),
                 "Command '{}' should have been blocked",
