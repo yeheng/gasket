@@ -20,6 +20,7 @@ tracing.workspace = true
 
 # Error handling
 anyhow.workspace = true
+thiserror.workspace = true
 
 # Time
 chrono.workspace = true
@@ -28,13 +29,16 @@ chrono.workspace = true
 uuid.workspace = true
 
 # SQLite (async)
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "json"] }
 
 # Configuration directory
 dirs.workspace = true
 
 # Zero-copy byte casting for embeddings
 bytemuck = "1"
+
+# Internal crates
+gasket-types = { path = "../types" }
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -12,6 +12,7 @@
 //! machine-state.
 
 mod cron;
+mod event_store;
 mod kv;
 mod session;
 
@@ -21,6 +22,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use tracing::debug;
 
 pub use cron::CronJobRow;
+pub use event_store::{EventStore, StoreError};
 pub use session::{MessageRow, SessionMeta};
 
 // Re-export sqlx types for consumers that need direct pool access
