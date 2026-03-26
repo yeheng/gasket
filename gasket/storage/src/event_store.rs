@@ -26,6 +26,9 @@ impl EventStore {
     }
 
     /// Append an event (O(1) operation).
+    ///
+    /// All database operations are wrapped in a transaction to ensure atomicity.
+    /// If any operation fails, all changes are rolled back.
     pub async fn append_event(&self, event: &SessionEvent) -> Result<(), StoreError> {
         let event_type_str = event_type_to_string(&event.event_type);
         let tools_used = serde_json::to_string(&event.metadata.tools_used)?;
@@ -40,6 +43,9 @@ impl EventStore {
         // Extract event type specific fields
         let fields = extract_event_fields(&event.event_type);
 
+        // Start transaction for atomic operations
+        let mut tx = self.pool.begin().await?;
+
         // Ensure session exists
         let now = Utc::now().to_rfc3339();
         sqlx::query(
@@ -48,7 +54,7 @@ impl EventStore {
         .bind(&event.session_key)
         .bind(&now)
         .bind(&now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         // Insert event
@@ -81,7 +87,7 @@ impl EventStore {
         .bind(fields.merge_head.as_deref())
         .bind(&extra)
         .bind(event.created_at.to_rfc3339())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         // Update session metadata - read current branches, merge, and update
@@ -89,7 +95,7 @@ impl EventStore {
         let current_branches: Option<String> =
             sqlx::query_scalar("SELECT branches FROM sessions_v2 WHERE key = ?")
                 .bind(&event.session_key)
-                .fetch_one(&self.pool)
+                .fetch_one(&mut *tx)
                 .await?;
 
         let mut branches: Value = current_branches
@@ -108,8 +114,11 @@ impl EventStore {
         .bind(&now)
         .bind(&branches_str)
         .bind(&event.session_key)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        // Commit transaction
+        tx.commit().await?;
 
         Ok(())
     }
@@ -459,5 +468,93 @@ mod tests {
                 .await
                 .unwrap();
         assert!(branches.0.contains("feature"));
+    }
+
+    #[tokio::test]
+    async fn test_append_merge_event() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // First create a source branch with an event
+        let source_event = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Source branch content".into(),
+            embedding: None,
+            metadata: EventMetadata {
+                branch: Some("feature".into()),
+                ..Default::default()
+            },
+            created_at: Utc::now(),
+        };
+        store.append_event(&source_event).await.unwrap();
+
+        // Now create a merge event
+        let merge_event = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::Merge {
+                source_branch: "feature".into(),
+                source_head: source_event.id,
+            },
+            content: "Merged feature branch".into(),
+            embedding: None,
+            metadata: EventMetadata {
+                branch: Some("main".into()),
+                ..Default::default()
+            },
+            created_at: Utc::now(),
+        };
+
+        store.append_event(&merge_event).await.unwrap();
+
+        // Verify merge fields were stored
+        let row: (String, String, String) = sqlx::query_as(
+            "SELECT event_type, merge_source, merge_head FROM session_events WHERE event_type = 'merge'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "merge");
+        assert_eq!(row.1, "feature");
+        assert_eq!(row.2, source_event.id.to_string());
+    }
+
+    #[tokio::test]
+    async fn test_append_event_with_embedding() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // Create event with embedding (e.g., 4-dimensional vector)
+        let embedding = vec![0.1_f32, 0.2, 0.3, 0.4];
+        let event = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Message with embedding".into(),
+            embedding: Some(embedding.clone()),
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+
+        store.append_event(&event).await.unwrap();
+
+        // Verify embedding was stored correctly
+        let row: (Option<Vec<u8>>,) = sqlx::query_as("SELECT embedding FROM session_events WHERE session_key = 'test:session'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+
+        // Embedding should be stored as bytes (4 floats * 4 bytes = 16 bytes)
+        let stored_bytes = row.0.expect("embedding should be stored");
+        assert_eq!(stored_bytes.len(), 16); // 4 floats * 4 bytes
+
+        // Verify the embedding values can be reconstructed
+        let stored_embedding: Vec<f32> = bytemuck::cast_slice(&stored_bytes).to_vec();
+        assert_eq!(stored_embedding, embedding);
     }
 }
