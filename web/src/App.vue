@@ -28,52 +28,37 @@ const sessions = ref<Session[]>([]);
 const activeSessionId = ref<string>('');
 const isSidebarOpen = ref(true);
 
-// --- Data Migration: Normalize legacy message format ---
-/** Migrate legacy message format to steps-based format */
+// --- Data Migration: Convert steps to simple fields ---
+/** Migrate legacy steps format to simple thinking/toolCalls/content fields */
 const migrateLegacyMessage = (msg: Message): Message => {
-  // Skip if already has steps
-  if (msg.steps && msg.steps.length > 0) {
+  // If no steps, already in correct format
+  if (!msg.steps || msg.steps.length === 0) {
     return msg;
   }
 
-  const steps: any[] = [];
+  let thinking = msg.thinking || '';
+  let toolCalls = msg.toolCalls || [];
+  let content = msg.content || '';
 
-  // Migrate thinking
-  if (msg.thinking) {
-    steps.push({
-      id: 'think_' + msg.id + '_migrated',
-      type: 'thinking',
-      content: msg.thinking
-    });
+  // Extract data from steps
+  for (const step of msg.steps) {
+    if (step.type === 'thinking' && step.content) {
+      thinking += step.content;
+    } else if (step.type === 'tool_group' && step.tools) {
+      toolCalls = [...toolCalls, ...step.tools];
+    } else if (step.type === 'content' && step.content) {
+      content += step.content;
+    }
   }
 
-  // Migrate tool calls as a tool_group
-  if (msg.toolCalls && msg.toolCalls.length > 0) {
-    steps.push({
-      id: 'tool_group_' + msg.id + '_migrated',
-      type: 'tool_group',
-      tools: msg.toolCalls.map(tc => ({
-        ...tc,
-        id: tc.id || `tool_${msg.id}_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`
-      }))
-    });
-  }
-
-  // Migrate content
-  if (msg.content) {
-    steps.push({
-      id: 'content_' + msg.id + '_migrated',
-      type: 'content',
-      content: msg.content
-    });
-  }
-
-  // Return normalized message
-  if (steps.length > 0) {
-    return { ...msg, steps };
-  }
-
-  return msg;
+  // Return message without steps (cleaner format)
+  const { steps, ...rest } = msg;
+  return {
+    ...rest,
+    thinking: thinking || undefined,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    content: content
+  };
 };
 
 /** Migrate all sessions' messages on load */
@@ -252,39 +237,6 @@ const updateMessage = (sessionId: string, messageId: string, updates: Partial<Me
   }
 };
 
-/** Ensure message has steps array initialized */
-const ensureMessageSteps = (sessionId: string, messageId: string) => {
-  const session = sessions.value.find(s => s.id === sessionId);
-  if (!session) return;
-  const msg = session.messages.find(m => m.id === messageId);
-  if (msg && !msg.steps) {
-    msg.steps = [];
-  }
-};
-
-/** Push a step to message steps array */
-const pushMessageStep = (sessionId: string, messageId: string, step: any) => {
-  const session = sessions.value.find(s => s.id === sessionId);
-  if (!session) return;
-  const msg = session.messages.find(m => m.id === messageId);
-  if (msg) {
-    if (!msg.steps) msg.steps = [];
-    msg.steps.push(step);
-    session.updatedAt = Date.now();
-  }
-};
-
-/** Update a specific step in message steps */
-const updateMessageStep = (sessionId: string, messageId: string, stepIndex: number, updates: any) => {
-  const session = sessions.value.find(s => s.id === sessionId);
-  if (!session) return;
-  const msg = session.messages.find(m => m.id === messageId);
-  if (msg && msg.steps && msg.steps[stepIndex]) {
-    Object.assign(msg.steps[stepIndex], updates);
-    session.updatedAt = Date.now();
-  }
-};
-
 /** Ensure tool calls array exists */
 const ensureMessageToolCalls = (sessionId: string, messageId: string) => {
   const session = sessions.value.find(s => s.id === sessionId);
@@ -307,7 +259,7 @@ const pushToolCall = (sessionId: string, messageId: string, toolCall: any) => {
   }
 };
 
-/** Update a specific tool call by id or index */
+/** Update a specific tool call by id */
 const updateToolCall = (sessionId: string, messageId: string, toolId: string, updates: any) => {
   const session = sessions.value.find(s => s.id === sessionId);
   if (!session) return;
@@ -433,9 +385,6 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
         @append-message="(msg) => appendMessage(activeSessionId, msg)"
         @append-to-message="(msgId, content, field) => appendToMessage(activeSessionId, msgId, content, field)"
         @update-message="(msgId, updates) => updateMessage(activeSessionId, msgId, updates)"
-        @ensure-steps="(msgId) => ensureMessageSteps(activeSessionId, msgId)"
-        @push-step="(msgId, step) => pushMessageStep(activeSessionId, msgId, step)"
-        @update-step="(msgId, idx, updates) => updateMessageStep(activeSessionId, msgId, idx, updates)"
         @ensure-tool-calls="(msgId) => ensureMessageToolCalls(activeSessionId, msgId)"
         @push-tool-call="(msgId, tool) => pushToolCall(activeSessionId, msgId, tool)"
         @update-tool-call="(msgId, toolId, updates) => updateToolCall(activeSessionId, msgId, toolId, updates)"

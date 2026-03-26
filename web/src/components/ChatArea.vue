@@ -27,9 +27,6 @@ const emit = defineEmits<{
   (e: 'append-message', message: Message): void;
   (e: 'append-to-message', messageId: string, content: string, field?: 'content' | 'thinking'): void;
   (e: 'update-message', messageId: string, updates: Partial<Message>): void;
-  (e: 'ensure-steps', messageId: string): void;
-  (e: 'push-step', messageId: string, step: any): void;
-  (e: 'update-step', messageId: string, stepIndex: number, updates: any): void;
   (e: 'ensure-tool-calls', messageId: string): void;
   (e: 'push-tool-call', messageId: string, toolCall: any): void;
   (e: 'update-tool-call', messageId: string, toolId: string, updates: any): void;
@@ -106,35 +103,13 @@ const processWebSocketMessage = (msg: any, botMsg: Message) => {
   switch (msg.type) {
     case 'thinking':
       isThinking.value = true;
+      // Append to thinking field directly
       emit('append-to-message', botMsg.id, msg.content, 'thinking');
-      emit('ensure-steps', botMsg.id);
-      const lastThinkingStep = props.messages.find(m => m.id === botMsg.id)?.steps?.slice(-1)[0];
-      if (!lastThinkingStep || lastThinkingStep.type !== 'thinking') {
-        emit('push-step', botMsg.id, {
-          id: 'think_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
-          type: 'thinking',
-          content: msg.content
-        });
-      } else {
-        const stepIdx = props.messages.find(m => m.id === botMsg.id)!.steps!.length - 1;
-        emit('update-step', botMsg.id, stepIdx, { content: lastThinkingStep.content + msg.content });
-      }
       break;
 
     case 'tool_start':
       isThinking.value = true;
       emit('ensure-tool-calls', botMsg.id);
-      emit('ensure-steps', botMsg.id);
-      const msgData = props.messages.find(m => m.id === botMsg.id);
-      let lastToolGroup = msgData?.steps?.slice(-1)[0];
-      if (!lastToolGroup || lastToolGroup.type !== 'tool_group') {
-        lastToolGroup = {
-          id: 'tool_group_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
-          type: 'tool_group',
-          tools: []
-        };
-        emit('push-step', botMsg.id, lastToolGroup);
-      }
       const toolId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
       emit('push-tool-call', botMsg.id, {
         id: toolId,
@@ -163,21 +138,9 @@ const processWebSocketMessage = (msg: any, botMsg: Message) => {
 
     case 'content':
     case 'text':
-      isThinking.value = msg.type === 'content';
+      isThinking.value = false;
+      // Append to content field directly
       emit('append-to-message', botMsg.id, msg.content, 'content');
-      emit('ensure-steps', botMsg.id);
-      const data = props.messages.find(m => m.id === botMsg.id);
-      let lastTextStep = data?.steps?.slice(-1)[0];
-      if (!lastTextStep || lastTextStep.type !== 'content') {
-        emit('push-step', botMsg.id, {
-          id: 'content_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
-          type: 'content',
-          content: msg.content
-        });
-      } else {
-        const stepIdx = data!.steps!.length - 1;
-        emit('update-step', botMsg.id, stepIdx, { content: lastTextStep.content + msg.content });
-      }
       break;
 
     case 'error':
@@ -449,6 +412,7 @@ const clearHistory = () => {
             :message="msg"
             :is-last-bot-message="msg.role === 'bot' && idx === messages.length - 1"
             :is-thinking="isThinking"
+            :is-receiving="isReceiving"
           />
         </div>
       </ScrollArea>
