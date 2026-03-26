@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::Command;
 
 use async_trait::async_trait;
+use tokio::process::Command as AsyncCommand;
 use tracing::debug;
 
 use super::{ExecutionResult, Platform, SandboxBackend};
@@ -83,19 +84,28 @@ impl SandboxBackend for FallbackBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
-        let mut command = self.build_command(cmd, working_dir, config)?;
+        let limits = ResourceLimits::from(&config.limits);
+        let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
 
-        // Run in blocking context
-        let output = tokio::task::spawn_blocking(move || command.output())
+        // Build async command with kill_on_drop to ensure process termination on timeout
+        let mut command = AsyncCommand::new("bash");
+        command
+            .arg("-c")
+            .arg(&prefixed_cmd)
+            .current_dir(working_dir)
+            .kill_on_drop(true);
+
+        debug!("Fallback async command: {:?}", command);
+
+        let output = command
+            .output()
             .await
-            .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?
             .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         // Truncate output if needed
-        let limits = ResourceLimits::from(&config.limits);
         let stdout = limits.truncate_output(&stdout);
         let stderr = limits.truncate_output(&stderr);
 

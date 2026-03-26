@@ -14,6 +14,17 @@ use super::AuditEvent;
 use crate::config::AuditConfig;
 use crate::error::{Result, SandboxError};
 
+/// Internal state for the audit log.
+///
+/// Both the writer and current_size are protected by the same mutex
+/// to prevent TOCTOU race conditions during rotation.
+struct LogState {
+    /// Buffered writer with file handle (kept open)
+    writer: Option<BufWriter<File>>,
+    /// Current file size for rotation tracking
+    current_size: u64,
+}
+
 /// Audit log writer with buffered I/O.
 ///
 /// Uses a BufWriter to minimize system calls during write operations.
@@ -25,10 +36,8 @@ pub struct AuditLog {
     max_size_bytes: u64,
     /// Whether to log command output
     _log_output: bool,
-    /// Buffered writer with file handle (kept open)
-    writer: Arc<Mutex<Option<BufWriter<File>>>>,
-    /// Current file size for rotation tracking
-    current_size: Arc<Mutex<u64>>,
+    /// Combined state protected by a single mutex to prevent TOCTOU races
+    state: Arc<Mutex<LogState>>,
 }
 
 impl AuditLog {
@@ -47,8 +56,10 @@ impl AuditLog {
             path,
             max_size_bytes,
             _log_output: config.log_output,
-            writer: Arc::new(Mutex::new(None)),
-            current_size: Arc::new(Mutex::new(0)),
+            state: Arc::new(Mutex::new(LogState {
+                writer: None,
+                current_size: 0,
+            })),
         })
     }
 
@@ -58,8 +69,10 @@ impl AuditLog {
             path: path.into(),
             max_size_bytes: 100 * 1024 * 1024, // 100 MB default
             _log_output: false,
-            writer: Arc::new(Mutex::new(None)),
-            current_size: Arc::new(Mutex::new(0)),
+            state: Arc::new(Mutex::new(LogState {
+                writer: None,
+                current_size: 0,
+            })),
         }
     }
 
@@ -81,7 +94,7 @@ impl AuditLog {
             0
         };
 
-        *self.current_size.lock().await = size;
+        self.state.lock().await.current_size = size;
         debug!("Audit log initialized: {:?} ({} bytes)", self.path, size);
         Ok(())
     }
@@ -99,6 +112,9 @@ impl AuditLog {
     }
 
     /// Write an event to the log
+    ///
+    /// All operations (size check, rotation, write, size update) happen
+    /// within a single lock guard to prevent TOCTOU race conditions.
     pub async fn write(&self, event: &AuditEvent) -> Result<()> {
         // Serialize event
         let mut line = serde_json::to_string(event)
@@ -107,47 +123,41 @@ impl AuditLog {
 
         let line_len = line.len() as u64;
 
-        // Check for rotation (with current_size lock held briefly)
-        {
-            let mut current_size = self.current_size.lock().await;
-            if *current_size + line_len > self.max_size_bytes {
-                // Need to rotate - drop writer first
-                {
-                    let mut writer_guard = self.writer.lock().await;
-                    *writer_guard = None; // Close the writer
-                }
-                self.rotate().await?;
-                *current_size = 0;
-            }
+        // All state modifications happen within a single lock scope
+        let mut state = self.state.lock().await;
+
+        // Check for rotation
+        if state.current_size + line_len > self.max_size_bytes {
+            // Close the writer before rotation
+            state.writer = None;
+            drop(state); // Release lock during I/O
+
+            self.rotate().await?;
+
+            // Re-acquire lock after rotation
+            state = self.state.lock().await;
+            state.current_size = 0;
         }
 
-        // Write using buffered writer
-        {
-            let mut writer_guard = self.writer.lock().await;
-
-            // Lazily initialize writer if needed
-            if writer_guard.is_none() {
-                *writer_guard = Some(self.get_writer().await?);
-            }
-
-            let writer = writer_guard.as_mut().unwrap();
-            writer
-                .write_all(line.as_bytes())
-                .await
-                .map_err(|e| SandboxError::AuditError(format!("Failed to write to log: {}", e)))?;
-
-            // Flush to ensure data is persisted
-            writer
-                .flush()
-                .await
-                .map_err(|e| SandboxError::AuditError(format!("Failed to flush log: {}", e)))?;
+        // Lazily initialize writer if needed
+        if state.writer.is_none() {
+            state.writer = Some(self.get_writer().await?);
         }
 
-        // Update size tracking
-        {
-            let mut current_size = self.current_size.lock().await;
-            *current_size += line_len;
-        }
+        let writer = state.writer.as_mut().unwrap();
+        writer
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| SandboxError::AuditError(format!("Failed to write to log: {}", e)))?;
+
+        // Flush to ensure data is persisted
+        writer
+            .flush()
+            .await
+            .map_err(|e| SandboxError::AuditError(format!("Failed to flush log: {}", e)))?;
+
+        // Update size tracking (still within same lock scope)
+        state.current_size += line_len;
 
         Ok(())
     }

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
+use tokio::process::Command as AsyncCommand;
 use tracing::{debug, info, warn};
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
@@ -164,18 +165,64 @@ impl SandboxBackend for LinuxBwrapBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
-        let mut command = self.build_command(cmd, working_dir, config)?;
+        // Build async command with kill_on_drop to ensure process termination on timeout
+        let mut command = AsyncCommand::new(&self.bwrap_path);
+        let limits = ResourceLimits::from(&config.limits);
+        let tmp_size_mb = config.tmp_size_mb;
 
-        let output = tokio::task::spawn_blocking(move || command.output())
+        // Namespace isolation
+        command.arg("--unshare-pid").arg("--unshare-ipc");
+
+        // Filesystem mounts
+        command
+            // Read-only root
+            .arg("--ro-bind")
+            .arg("/")
+            .arg("/")
+            // Read-write workspace
+            .arg("--bind")
+            .arg(working_dir)
+            .arg(working_dir)
+            // Tmpfs for /tmp
+            .arg("--tmpfs")
+            .arg("/tmp")
+            // Minimal /dev
+            .arg("--dev")
+            .arg("/dev")
+            // New /proc
+            .arg("--proc")
+            .arg("/proc");
+
+        // Tmpfs size limit
+        command
+            .arg("--size")
+            .arg(format!("{}", u64::from(tmp_size_mb) * 1024 * 1024));
+
+        // Resource limits
+        for arg in limits.to_bwrap_args() {
+            command.arg(arg);
+        }
+
+        // Working directory inside sandbox
+        command.arg("--chdir").arg(working_dir);
+
+        // The actual command - execute via bash
+        command.arg("bash").arg("-c").arg(cmd);
+
+        // Kill process when the handle is dropped (critical for timeout handling)
+        command.kill_on_drop(true);
+
+        debug!("bwrap async command: {:?}", command);
+
+        let output = command
+            .output()
             .await
-            .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?
             .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         // Truncate output if needed
-        let limits = ResourceLimits::from(&config.limits);
         let stdout = limits.truncate_output(&stdout);
         let stderr = limits.truncate_output(&stderr);
 

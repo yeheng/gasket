@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 use async_trait::async_trait;
+use tokio::process::Command as AsyncCommand;
 use tracing::{debug, warn};
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
@@ -91,11 +92,19 @@ impl SandboxBackend for WindowsFallbackBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
-        let mut command = self.build_command(cmd, working_dir, config)?;
+        // Build async command with kill_on_drop to ensure process termination on timeout
+        let mut command = AsyncCommand::new("cmd");
+        command
+            .arg("/C")
+            .arg(cmd)
+            .current_dir(working_dir)
+            .kill_on_drop(true);
 
-        let output = tokio::task::spawn_blocking(move || command.output())
+        debug!("Windows async command (unsandboxed): {:?}", command);
+
+        let output = command
+            .output()
             .await
-            .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?
             .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();

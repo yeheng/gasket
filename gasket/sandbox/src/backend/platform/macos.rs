@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use async_trait::async_trait;
+use tokio::process::Command as AsyncCommand;
 use tracing::{debug, info, warn};
 
 use crate::backend::{ExecutionResult, Platform, SandboxBackend};
@@ -158,18 +159,34 @@ impl SandboxBackend for MacOsSandboxBackend {
         working_dir: &Path,
         config: &SandboxConfig,
     ) -> Result<ExecutionResult> {
-        let mut command = self.build_command(cmd, working_dir, config)?;
+        // Build async command with kill_on_drop to ensure process termination on timeout
+        let profile = self.generate_profile(working_dir);
+        let limits = ResourceLimits::from(&config.limits);
 
-        let output = tokio::task::spawn_blocking(move || command.output())
+        // Resource limits via ulimit (sandbox-exec doesn't handle this)
+        let prefixed_cmd = format!("{}{}", limits.to_ulimit_prefix(), cmd);
+
+        let mut command = AsyncCommand::new("sandbox-exec");
+        command
+            .arg("-p")
+            .arg(&profile)
+            .arg("bash")
+            .arg("-c")
+            .arg(&prefixed_cmd)
+            .current_dir(working_dir)
+            .kill_on_drop(true);
+
+        debug!("sandbox-exec async command: {:?}", command);
+
+        let output = command
+            .output()
             .await
-            .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?
             .map_err(|e| SandboxError::ExecutionFailed(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         // Truncate output if needed
-        let limits = ResourceLimits::from(&config.limits);
         let stdout = limits.truncate_output(&stdout);
         let stderr = limits.truncate_output(&stderr);
 
