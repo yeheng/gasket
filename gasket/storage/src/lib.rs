@@ -238,6 +238,101 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
+        // === Event sourcing new tables ===
+
+        // Session metadata table (v2 with branch support)
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions_v2 (
+                key             TEXT PRIMARY KEY,
+                current_branch  TEXT NOT NULL DEFAULT 'main',
+                branches        TEXT NOT NULL DEFAULT '{}',
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL,
+                last_consolidated_event TEXT,
+                total_events    INTEGER NOT NULL DEFAULT 0,
+                total_tokens    INTEGER NOT NULL DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Event table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS session_events (
+                id              TEXT PRIMARY KEY,
+                session_key     TEXT NOT NULL,
+                parent_id       TEXT,
+                event_type      TEXT NOT NULL,
+                content         TEXT NOT NULL,
+                embedding       BLOB,
+                branch          TEXT DEFAULT 'main',
+                tools_used      TEXT DEFAULT '[]',
+                token_usage     TEXT,
+                tool_name       TEXT,
+                tool_arguments  TEXT,
+                tool_call_id    TEXT,
+                is_error        INTEGER DEFAULT 0,
+                summary_type    TEXT,
+                summary_topic   TEXT,
+                covered_events  TEXT,
+                merge_source    TEXT,
+                merge_head      TEXT,
+                extra           TEXT DEFAULT '{}',
+                created_at      TEXT NOT NULL,
+                FOREIGN KEY (session_key) REFERENCES sessions_v2(key) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Indexes for session_events
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_session_branch ON session_events(session_key, branch)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_parent ON session_events(parent_id)")
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_created ON session_events(created_at)")
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_events_type ON session_events(event_type)")
+            .execute(&self.pool)
+            .await?;
+
+        // Summary index table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS summary_index (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key     TEXT NOT NULL,
+                event_id        TEXT NOT NULL,
+                summary_type    TEXT NOT NULL,
+                topic           TEXT,
+                covered_events  TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_session ON summary_index(session_key)")
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_summary_type ON summary_index(summary_type)")
+            .execute(&self.pool)
+            .await?;
+
         Ok(())
     }
 }
