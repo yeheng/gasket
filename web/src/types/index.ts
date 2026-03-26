@@ -1,0 +1,64 @@
+// Subagent message types for real-time UI updates
+
+/**
+ * Tool call state for subagent execution
+ */
+export interface SubagentToolCall {
+  id: string;
+  name: string;
+  arguments?: string;
+  status: 'running' | 'complete' | 'error';
+  output?: string | null;
+  duration?: string;
+}
+
+/**
+ * Subagent execution state
+ * Used for real-time tracking of parallel subagent tasks
+ */
+export interface SubagentState {
+  /** Unique subagent ID (UUID) */
+  id: string;
+  /** Task index (1-indexed for display) */
+  index: number;
+  /** Task description */
+  task: string;
+  /** Execution status */
+  status: 'running' | 'completed' | 'error';
+  /** Incremental thinking/reasoning content */
+  thinking?: string;
+  /** Incremental output content */
+  content?: string;
+  /** Tool calls made by this subagent */
+  toolCalls: SubagentToolCall[];
+  /** Total tool call count */
+  toolCount: number;
+  /** Brief summary (first 100 chars of result) */
+  summary?: string;
+  /** Error message if status is 'error' */
+  error?: string;
+  /** Start timestamp (ms) */
+  startTime: number;
+  /** End timestamp (ms) if completed */
+  endTime?: number;
+}
+
+/**
+ * WebSocket message types for subagent events
+ * These correspond to the Rust WebSocketMessage enum variants
+ */
+export type SubagentWsMessage =
+  | { type: 'subagent_started'; id: string; task: string; index: number }
+  | { type: 'subagent_thinking'; id: string; content: string }
+  | { type: 'subagent_content'; id: string; content: string }
+  | { type: 'subagent_tool_start'; id: string; name: string; arguments?: string }
+  | { type: 'subagent_tool_end'; id: string; name: string; output?: string }
+  | { type: 'subagent_completed'; id: string; index: number; summary: string; tool_count: number }
+  | { type: 'subagent_error'; id: string; index: number; error: string };
+
+/**
+ * Type guard to check if a WebSocket message is a subagent message
+ */
+export function isSubagentMessage(msg: { type: string }): msg is SubagentWsMessage {
+  return msg.type.startsWith('subagent_');
+}
