@@ -1,0 +1,183 @@
+//! Session event types for event sourcing architecture.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// Session event - immutable fact record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEvent {
+    /// Event unique identifier (UUID v7 time-ordered)
+    pub id: Uuid,
+
+    /// Session this event belongs to
+    pub session_key: String,
+
+    /// Parent event ID (supports branching and version control)
+    pub parent_id: Option<Uuid>,
+
+    /// Event type
+    pub event_type: EventType,
+
+    /// Message content
+    pub content: String,
+
+    /// Semantic vector (per-message embedding)
+    pub embedding: Option<Vec<f32>>,
+
+    /// Event metadata
+    pub metadata: EventMetadata,
+
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+}
+
+/// Event type enumeration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EventType {
+    /// User message
+    UserMessage,
+
+    /// Assistant reply
+    AssistantMessage,
+
+    /// Tool call
+    ToolCall {
+        tool_name: String,
+        arguments: serde_json::Value,
+    },
+
+    /// Tool result
+    ToolResult {
+        tool_call_id: String,
+        tool_name: String,
+        is_error: bool,
+    },
+
+    /// Summary event (compression generated)
+    Summary {
+        summary_type: SummaryType,
+        covered_event_ids: Vec<Uuid>,
+    },
+
+    /// Branch merge
+    Merge {
+        source_branch: String,
+        source_head: Uuid,
+    },
+}
+
+/// Event type category (for query filtering).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventTypeCategory {
+    UserMessage,
+    AssistantMessage,
+    ToolCall,
+    ToolResult,
+    Summary,
+    Merge,
+}
+
+impl EventType {
+    /// Check if this is a summary type event.
+    pub fn is_summary(&self) -> bool {
+        matches!(self, EventType::Summary { .. })
+    }
+
+    /// Get the event type category.
+    pub fn category(&self) -> EventTypeCategory {
+        match self {
+            EventType::UserMessage => EventTypeCategory::UserMessage,
+            EventType::AssistantMessage => EventTypeCategory::AssistantMessage,
+            EventType::ToolCall { .. } => EventTypeCategory::ToolCall,
+            EventType::ToolResult { .. } => EventTypeCategory::ToolResult,
+            EventType::Summary { .. } => EventTypeCategory::Summary,
+            EventType::Merge { .. } => EventTypeCategory::Merge,
+        }
+    }
+}
+
+/// Summary type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SummaryType {
+    /// Time window summary
+    TimeWindow { duration_hours: u32 },
+
+    /// Topic summary
+    Topic { topic: String },
+
+    /// Compression summary (when exceeding token budget)
+    Compression { token_budget: usize },
+}
+
+/// Event metadata.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EventMetadata {
+    /// Branch name (None means main branch)
+    pub branch: Option<String>,
+
+    /// List of tools used
+    #[serde(default)]
+    pub tools_used: Vec<String>,
+
+    /// Token statistics
+    pub token_usage: Option<TokenUsage>,
+
+    /// Extension fields
+    #[serde(default)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Token usage statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_event_type_serialization() {
+        let event_type = EventType::UserMessage;
+        let json = serde_json::to_string(&event_type).unwrap();
+        // Unit variants serialize as simple strings in serde
+        assert!(json.contains("UserMessage"));
+    }
+
+    #[test]
+    fn test_session_event_roundtrip() {
+        let event = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Hello".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: SessionEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.content, "Hello");
+    }
+
+    #[test]
+    fn test_event_type_category() {
+        assert_eq!(
+            EventType::UserMessage.category(),
+            EventTypeCategory::UserMessage
+        );
+        assert_eq!(
+            EventType::ToolCall {
+                tool_name: "test".into(),
+                arguments: serde_json::json!({})
+            }
+            .category(),
+            EventTypeCategory::ToolCall
+        );
+    }
+}

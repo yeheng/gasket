@@ -10,10 +10,14 @@
 //! between `gasket-core` and other crates.
 
 pub mod events;
+pub mod session_event;
 pub mod tool;
 
 pub use events::{
     ChannelType, InboundMessage, MediaAttachment, OutboundMessage, SessionKey,
     SessionKeyParseError, WebSocketMessage,
+};
+pub use session_event::{
+    EventMetadata, EventType, EventTypeCategory, SessionEvent, SummaryType, TokenUsage,
 };
 pub use tool::{simple_schema, Tool, ToolContext, ToolError, ToolMetadata, ToolResult};
