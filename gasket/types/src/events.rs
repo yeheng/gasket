@@ -406,6 +406,51 @@ pub enum WebSocketMessage {
 
     /// Plain text message (legacy support)
     Text { content: String },
+
+    // === Subagent 专用消息（新增） ===
+    /// Subagent started execution
+    SubagentStarted {
+        id: String,        // UUID
+        task: String,      // Task description
+        index: u32,        // Task index (1, 2, 3...)
+    },
+    /// Subagent thinking content (incremental)
+    SubagentThinking {
+        id: String,
+        content: String,
+    },
+    /// Subagent output content (incremental)
+    SubagentContent {
+        id: String,
+        content: String,
+    },
+    /// Subagent tool call started
+    SubagentToolStart {
+        id: String,
+        name: String,
+        #[serde(default)]
+        arguments: Option<String>,
+    },
+    /// Subagent tool call completed
+    SubagentToolEnd {
+        id: String,
+        name: String,
+        #[serde(default)]
+        output: Option<String>,
+    },
+    /// Subagent execution completed
+    SubagentCompleted {
+        id: String,
+        index: u32,
+        summary: String,    // Brief summary (first 100 chars)
+        tool_count: u32,    // Number of tool calls
+    },
+    /// Subagent execution error
+    SubagentError {
+        id: String,
+        index: u32,
+        error: String,
+    },
 }
 
 impl WebSocketMessage {
@@ -448,6 +493,83 @@ impl WebSocketMessage {
     pub fn text(content: impl Into<String>) -> Self {
         Self::Text {
             content: content.into(),
+        }
+    }
+
+    // === Subagent message constructors ===
+
+    /// Create a subagent_started message
+    pub fn subagent_started(id: impl Into<String>, task: impl Into<String>, index: u32) -> Self {
+        Self::SubagentStarted {
+            id: id.into(),
+            task: task.into(),
+            index,
+        }
+    }
+
+    /// Create a subagent_thinking message
+    pub fn subagent_thinking(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::SubagentThinking {
+            id: id.into(),
+            content: content.into(),
+        }
+    }
+
+    /// Create a subagent_content message
+    pub fn subagent_content(id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::SubagentContent {
+            id: id.into(),
+            content: content.into(),
+        }
+    }
+
+    /// Create a subagent_tool_start message
+    pub fn subagent_tool_start(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: Option<String>,
+    ) -> Self {
+        Self::SubagentToolStart {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }
+    }
+
+    /// Create a subagent_tool_end message
+    pub fn subagent_tool_end(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        output: Option<String>,
+    ) -> Self {
+        Self::SubagentToolEnd {
+            id: id.into(),
+            name: name.into(),
+            output,
+        }
+    }
+
+    /// Create a subagent_completed message
+    pub fn subagent_completed(
+        id: impl Into<String>,
+        index: u32,
+        summary: impl Into<String>,
+        tool_count: u32,
+    ) -> Self {
+        Self::SubagentCompleted {
+            id: id.into(),
+            index,
+            summary: summary.into(),
+            tool_count,
+        }
+    }
+
+    /// Create a subagent_error message
+    pub fn subagent_error(id: impl Into<String>, index: u32, error: impl Into<String>) -> Self {
+        Self::SubagentError {
+            id: id.into(),
+            index,
+            error: error.into(),
         }
     }
 
@@ -516,5 +638,60 @@ mod tests {
         let string = original.to_string();
         let parsed = SessionKey::parse(&string).unwrap();
         assert_eq!(original, parsed);
+    }
+
+    // === Subagent message tests ===
+
+    #[test]
+    fn test_subagent_started_serialization() {
+        let msg = WebSocketMessage::subagent_started("id-123", "Search docs", 1);
+        let json = msg.to_json();
+        assert!(json.contains(r#""type":"subagent_started"#));
+        assert!(json.contains(r#""id":"id-123"#));
+        assert!(json.contains(r#""task":"Search docs"#));
+        assert!(json.contains(r#""index":1"#));
+    }
+
+    #[test]
+    fn test_subagent_thinking_serialization() {
+        let msg = WebSocketMessage::subagent_thinking("id-123", "Analyzing...");
+        let json = msg.to_json();
+        assert!(json.contains(r#""type":"subagent_thinking"#));
+        assert!(json.contains(r#""content":"Analyzing..."#));
+    }
+
+    #[test]
+    fn test_subagent_completed_serialization() {
+        let msg = WebSocketMessage::subagent_completed("id-123", 1, "Done", 5);
+        let json = msg.to_json();
+        assert!(json.contains(r#""type":"subagent_completed"#));
+        assert!(json.contains(r#""tool_count":5"#));
+    }
+
+    #[test]
+    fn test_subagent_message_deserialization() {
+        let json = r#"{"type":"subagent_started","id":"id-123","task":"Test task","index":1}"#;
+        let msg: WebSocketMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            WebSocketMessage::SubagentStarted { id, task, index } => {
+                assert_eq!(id, "id-123");
+                assert_eq!(task, "Test task");
+                assert_eq!(index, 1);
+            }
+            _ => panic!("Expected SubagentStarted"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_tool_messages() {
+        let start_msg = WebSocketMessage::subagent_tool_start("id-123", "read_file", Some(r#"{"path":"/test.txt"}"#.to_string()));
+        let json = start_msg.to_json();
+        assert!(json.contains(r#""type":"subagent_tool_start"#));
+        assert!(json.contains(r#""name":"read_file"#));
+
+        let end_msg = WebSocketMessage::subagent_tool_end("id-123", "read_file", Some("file contents".to_string()));
+        let json = end_msg.to_json();
+        assert!(json.contains(r#""type":"subagent_tool_end"#));
+        assert!(json.contains(r#""output":"file contents"#));
     }
 }
