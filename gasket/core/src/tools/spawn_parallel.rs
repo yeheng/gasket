@@ -337,10 +337,7 @@ impl Tool for SpawnParallelTool {
             .or_else(|| manager.get_session_key());
 
         // Spawn a background task to forward events to WebSocket in real-time
-        // Move task_id_map into the task for [Task N] labeling
-        // Track whether each subagent is at the start of a new line (for prefix insertion)
-        let mut subagent_at_line_start: HashMap<String, bool> = HashMap::new();
-
+        // Move task_id_map into the task for task index lookup
         tokio::spawn(async move {
             // Direct ownership - no lock needed
             while let Some(event) = event_rx.recv().await {
@@ -356,123 +353,120 @@ impl Tool for SpawnParallelTool {
                     SubagentEvent::Error { id, .. } => id,
                 };
 
-                // Get task index for [Task N] labeling (1-indexed for display)
-                let task_label = task_id_map
+                // Get task index (1-indexed for display)
+                let task_index = task_id_map
                     .get(subagent_id)
-                    .map(|idx| format!("[Task {}]", idx))
-                    .unwrap_or_else(|| "[Subagent]".to_string());
+                    .copied()
+                    .unwrap_or(0) as u32;
 
-                // Log the event with task label
+                // Log the event
                 match &event {
                     SubagentEvent::Started { id, task } => {
-                        info!("{} Started: {} (ID: {})", task_label, task, id);
-                        // Initialize line start state for new subagent
-                        subagent_at_line_start.insert(id.clone(), true);
+                        info!("Task {} Started: {} (ID: {})", task_index, task, id);
                     }
                     SubagentEvent::Thinking { id, content } => {
-                        trace!("{} Thinking: {} (ID: {})", task_label, content, id);
+                        trace!("Task {} Thinking: {} bytes (ID: {})", task_index, content.len(), id);
                     }
                     SubagentEvent::Content { id, content } => {
-                        trace!(
-                            "{} Content: {} bytes (ID: {})",
-                            task_label,
-                            content.len(),
-                            id
-                        );
+                        trace!("Task {} Content: {} bytes (ID: {})", task_index, content.len(), id);
                     }
                     SubagentEvent::Iteration { id, iteration } => {
-                        info!(
-                            "{} Iteration {} completed (ID: {})",
-                            task_label, iteration, id
-                        );
-                        // After iteration, we're at line start
-                        subagent_at_line_start.insert(id.clone(), true);
+                        info!("Task {} Iteration {} completed (ID: {})", task_index, iteration, id);
                     }
                     SubagentEvent::ToolStart { id, tool_name, .. } => {
-                        trace!("{} Tool: {} started (ID: {})", task_label, tool_name, id);
+                        trace!("Task {} Tool: {} started (ID: {})", task_index, tool_name, id);
                     }
                     SubagentEvent::ToolEnd { id, tool_name, .. } => {
-                        trace!("{} Tool: {} done (ID: {})", task_label, tool_name, id);
-                        // After tool end, we're at line start
-                        subagent_at_line_start.insert(id.clone(), true);
+                        trace!("Task {} Tool: {} done (ID: {})", task_index, tool_name, id);
                     }
                     SubagentEvent::Completed { id, result } => {
                         info!(
-                            "{} Completed, model={} (ID: {})",
-                            task_label,
+                            "Task {} Completed, model={} (ID: {})",
+                            task_index,
                             result.model.as_deref().unwrap_or("unknown"),
                             id
                         );
                     }
                     SubagentEvent::Error { id, error } => {
-                        warn!("{} Error: {} (ID: {})", task_label, error, id);
+                        warn!("Task {} Error: {} (ID: {})", task_index, error, id);
                     }
                 }
 
-                // Send WebSocket message immediately (no buffering)
-                if let Some(ref key) = session_key {
-                    let ws_msg = match &event {
-                        SubagentEvent::Thinking { id, content } => {
-                            // Only add prefix at line start to avoid repeating for every char
-                            let at_start = subagent_at_line_start.get(id).copied().unwrap_or(true);
-                            let msg = if at_start || content.starts_with('\n') {
-                                format!("{} {}", task_label, content.trim_start())
-                            } else {
-                                content.clone()
-                            };
-                            // Update line start state based on content
-                            subagent_at_line_start.insert(id.clone(), content.ends_with('\n'));
-                            Some(WebSocketMessage::thinking(msg))
-                        }
-                        SubagentEvent::Content { id, content } => {
-                            // Only add prefix at line start
-                            let at_start = subagent_at_line_start.get(id).copied().unwrap_or(true);
-                            let msg = if at_start || content.starts_with('\n') {
-                                format!("{} {}", task_label, content.trim_start())
-                            } else {
-                                content.clone()
-                            };
-                            // Update line start state based on content
-                            subagent_at_line_start.insert(id.clone(), content.ends_with('\n'));
-                            Some(WebSocketMessage::content(msg))
-                        }
-                        SubagentEvent::Iteration { iteration, .. } => Some(WebSocketMessage::text(
-                            format!("{} Iteration {} completed", task_label, iteration),
-                        )),
-                        SubagentEvent::ToolStart {
-                            tool_name,
-                            arguments,
-                            ..
-                        } => Some(WebSocketMessage::tool_start(
-                            format!("{} {}", task_label, tool_name),
+                // Convert SubagentEvent to structured WebSocketMessage
+                // No more text prefix concatenation - use dedicated message types
+                let ws_msg = match &event {
+                    SubagentEvent::Started { id, task } => {
+                        Some(WebSocketMessage::subagent_started(
+                            id.clone(),
+                            task.clone(),
+                            task_index,
+                        ))
+                    }
+                    SubagentEvent::Thinking { id, content } => {
+                        Some(WebSocketMessage::subagent_thinking(
+                            id.clone(),
+                            content.clone(),
+                        ))
+                    }
+                    SubagentEvent::Content { id, content } => {
+                        Some(WebSocketMessage::subagent_content(
+                            id.clone(),
+                            content.clone(),
+                        ))
+                    }
+                    SubagentEvent::ToolStart { id, tool_name, arguments } => {
+                        Some(WebSocketMessage::subagent_tool_start(
+                            id.clone(),
+                            tool_name.clone(),
                             arguments.clone(),
-                        )),
-                        SubagentEvent::ToolEnd {
-                            tool_name, output, ..
-                        } => Some(WebSocketMessage::tool_end(
-                            format!("{} {}", task_label, tool_name),
+                        ))
+                    }
+                    SubagentEvent::ToolEnd { id, tool_name, output } => {
+                        Some(WebSocketMessage::subagent_tool_end(
+                            id.clone(),
+                            tool_name.clone(),
                             Some(output.clone()),
-                        )),
-                        SubagentEvent::Error { error, .. } => Some(WebSocketMessage::text(
-                            format!("{} Error: {}", task_label, error),
-                        )),
-                        _ => None, // Started, Completed - don't send to WS
-                    };
+                        ))
+                    }
+                    SubagentEvent::Completed { id, result } => {
+                        // Generate brief summary (first 100 chars of content)
+                        let summary: String = result.response.content
+                            .chars()
+                            .take(100)
+                            .collect();
+                        Some(WebSocketMessage::subagent_completed(
+                            id.clone(),
+                            task_index,
+                            summary,
+                            result.response.tools_used.len() as u32,
+                        ))
+                    }
+                    SubagentEvent::Error { id, error } => {
+                        Some(WebSocketMessage::subagent_error(
+                            id.clone(),
+                            task_index,
+                            error.clone(),
+                        ))
+                    }
+                    SubagentEvent::Iteration { .. } => {
+                        // Iteration events are silently handled (not sent to frontend)
+                        None
+                    }
+                };
 
-                    // Send immediately without buffering
-                    if let Some(msg) = ws_msg {
-                        let outbound = OutboundMessage::with_ws_message(
-                            key.channel.clone(),
-                            &key.chat_id,
-                            msg,
-                        );
-                        // Use timeout + send to apply backpressure without indefinite blocking
-                        match timeout(Duration::from_millis(100), outbound_tx.send(outbound)).await
-                        {
-                            Ok(Ok(_)) => { /* sent successfully */ }
-                            Ok(Err(e)) => warn!("Outbound channel closed: {}", e),
-                            Err(_) => warn!("Send timeout after 100ms, outbound channel congested"),
-                        }
+                // Send WebSocket message immediately (no buffering)
+                if let (Some(msg), Some(key)) = (ws_msg, session_key.as_ref()) {
+                    let outbound = OutboundMessage::with_ws_message(
+                        key.channel.clone(),
+                        &key.chat_id,
+                        msg,
+                    );
+                    // Use timeout + send to apply backpressure without indefinite blocking
+                    match timeout(Duration::from_millis(100), outbound_tx.send(outbound)).await
+                    {
+                        Ok(Ok(_)) => { /* sent successfully */ }
+                        Ok(Err(e)) => warn!("Outbound channel closed: {}", e),
+                        Err(_) => warn!("Send timeout after 100ms, outbound channel congested"),
                     }
                 }
             }
