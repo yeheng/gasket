@@ -2,7 +2,7 @@
 //!
 //! Root configuration structure that composes all sub-configurations.
 //!
-//! Compatible with Python nanobot's config format (now uses YAML)
+//! Compatible with Python gasket's config format (now uses YAML)
 
 use crate::error::ConfigValidationError;
 use serde::{Deserialize, Serialize};

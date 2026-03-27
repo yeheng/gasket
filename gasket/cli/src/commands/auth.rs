@@ -59,7 +59,7 @@ pub async fn cmd_auth_copilot(pat: Option<String>, client_id: Option<String>) ->
                      Note: GitHub may restrict OAuth Device Flow for Copilot.\n\
                      Recommended: Use Personal Access Token instead:\n\n\
                      1. Create PAT at: https://github.com/settings/tokens\n\
-                     2. Run: nanobot auth copilot --pat <your-token>",
+                     2. Run: gasket auth copilot --pat <your-token>",
                     e
                 );
             }

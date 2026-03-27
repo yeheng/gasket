@@ -1,4 +1,4 @@
-//! Error types for nanobot-sandbox
+//! Error types for gasket-sandbox
 //!
 //! Provides comprehensive error handling for sandbox operations,
 //! backend failures, approval system, and audit logging.

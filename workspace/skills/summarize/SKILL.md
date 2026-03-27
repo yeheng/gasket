@@ -42,7 +42,7 @@ Example:
 # Executive Summary: Project Status Update
 
 ## Purpose
-This report summarizes the nanobot Rust migration progress for January 2024.
+This report summarizes the gasket Rust migration progress for January 2024.
 
 ## Key Findings
 - Core framework completed (100%)

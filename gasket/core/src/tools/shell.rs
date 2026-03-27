@@ -5,7 +5,7 @@
 //! 2. **Sandbox** (OS-level): bwrap namespace isolation on Linux, sandbox-exec on macOS
 //! 3. **Resource limits**: Memory, CPU time, output size, wall-clock timeout
 //!
-//! This module delegates to `nanobot-sandbox` for all sandbox execution,
+//! This module delegates to `gasket-sandbox` for all sandbox execution,
 //! eliminating code duplication and ensuring consistent security behavior.
 
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ use super::base::{simple_schema, ToolContext};
 use super::{Tool, ToolError, ToolResult};
 use crate::config::ExecToolConfig;
 
-// Re-export types from nanobot-sandbox for external use
+// Re-export types from gasket-sandbox for external use
 pub use gasket_sandbox::ProcessManager;
 // Use alias to avoid name conflict with core's SandboxConfig
 pub use gasket_sandbox::SandboxConfig as SandboxExecutorConfig;
@@ -30,7 +30,7 @@ const DANGEROUS_PATTERNS: &[&str] = &[";", "&&", "||", "`", "$(", "${", ">", ">>
 
 /// Shell execution tool with optional sandboxing.
 ///
-/// Uses `nanobot-sandbox::ProcessManager` for command execution,
+/// Uses `gasket-sandbox::ProcessManager` for command execution,
 /// providing consistent sandbox behavior across all platforms.
 pub struct ExecTool {
     working_dir: PathBuf,
@@ -56,7 +56,7 @@ impl ExecTool {
         };
         let timeout = Duration::from_secs(timeout_secs);
 
-        // Convert nanobot-core config to nanobot-sandbox config
+        // Convert gasket-core config to gasket-sandbox config
         let sandbox_config = build_sandbox_config(config, &working_dir);
 
         // Create process manager with the sandbox configuration
@@ -213,7 +213,7 @@ impl Tool for ExecTool {
             args.description
         );
 
-        // Step 2: Execute via nanobot-sandbox ProcessManager
+        // Step 2: Execute via gasket-sandbox ProcessManager
         let result = self
             .process_manager
             .execute_with_timeout(&args.command, &self.working_dir, self.timeout)
@@ -237,7 +237,7 @@ impl Tool for ExecTool {
     }
 }
 
-/// Build a nanobot-sandbox SandboxConfig from nanobot-core ExecToolConfig.
+/// Build a gasket-sandbox SandboxConfig from gasket-core ExecToolConfig.
 ///
 /// This function maps the core configuration types to the sandbox configuration,
 /// handling differences in field names and structure.

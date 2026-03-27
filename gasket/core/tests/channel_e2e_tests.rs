@@ -93,7 +93,7 @@ mod dingtalk_e2e {
         let channel = DingTalkChannel::new(config, create_test_sender());
 
         let result = channel
-            .send_text("[E2E Test] DingTalk send_text - nanobot channel test")
+            .send_text("[E2E Test] DingTalk send_text - gasket channel test")
             .await;
 
         assert!(
@@ -113,7 +113,7 @@ mod dingtalk_e2e {
         let result = channel
             .send_markdown(
                 "E2E Test",
-                "### Nanobot E2E Test\n\n- Channel: **DingTalk**\n- Type: Markdown\n- Status: OK",
+                "### gasket E2E Test\n\n- Channel: **DingTalk**\n- Type: Markdown\n- Status: OK",
             )
             .await;
 
@@ -133,7 +133,7 @@ mod dingtalk_e2e {
         let channel = DingTalkChannel::new(config, create_test_sender());
 
         let result = channel
-            .send_text("[E2E Test] DingTalk stateless send - nanobot")
+            .send_text("[E2E Test] DingTalk stateless send - gasket")
             .await;
         assert!(
             result.is_ok(),
@@ -226,7 +226,7 @@ mod feishu_e2e {
         let result = channel
             .send_text(
                 &chat_id,
-                "[E2E Test] Feishu send_text - nanobot channel test",
+                "[E2E Test] Feishu send_text - gasket channel test",
             )
             .await;
 
@@ -253,7 +253,7 @@ mod feishu_e2e {
             .expect("Feishu start failed");
 
         let result = channel
-            .send_text(&chat_id, "[E2E Test] Feishu stateless send - nanobot")
+            .send_text(&chat_id, "[E2E Test] Feishu stateless send - gasket")
             .await;
         assert!(
             result.is_ok(),
@@ -321,7 +321,7 @@ mod slack_e2e {
         let result = channel
             .send_message(
                 &channel_id,
-                "[E2E Test] Slack send_message - nanobot channel test",
+                "[E2E Test] Slack send_message - gasket channel test",
                 None,
             )
             .await;
@@ -346,7 +346,7 @@ mod slack_e2e {
         let result = channel
             .send_message(
                 &channel_id,
-                "[E2E Test] Slack thread parent - nanobot",
+                "[E2E Test] Slack thread parent - gasket",
                 None,
             )
             .await;
@@ -371,7 +371,7 @@ mod slack_e2e {
         let result = channel
             .send_message(
                 &channel_id,
-                "[E2E Test] Slack stateless send - nanobot",
+                "[E2E Test] Slack stateless send - gasket",
                 None,
             )
             .await;
@@ -396,7 +396,7 @@ mod slack_e2e {
         let result = channel
             .send_message(
                 &channel_id,
-                "[E2E Test] Slack send with metadata - nanobot",
+                "[E2E Test] Slack send with metadata - gasket",
                 None,
             )
             .await;
@@ -505,8 +505,8 @@ mod email_e2e {
         let result = channel
             .send_email(
                 &to_address,
-                "[E2E Test] Nanobot Email Channel",
-                "This is an automated E2E test from nanobot email channel.",
+                "[E2E Test] gasket Email Channel",
+                "This is an automated E2E test from gasket email channel.",
             )
             .await;
 
@@ -547,8 +547,8 @@ mod email_e2e {
         let result = channel
             .send_email(
                 &to_address,
-                "[E2E Test] Nanobot Email Stateless Send",
-                "[E2E Test] Email stateless send - nanobot",
+                "[E2E Test] gasket Email Stateless Send",
+                "[E2E Test] Email stateless send - gasket",
             )
             .await;
         assert!(
@@ -634,7 +634,7 @@ mod telegram_e2e {
         let result = telegram::send_text_stateless(
             &config.token,
             &chat_id,
-            "[E2E Test] Telegram stateless send - nanobot channel test",
+            "[E2E Test] Telegram stateless send - gasket channel test",
         )
         .await;
         assert!(result.is_ok(), "Telegram send failed: {:?}", result.err());
@@ -690,7 +690,7 @@ mod telegram_e2e {
         let chat_id = env_or_skip!("TELEGRAM_CHAT_ID");
 
         let long_content = format!(
-            "[E2E Test] Telegram long message test - nanobot\n\n{}\n\nEnd of message.",
+            "[E2E Test] Telegram long message test - gasket\n\n{}\n\nEnd of message.",
             "This is a line of test content. ".repeat(20)
         );
 
@@ -803,7 +803,7 @@ mod discord_e2e {
         );
 
         let body = serde_json::json!({
-            "content": "[E2E Test] Discord HTTP send - nanobot channel test"
+            "content": "[E2E Test] Discord HTTP send - gasket channel test"
         });
 
         let response = client
@@ -845,8 +845,8 @@ mod discord_e2e {
         let body = serde_json::json!({
             "content": "[E2E Test] Discord embed message",
             "embeds": [{
-                "title": "Nanobot E2E Test",
-                "description": "This is a test embed sent from nanobot channel e2e tests.",
+                "title": "gasket E2E Test",
+                "description": "This is a test embed sent from gasket channel e2e tests.",
                 "color": 5814783,
                 "fields": [
                     { "name": "Channel", "value": "Discord", "inline": true },
@@ -1003,7 +1003,7 @@ mod wecom_e2e {
         let result = channel
             .send_text(
                 &to_user,
-                "[E2E Test] WeCom send_text - nanobot channel test",
+                "[E2E Test] WeCom send_text - gasket channel test",
             )
             .await;
 
@@ -1025,7 +1025,7 @@ mod wecom_e2e {
         let result = channel
             .send_markdown(
                 &to_user,
-                "### Nanobot E2E Test\n\n- Channel: **WeCom**\n- Type: Markdown\n- Status: OK",
+                "### gasket E2E Test\n\n- Channel: **WeCom**\n- Type: Markdown\n- Status: OK",
             )
             .await;
 
@@ -1050,7 +1050,7 @@ mod wecom_e2e {
             .expect("WeCom start failed");
 
         let result = channel
-            .send_text(&to_user, "[E2E Test] WeCom stateless send - nanobot")
+            .send_text(&to_user, "[E2E Test] WeCom stateless send - gasket")
             .await;
         assert!(
             result.is_ok(),

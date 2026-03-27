@@ -1,6 +1,6 @@
-//! # nanobot-sandbox
+//! # gasket-sandbox
 //!
-//! Secure sandbox execution module for nanobot with multi-platform support,
+//! Secure sandbox execution module for gasket with multi-platform support,
 //! approval system, and audit logging.
 //!
 //! ## Features

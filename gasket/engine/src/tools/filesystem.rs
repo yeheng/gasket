@@ -453,7 +453,7 @@ mod tests {
     async fn test_write_file_tool() {
         let tool = WriteFileTool::new(None);
         let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join("nanobot_test_write.txt");
+        let test_file = temp_dir.join("gasket_test_write.txt");
 
         let args = serde_json::json!({
             "file_path": test_file.to_str().unwrap(),
@@ -475,7 +475,7 @@ mod tests {
     async fn test_edit_file_tool() {
         let tool = EditFileTool::new(None);
         let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join("nanobot_test_edit.txt");
+        let test_file = temp_dir.join("gasket_test_edit.txt");
 
         // Create initial file
         fs::write(&test_file, "Hello, World!").await.unwrap();
@@ -502,7 +502,7 @@ mod tests {
     async fn test_edit_file_not_found() {
         let tool = EditFileTool::new(None);
         let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join("nanobot_test_not_exist.txt");
+        let test_file = temp_dir.join("gasket_test_not_exist.txt");
 
         let _ = fs::remove_file(&test_file).await;
 
@@ -534,7 +534,7 @@ mod tests {
     async fn test_read_file_with_offset_limit() {
         let tool = ReadFileTool::new(None);
         let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join("nanobot_test_read_offset.txt");
+        let test_file = temp_dir.join("gasket_test_read_offset.txt");
 
         // Create test file
         let mut file = fs::File::create(&test_file).await.unwrap();

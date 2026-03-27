@@ -1,6 +1,6 @@
-# nanobot-sandbox
+# gasket-sandbox
 
-Secure sandbox execution module for nanobot with multi-platform support, approval system, and audit logging.
+Secure sandbox execution module for gasket with multi-platform support, approval system, and audit logging.
 
 ## Features
 
@@ -16,7 +16,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nanobot-sandbox = { path = "nanobot-sandbox" }
+gasket-sandbox = { path = "gasket-sandbox" }
 ```
 
 ## Feature Flags
@@ -31,7 +31,7 @@ nanobot-sandbox = { path = "nanobot-sandbox" }
 ## Quick Start
 
 ```rust
-use nanobot_sandbox::{ProcessManager, SandboxConfig};
+use gasket_sandbox::{ProcessManager, SandboxConfig};
 use std::path::Path;
 
 #[tokio::main]
@@ -83,7 +83,7 @@ sandbox:
   # Audit logging
   audit:
     enabled: true
-    log_file: ~/.nanobot/audit.log
+    log_file: ~/.gasket/audit.log
 ```
 
 ## Platform Support
@@ -100,7 +100,7 @@ sandbox:
 The approval system provides fine-grained permission management:
 
 ```rust
-use nanobot_sandbox::prelude::*;
+use gasket_sandbox::prelude::*;
 
 // Create approval manager
 let store = JsonPermissionStore::default_location()?;
@@ -122,7 +122,7 @@ manager.add_rule(rule).await?;
 ## Audit Logging
 
 ```rust
-use nanobot_sandbox::audit::{AuditLog, AuditEvent, AuditConfig};
+use gasket_sandbox::audit::{AuditLog, AuditEvent, AuditConfig};
 
 let config = AuditConfig::default();
 let log = AuditLog::new(&config)?;

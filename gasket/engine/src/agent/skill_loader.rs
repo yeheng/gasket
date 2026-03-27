@@ -61,13 +61,13 @@ pub async fn load_skills(workspace: &Path) -> Option<String> {
 pub fn find_builtin_skills_dir() -> Option<PathBuf> {
     // Try relative to the executable
     if let Ok(exe) = std::env::current_exe() {
-        // dev build: target/debug/nanobot → nanobot-core/skills/
+        // dev build: target/debug/gasket → gasket-core/skills/
         if let Some(project_root) = exe
             .parent()
             .and_then(|p| p.parent())
             .and_then(|p| p.parent())
         {
-            let candidate = project_root.join("nanobot-core").join("skills");
+            let candidate = project_root.join("gasket-core").join("skills");
             if candidate.exists() {
                 debug!("Found builtin skills at {:?}", candidate);
                 return Some(candidate);
@@ -77,12 +77,12 @@ pub fn find_builtin_skills_dir() -> Option<PathBuf> {
 
     // Try current working directory
     if let Ok(cwd) = std::env::current_dir() {
-        let candidate = cwd.join("nanobot-core").join("skills");
+        let candidate = cwd.join("gasket-core").join("skills");
         if candidate.exists() {
             debug!("Found builtin skills at {:?}", candidate);
             return Some(candidate);
         }
-        // Also try if we're inside nanobot-core
+        // Also try if we're inside gasket-core
         let candidate = cwd.join("skills");
         if candidate.exists() {
             debug!("Found builtin skills at {:?}", candidate);

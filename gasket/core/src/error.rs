@@ -1,4 +1,4 @@
-//! Error types for nanobot-core public APIs
+//! Error types for gasket-core public APIs
 //!
 //! This module defines specific error types using `thiserror` for better
 //! error handling and API contracts. Library crates should NOT expose

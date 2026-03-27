@@ -247,7 +247,7 @@ pub enum HookPoint {
 | `gasket-storage` | SQLite 存储 | gasket-types, sqlx |
 | `gasket-vault` | Vault 加密存储 | AES-GCM, Argon2 |
 | `gasket-channels` | 通信渠道 | teloxide, serenity, etc. |
-| `gasket-sandbox` | 沙箱执行 | nanobot-sandbox |
+| `gasket-sandbox` | 沙箱执行 | gasket-sandbox |
 | `gasket-semantic` | 语义搜索 | text-embeddings-inference |
 | `gasket-mcp` | MCP 协议 | jsonrpc-core |
 | `tantivy-mcp` | 全文搜索 MCP 服务器 | tantivy |

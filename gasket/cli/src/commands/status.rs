@@ -5,16 +5,16 @@ use colored::Colorize;
 
 use gasket_core::config::{load_config, ConfigLoader};
 
-/// Show nanobot status
+/// Show gasket status
 pub async fn cmd_status() -> Result<()> {
     let config = load_config().await.context("Failed to load config")?;
 
-    println!("🐈 nanobot status\n");
+    println!("🐈 gasket status\n");
     println!("Configuration: {:?}", ConfigLoader::new().config_path());
 
     if config.providers.is_empty() {
         println!("\n{}", "⚠️  No providers configured".yellow());
-        println!("Run 'nanobot onboard' to get started.");
+        println!("Run 'gasket onboard' to get started.");
     } else {
         println!("\nProviders:");
         for (name, provider) in &config.providers {
@@ -38,7 +38,7 @@ pub async fn cmd_auth_status() -> Result<()> {
 
     if config.providers.is_empty() {
         println!("No providers configured.");
-        println!("\nRun 'nanobot auth copilot' to authenticate with GitHub Copilot.");
+        println!("\nRun 'gasket auth copilot' to authenticate with GitHub Copilot.");
         return Ok(());
     }
 
@@ -77,8 +77,8 @@ pub async fn cmd_auth_status() -> Result<()> {
 
     println!();
     println!("Usage:");
-    println!("  nanobot auth copilot          # OAuth Device Flow");
-    println!("  nanobot auth copilot --pat    # Use Personal Access Token");
+    println!("  gasket auth copilot          # OAuth Device Flow");
+    println!("  gasket auth copilot --pat    # Use Personal Access Token");
 
     Ok(())
 }

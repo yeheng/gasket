@@ -1,6 +1,6 @@
 //! CLI 命令模块
 //!
-//! 包含所有 nanobot CLI 命令的实现。
+//! 包含所有 gasket CLI 命令的实现。
 
 mod agent;
 mod auth;

@@ -250,7 +250,7 @@ approval:
   session_timeout: 7200
 audit:
   enabled: true
-  log_file: /var/log/nanobot/audit.log
+  log_file: /var/log/gasket/audit.log
 "#;
         let config: SandboxConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(config.enabled);

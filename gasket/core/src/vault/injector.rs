@@ -81,7 +81,7 @@ impl VaultInjector {
                 // Provide more specific error messages based on failure reason
                 if vault_locked {
                     warn!(
-                        "[VaultInjector] Cannot inject key '{}': vault is locked. Run 'nanobot vault unlock' first.",
+                        "[VaultInjector] Cannot inject key '{}': vault is locked. Run 'gasket vault unlock' first.",
                         key
                     );
                 } else if self.store.exists(key) {

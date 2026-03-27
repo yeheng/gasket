@@ -15,7 +15,7 @@ async fn create_test_manager() -> SubagentManager {
         .get_or_create("openai")
         .expect("Failed to create provider");
 
-    let workspace = std::env::temp_dir().join("nanobot-test");
+    let workspace = std::env::temp_dir().join("gasket-test");
     std::fs::create_dir_all(&workspace).ok();
 
     let tools = Arc::new(ToolRegistry::new());

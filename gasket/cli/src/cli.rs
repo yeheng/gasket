@@ -2,9 +2,9 @@
 
 use clap::{Args, Parser, Subcommand};
 
-/// 🐈 nanobot - A lightweight AI assistant
+/// 🐈 gasket - A lightweight AI assistant
 #[derive(Parser)]
-#[command(name = "nanobot")]
+#[command(name = "gasket")]
 #[command(version = "2.0.0")]
 #[command(about = "A lightweight personal AI assistant", long_about = None)]
 pub struct Cli {

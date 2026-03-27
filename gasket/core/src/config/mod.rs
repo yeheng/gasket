@@ -1,6 +1,6 @@
 //! Configuration management
 //!
-//! Compatible with Python nanobot config format (`~/.gasket/config.yaml`)
+//! Compatible with Python gasket config format (`~/.gasket/config.yaml`)
 //!
 //! ## Module Structure
 //!

@@ -326,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_nonexistent_directory() {
-        let tool = MemorySearchTool::with_dir(PathBuf::from("/tmp/nonexistent_nanobot_test"));
+        let tool = MemorySearchTool::with_dir(PathBuf::from("/tmp/nonexistent_gasket_test"));
         let args = serde_json::json!({"query": "anything"});
         let result = tool.execute(args, &ToolContext::empty()).await.unwrap();
         assert!(result.contains("does not exist"));

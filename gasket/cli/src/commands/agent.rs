@@ -156,7 +156,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
         }
         None => {
             // Interactive mode
-            println!("🐈 nanobot interactive mode. Type '/help' for commands, '/exit' to quit.\n");
+            println!("🐈 gasket interactive mode. Type '/help' for commands, '/exit' to quit.\n");
 
             let mut line_editor = Reedline::create();
             let prompt =
@@ -191,7 +191,7 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         }
                         if cmd == "/help" {
                             println!(
-                                "🐈 nanobot commands:\n\
+                                "🐈 gasket commands:\n\
                                  /new  — Start a new conversation\n\
                                  /help — Show available commands\n\
                                  /exit — Exit the REPL"

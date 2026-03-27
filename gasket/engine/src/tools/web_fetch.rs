@@ -147,7 +147,7 @@ impl Tool for WebFetchTool {
         let response = self
             .client
             .get(&args.url)
-            .header("User-Agent", "Mozilla/5.0 (compatible; nanobot/2.0)")
+            .header("User-Agent", "Mozilla/5.0 (compatible; gasket/2.0)")
             .send()
             .await
             .map_err(|e| {

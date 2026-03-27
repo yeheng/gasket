@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: Helper skill for creating new nanobot skills with proper format and structure
+description: Helper skill for creating new gasket skills with proper format and structure
 always: false
 bins:
   - jq
@@ -8,7 +8,7 @@ bins:
 
 # Skill Creator
 
-This skill helps create new nanobot skills with the correct format and structure.
+This skill helps create new gasket skills with the correct format and structure.
 
 ## Skill File Structure
 
@@ -66,7 +66,7 @@ echo $ENV_VAR_NAME
 
 ```bash
 # Create skill in user skills directory
-cat > ~/.nanobot/skills/my-skill.md << 'EOF'
+cat > ~/.gasket/skills/my-skill.md << 'EOF'
 ---
 name: my-skill
 description: My custom skill description
@@ -84,7 +84,7 @@ EOF
 ### Step 4: Test the Skill
 
 ```bash
-# Reload skills (or restart nanobot)
+# Reload skills (or restart gasket)
 # Verify skill is loaded
 ```
 
@@ -188,7 +188,7 @@ Before publishing a skill, verify:
 ## Example: Creating a Docker Skill
 
 ```bash
-cat > ~/.nanobot/skills/docker/SKILL.md << 'SKILL_EOF'
+cat > ~/.gasket/skills/docker/SKILL.md << 'SKILL_EOF'
 ---
 name: docker
 description: Docker container management operations

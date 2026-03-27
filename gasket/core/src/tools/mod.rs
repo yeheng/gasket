@@ -1,7 +1,7 @@
 //! Tool system
 //!
 //! Provides various tools for the agent to interact with the environment:
-//! - `exec`: Shell command execution with sandbox support (via nanobot-sandbox)
+//! - `exec`: Shell command execution with sandbox support (via gasket-sandbox)
 //! - `filesystem`: File read/write/edit operations
 //! - `web_fetch`: Web content fetching
 //! - `web_search`: Web search
@@ -41,6 +41,6 @@ pub use spawn_parallel::SpawnParallelTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 
-// Re-export sandbox types from nanobot-sandbox for backward compatibility
+// Re-export sandbox types from gasket-sandbox for backward compatibility
 pub use gasket_sandbox::ProcessManager;
 pub use gasket_sandbox::SandboxConfig;

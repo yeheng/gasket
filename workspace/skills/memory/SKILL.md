@@ -6,7 +6,7 @@ always: false
 
 # Memory Management Skill
 
-This skill provides guidance on using nanobot's file-based long-term memory system.
+This skill provides guidance on using gasket's file-based long-term memory system.
 
 ## Overview
 
@@ -31,10 +31,10 @@ Use `write_file` or `edit_file` to update files in the memory directory:
 
 ```
 # Example: Writing to MEMORY.md
-edit_file: ~/.nanobot/memory/MEMORY.md
+edit_file: ~/.gasket/memory/MEMORY.md
 
 # Example: Creating a project-specific file
-write_file: ~/.nanobot/memory/project_alpha.md
+write_file: ~/.gasket/memory/project_alpha.md
 ```
 
 **Always read before writing** — use `read_file` first to avoid overwriting existing content.

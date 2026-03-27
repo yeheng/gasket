@@ -31,7 +31,7 @@ fn create_raw_test_sender() -> tokio::sync::mpsc::Sender<gasket_core::bus::event
 
 #[tokio::test]
 async fn test_agent_initialization() {
-    let workspace = PathBuf::from("/tmp/nanobot-test");
+    let workspace = PathBuf::from("/tmp/gasket-test");
 
     let config = gasket_core::agent::AgentConfig {
         model: "gpt-4o".to_string(),
@@ -673,11 +673,11 @@ async fn test_chat_message_system() {
 async fn test_heartbeat_service_creation() {
     use gasket_core::heartbeat::HeartbeatService;
 
-    let workspace = PathBuf::from("/tmp/nanobot-heartbeat-test");
+    let workspace = PathBuf::from("/tmp/gasket-heartbeat-test");
     let service = HeartbeatService::new(workspace);
 
     // Just verify it can be created
-    assert!(service.workspace().ends_with("nanobot-heartbeat-test"));
+    assert!(service.workspace().ends_with("gasket-heartbeat-test"));
 }
 
 // =============================================================================

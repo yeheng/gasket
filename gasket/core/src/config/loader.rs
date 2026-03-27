@@ -24,7 +24,7 @@ use super::resolver::{VaultPlaceholderResolve, VAULT_PASSWORD_ENV};
 use super::schema::Config;
 use crate::vault::VaultStore;
 
-/// Get the nanobot config directory
+/// Get the gasket config directory
 pub fn config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))

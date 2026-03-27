@@ -4,9 +4,9 @@ use anyhow::Result;
 
 use gasket_core::config::ConfigLoader;
 
-/// Initialize nanobot configuration
+/// Initialize gasket configuration
 pub async fn cmd_onboard() -> Result<()> {
-    println!("🐈 Initializing nanobot...\n");
+    println!("🐈 Initializing gasket...\n");
 
     let loader = ConfigLoader::new();
     let config_path = loader.config_path();
@@ -57,7 +57,7 @@ pub async fn cmd_onboard() -> Result<()> {
             Err(e) => {
                 println!("⚠️  Download failed: {}", e);
                 println!("You may need to manually create workspace files.");
-                println!("Templates are available at: https://github.com/yeheng/nanobot-rs/tree/main/workspace");
+                println!("Templates are available at: https://github.com/yeheng/gasket-rs/tree/main/workspace");
             }
         }
     }

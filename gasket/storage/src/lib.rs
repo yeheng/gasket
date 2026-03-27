@@ -48,9 +48,9 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     /// Create a new `SqliteStore` with the default database path
-    /// (`~/.gasket/nanobot.db`).
+    /// (`~/.gasket/gasket.db`).
     pub async fn new() -> anyhow::Result<Self> {
-        let path = config_dir().join("nanobot.db");
+        let path = config_dir().join("gasket.db");
         Self::with_path(path).await
     }
 
@@ -442,7 +442,7 @@ mod tests {
 
     pub(crate) async fn temp_store() -> SqliteStore {
         let path =
-            std::env::temp_dir().join(format!("nanobot_sqlite_test_{}.db", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("gasket_sqlite_test_{}.db", uuid::Uuid::new_v4()));
         SqliteStore::with_path(path).await.unwrap()
     }
 

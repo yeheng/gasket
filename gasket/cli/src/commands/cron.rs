@@ -21,7 +21,7 @@ pub async fn cmd_cron_list() -> Result<()> {
 
     if jobs.is_empty() {
         println!("No scheduled jobs found.");
-        println!("\nUse 'nanobot cron add' to create a new job.");
+        println!("\nUse 'gasket cron add' to create a new job.");
         return Ok(());
     }
 

@@ -194,7 +194,7 @@ pub fn find_provider(config: &Config) -> Result<ProviderInfo> {
             // No explicit provider — find an available default
             find_default_provider(config).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "No available provider configured. Run 'nanobot onboard' and add your API key to ~/.gasket/config.yaml"
+                    "No available provider configured. Run 'gasket onboard' and add your API key to ~/.gasket/config.yaml"
                 )
             })?
         }

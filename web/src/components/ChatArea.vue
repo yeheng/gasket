@@ -609,7 +609,7 @@ const clearHistory = () => {
             </Button>
           </div>
           <div class="flex items-center justify-between text-xs text-slate-500 mt-3 px-1">
-            <span class="font-medium">Powered by Nanobot-rs Web Gateway</span>
+            <span class="font-medium">Powered by gasket-rs Web Gateway</span>
             <button @click="sendOnEnter = !sendOnEnter" class="hover:text-slate-300 transition-colors"
               :title="sendOnEnter ? 'Click to switch to Cmd+Enter to send' : 'Click to switch to Enter to send'">
               {{ sendOnEnter ? `${isMac ? 'Shift' : 'Shift'}+Enter for new line` : `Enter for new line` }}

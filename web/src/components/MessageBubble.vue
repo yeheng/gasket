@@ -167,7 +167,7 @@ const hasContent = computed(() => props.message.content && props.message.content
     <!-- Header -->
     <div v-if="message.role !== 'system'" class="flex items-center gap-2 mb-2" :class="message.role === 'user' ? 'justify-end mx-1' : 'ml-0'">
       <span class="text-xs" :class="message.role === 'user' ? 'text-slate-400' : 'font-semibold text-slate-300'">
-        {{ message.role === 'user' ? 'You' : 'Nanobot' }}
+        {{ message.role === 'user' ? 'You' : 'gasket' }}
       </span>
       <span class="text-[10px] text-slate-500" :title="new Date(message.timestamp).toLocaleString()">
         {{ formatTime(message.timestamp) }}

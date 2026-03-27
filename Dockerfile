@@ -1,10 +1,9 @@
 # =============================================================================
-# nanobot Dockerfile - Multi-platform (Rust + Python)
+# gasket Dockerfile - Multi-platform (Rust)
 # =============================================================================
-# Build target: rust (default) or python
+# Build target: rust (default)
 # Usage:
-#   docker build -t nanobot .
-#   docker build -t nanobot-python --target python .
+#   docker build -t gasket .
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -20,22 +19,22 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy Cargo files first for caching
-COPY nanobot-rs/Cargo.toml nanobot-rs/Cargo.lock ./
-COPY nanobot-rs/nanobot-core/Cargo.toml ./nanobot-core/
-COPY nanobot-rs/nanobot-cli/Cargo.toml ./nanobot-cli/
+COPY gasket/Cargo.toml gasket/Cargo.lock ./
+COPY gasket/gasket-core/Cargo.toml ./gasket-core/
+COPY gasket/gasket-cli/Cargo.toml ./gasket-cli/
 
 # Create dummy files to build dependencies
-RUN mkdir -p nanobot-core/src nanobot-cli/src && \
-    echo "pub fn dummy() {}" > nanobot-core/src/lib.rs && \
-    echo "fn main() {}" > nanobot-cli/src/main.rs && \
+RUN mkdir -p gasket-core/src gasket-cli/src && \
+    echo "pub fn dummy() {}" > gasket-core/src/lib.rs && \
+    echo "fn main() {}" > gasket-cli/src/main.rs && \
     cargo build --release --features all-channels && \
-    rm -rf nanobot-core/src nanobot-cli/src
+    rm -rf gasket-core/src gasket-cli/src
 
 # Copy actual source and build
-COPY nanobot-rs/nanobot-core/src ./nanobot-core/src
-COPY nanobot-rs/nanobot-cli/src ./nanobot-cli/src
+COPY gasket/gasket-core/src ./gasket-core/src
+COPY gasket/gasket-cli/src ./gasket-cli/src
 
-RUN touch nanobot-core/src/lib.rs nanobot-cli/src/main.rs && \
+RUN touch gasket-core/src/lib.rs gasket-cli/src/main.rs && \
     cargo build --release --features all-channels
 
 # -----------------------------------------------------------------------------
@@ -51,13 +50,13 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=rust-builder /build/target/release/nanobot /usr/local/bin/nanobot
+COPY --from=rust-builder /build/target/release/gasket /usr/local/bin/gasket
 
 # Create config directory
-RUN mkdir -p /root/.nanobot
+RUN mkdir -p /root/.gasket
 
 # Gateway default port
 EXPOSE 18790
 
-ENTRYPOINT ["nanobot"]
+ENTRYPOINT ["gasket"]
 CMD ["status"]

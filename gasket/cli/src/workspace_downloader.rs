@@ -1,6 +1,6 @@
 //! Workspace template downloader from GitHub
 //!
-//! Downloads the `workspace/` directory from the nanobot repository
+//! Downloads the `workspace/` directory from the gasket repository
 //! and extracts it to the user's `~/.gasket/` directory.
 
 use std::io::Read;
@@ -59,7 +59,7 @@ impl WorkspaceDownloader {
         let response = self
             .client
             .get(&url)
-            .header("User-Agent", "nanobot-workspace-downloader/1.0")
+            .header("User-Agent", "gasket-workspace-downloader/1.0")
             .send()
             .await
             .context("Failed to download workspace templates from GitHub")?;
@@ -93,10 +93,10 @@ impl WorkspaceDownloader {
         let decoder = GzDecoder::new(tarball);
         let mut archive = tar::Archive::new(decoder);
 
-        // The tarball prefix: e.g., "nanobot-rs-main/"
+        // The tarball prefix: e.g., "gasket-rs-main/"
         let prefix = format!(
             "{}-{}/workspace/",
-            GITHUB_REPO.split('/').next_back().unwrap_or("nanobot-rs"),
+            GITHUB_REPO.split('/').next_back().unwrap_or("gasket-rs"),
             GITHUB_BRANCH
         );
 

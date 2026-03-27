@@ -1,4 +1,4 @@
-//! nanobot CLI
+//! gasket CLI
 
 use anyhow::Result;
 use clap::Parser;
@@ -92,8 +92,8 @@ async fn main() -> Result<()> {
         },
         None => {
             // No command - show help
-            println!("🐈 nanobot v2.0.0 - A lightweight AI assistant\n");
-            println!("Usage: nanobot <COMMAND>\n");
+            println!("🐈 gasket v2.0.0 - A lightweight AI assistant\n");
+            println!("Usage: gasket <COMMAND>\n");
             println!("Commands:");
             println!("  onboard   Initialize configuration");
             println!("  status    Show status");
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
             println!("  cron      Manage scheduled tasks");
             println!("  stats     Show session token usage and cost statistics");
             println!("  vault     Manage vault secrets\n");
-            println!("Run 'nanobot --help' for more information.");
+            println!("Run 'gasket --help' for more information.");
             Ok(())
         }
     }
@@ -148,7 +148,7 @@ fn init_telemetry(env_filter: EnvFilter) -> bool {
         .with_batch_exporter(exporter)
         .build();
 
-    let tracer = provider.tracer("nanobot");
+    let tracer = provider.tracer("gasket");
 
     // Set global tracer provider
     opentelemetry::global::set_tracer_provider(provider);

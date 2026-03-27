@@ -6,7 +6,7 @@ always: false
 
 # Cron Task Management Skill
 
-This skill provides guidance on managing scheduled tasks using nanobot's cron system.
+This skill provides guidance on managing scheduled tasks using gasket's cron system.
 
 ## Overview
 
@@ -116,7 +116,7 @@ chat_id: "123456"
 
 Cron jobs exist in two storage locations:
 1. **SQLite Database**: Managed by the system, typically where dynamically added jobs via tools or CLI are stored.
-2. **YAML Files**: Located in `USER_HOME/cron/*.yaml` (e.g. `~/.nanobot/cron/*.yaml`), allowing users to statically define and manage jobs via YAML configuration files.
+2. **YAML Files**: Located in `USER_HOME/cron/*.yaml` (e.g. `~/.gasket/cron/*.yaml`), allowing users to statically define and manage jobs via YAML configuration files.
 
 These jobs will survive restarts.
 
@@ -181,20 +181,20 @@ Users can also manage tasks via CLI:
 
 ```bash
 # List all tasks
-nanobot cron list
+gasket cron list
 
 # Add a task
-nanobot cron add --name "daily-reminder" --schedule "0 9 * * *" --message "Good morning!"
+gasket cron add --name "daily-reminder" --schedule "0 9 * * *" --message "Good morning!"
 
 # Remove a task
-nanobot cron remove --id <task-id>
+gasket cron remove --id <task-id>
 
 # Enable/disable
-nanobot cron enable --id <task-id>
-nanobot cron disable --id <task-id>
+gasket cron enable --id <task-id>
+gasket cron disable --id <task-id>
 
 # Run manually
-nanobot cron run --id <task-id>
+gasket cron run --id <task-id>
 ```
 
 ## Important Notes

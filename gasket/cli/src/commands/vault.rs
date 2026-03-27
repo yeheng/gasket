@@ -62,7 +62,7 @@ pub async fn cmd_vault_list() -> Result<()> {
 
     if keys.is_empty() {
         println!("No vault entries found.");
-        println!("\nUse 'nanobot vault set <key>' to create a new entry.");
+        println!("\nUse 'gasket vault set <key>' to create a new entry.");
         return Ok(());
     }
 

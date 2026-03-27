@@ -75,7 +75,7 @@ const editingName = ref('');
 
 // Load from LocalStorage with data migration
 onMounted(() => {
-  const saved = localStorage.getItem('nanobot_sessions');
+  const saved = localStorage.getItem('gasket_sessions');
   if (saved) {
     try {
       const loadedSessions = JSON.parse(saved);
@@ -100,7 +100,7 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 const debouncedSave = () => {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    localStorage.setItem('nanobot_sessions', JSON.stringify(sessions.value));
+    localStorage.setItem('gasket_sessions', JSON.stringify(sessions.value));
   }, 1000);
 };
 
@@ -113,7 +113,7 @@ const createNewSession = () => {
     id: 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
     name: `New Chat`,
     messages: [
-      { id: Date.now().toString(), role: 'system', content: 'Connected to Nanobot Gateway', timestamp: Date.now() }
+      { id: Date.now().toString(), role: 'system', content: 'Connected to gasket Gateway', timestamp: Date.now() }
     ],
     updatedAt: Date.now()
   };
@@ -292,7 +292,7 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
       <Button variant="ghost" size="icon" @click="toggleSidebar" class="text-slate-100 hover:bg-white/10">
         <Menu />
       </Button>
-      <h2 class="text-lg font-semibold bg-gradient-to-r from-blue-500 to-violet-500 bg-clip-text text-transparent">Nanobot</h2>
+      <h2 class="text-lg font-semibold bg-gradient-to-r from-blue-500 to-violet-500 bg-clip-text text-transparent">gasket</h2>
     </div>
 
     <!-- Sidebar -->
@@ -303,7 +303,7 @@ const toggleSidebar = () => isSidebarOpen.value = !isSidebarOpen.value;
       <div class="p-5 flex justify-between items-center">
         <h1 class="text-xl font-semibold flex items-center gap-2.5">
           <div class="w-6 h-6 rounded-md bg-gradient-to-br from-blue-500 to-violet-500"></div>
-          Nanobot AI
+          gasket AI
         </h1>
         <Button variant="ghost" size="icon" class="md:hidden text-slate-400" @click="toggleSidebar">
           <X class="w-5 h-5"/>

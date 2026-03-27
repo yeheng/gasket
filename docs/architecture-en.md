@@ -303,7 +303,7 @@ pub enum HookPoint {
 | `gasket-storage` | SQLite storage | gasket-types, sqlx |
 | `gasket-vault` | Vault encrypted storage | XChaCha20-Poly1305, Argon2 |
 | `gasket-channels` | Communication channels | teloxide, serenity, etc. |
-| `gasket-sandbox` | Sandbox execution | nanobot-sandbox |
+| `gasket-sandbox` | Sandbox execution | gasket-sandbox |
 | `gasket-semantic` | Semantic search | text-embeddings-inference |
 | `gasket-mcp` | MCP protocol | jsonrpc-core |
 | `tantivy-mcp` | Full-text search MCP server | tantivy |

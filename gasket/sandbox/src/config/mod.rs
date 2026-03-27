@@ -1,4 +1,4 @@
-//! Configuration types for nanobot-sandbox
+//! Configuration types for gasket-sandbox
 //!
 //! Provides configuration structures for sandbox execution,
 //! resource limits, command policies, approval system, and audit logging.
