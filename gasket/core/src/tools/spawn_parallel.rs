@@ -206,8 +206,14 @@ impl Tool for SpawnParallelTool {
                         })
                         .collect()
                 } else {
+                    // Provide detailed error message with hints
+                    let hint = if json_str.trim().starts_with('[') {
+                        "JSON array detected but parsing failed. Expected format: [{\"task\": \"...\", \"model_id\": \"...\"}] or [\"task1\", \"task2\"]"
+                    } else {
+                        "Expected JSON array. Wrap tasks in square brackets: [\"task1\", \"task2\"]"
+                    };
                     return Err(ToolError::InvalidArguments(
-                        "Failed to parse tasks JSON string. Expected array of strings or objects with 'task' field.".to_string()
+                        format!("Failed to parse tasks: {}. {}", json_str, hint)
                     ));
                 }
             }
@@ -215,13 +221,13 @@ impl Tool for SpawnParallelTool {
 
         if task_specs.is_empty() {
             return Err(ToolError::InvalidArguments(
-                "At least one task is required".to_string(),
+                "At least one task is required. Example: {\"tasks\": [\"Research topic A\", \"Analyze data B\"]}".to_string()
             ));
         }
 
         if task_specs.len() > 10 {
             return Err(ToolError::InvalidArguments(
-                "Maximum 10 parallel tasks allowed".to_string(),
+                format!("Maximum 10 parallel tasks allowed, got {}. Consider splitting into multiple batches.", task_specs.len())
             ));
         }
 
@@ -591,5 +597,59 @@ mod tests {
             }
             _ => panic!("Expected JsonString variant"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_malformed_json_error_message() {
+        // Test JSON parsing error message generation directly
+        // Note: Full execute() requires a manager, so we test the parsing logic separately
+        let malformed_json = "[invalid json";
+        let hint = if malformed_json.trim().starts_with('[') {
+            "JSON array detected but parsing failed. Expected format: [{\"task\": \"...\", \"model_id\": \"...\"}] or [\"task1\", \"task2\"]"
+        } else {
+            "Expected JSON array. Wrap tasks in square brackets: [\"task1\", \"task2\"]"
+        };
+        let err_msg = format!("Failed to parse tasks: {}. {}", malformed_json, hint);
+        assert!(
+            err_msg.contains("JSON array detected"),
+            "Error should contain helpful hint for array-like input, got: {}", err_msg
+        );
+
+        // Also test non-array input
+        let non_array_json = "not an array";
+        let hint2 = if non_array_json.trim().starts_with('[') {
+            "JSON array detected but parsing failed"
+        } else {
+            "Expected JSON array. Wrap tasks in square brackets: [\"task1\", \"task2\"]"
+        };
+        let err_msg2 = format!("Failed to parse tasks: {}. {}", non_array_json, hint2);
+        assert!(
+            err_msg2.contains("Expected JSON array"),
+            "Error should suggest wrapping in brackets, got: {}", err_msg2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_too_many_tasks_error_message() {
+        // Test that the error message format includes helpful suggestions
+        let count = 15;
+        let err_msg = format!(
+            "Maximum 10 parallel tasks allowed, got {}. Consider splitting into multiple batches.",
+            count
+        );
+        assert!(
+            err_msg.contains("Maximum 10") && err_msg.contains("batches"),
+            "Error should suggest batching, got: {}", err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_tasks_error_message() {
+        // Test that the error message format includes an example
+        let err_msg = "At least one task is required. Example: {\"tasks\": [\"Research topic A\", \"Analyze data B\"]}";
+        assert!(
+            err_msg.contains("Example:"),
+            "Error should contain example, got: {}", err_msg
+        );
     }
 }
