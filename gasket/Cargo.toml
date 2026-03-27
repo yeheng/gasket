@@ -21,7 +21,8 @@ members = [
     "providers",
     "channels",
     "sandbox",
-    "tantivy"
+    "tantivy",
+    "history",
 ]
 
 [profile.release]
