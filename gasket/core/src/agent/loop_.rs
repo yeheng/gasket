@@ -459,24 +459,13 @@ impl AgentLoop {
     ) -> Result<AgentResponse, AgentError> {
         let session_key_str = session_key.to_string();
 
-        // ── 1. Build initial mutable context for hooks ─────────────
-        let mut messages: Vec<ChatMessage> = vec![ChatMessage::user(content)];
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut messages,
-            user_input: Some(content),
-            response: None,
-            tool_calls: None,
-            token_usage: None,
-        };
-
-        // ── 2. BeforeRequest hooks (can modify input or abort) ─────
-        match self
-            .hooks
-            .execute(HookPoint::BeforeRequest, &mut ctx)
-            .await?
+        // Phase 1: Prepare context and execute BeforeRequest hooks
+        let (content, _initial_messages) = match self
+            .prepare_request_context(content, &session_key_str)
+            .await
         {
-            HookAction::Abort(msg) => {
+            Ok(result) => result,
+            Err(AgentError::AbortedByHook(msg)) => {
                 return Ok(AgentResponse {
                     content: msg,
                     reasoning_content: None,
@@ -486,136 +475,22 @@ impl AgentLoop {
                     cost: 0.0,
                 });
             }
-            HookAction::Continue => {}
-        }
-
-        // Get the (possibly modified) user content
-        let content: String = ctx
-            .messages
-            .iter()
-            .find(|m| m.role == crate::providers::MessageRole::User)
-            .and_then(|m| m.content.clone())
-            .unwrap_or_else(|| content.to_string());
-
-        // ── 3. Load session history (enum dispatch) ─────
-        let history_events = self.context.get_history(&session_key_str, None).await;
-
-        // ── 4. Save user event ────────────────
-        let user_event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: session_key_str.clone(),
-            parent_id: None,
-            event_type: EventType::UserMessage,
-            content: content.clone(),
-            embedding: None,
-            metadata: EventMetadata::default(),
-            created_at: chrono::Utc::now(),
+            Err(e) => return Err(e),
         };
-        self.context.save_event(user_event).await?;
 
-        // ── 5. Truncate history (pure computation) ─────────────────
-        // TODO: Implement event-based history processing
-        let history_snapshot: Vec<SessionEvent> = history_events
-            .into_iter()
-            .rev()
-            .take(self.config.memory_window)
-            .rev()
-            .collect();
-
-        // ── 6. TODO: Load existing summary + spawn background compression ─────
-        // Summaries are now stored as events - need to query for summary events
-        let summary: Option<String> = None;
-
-        // ── 7. Inject system prompts (direct) ──────────────────────
-        let mut system_prompts = Vec::new();
-        if !self.system_prompt.is_empty() {
-            system_prompts.push(self.system_prompt.clone());
-        }
-        if let Some(ref skills) = self.skills_context {
-            system_prompts.push(skills.clone());
-        }
-
-        // ── 8. Assemble prompt (pure, synchronous) ─────────────────
-        let mut messages = Self::assemble_prompt(
-            history_snapshot,
-            &content,
-            &system_prompts,
-            summary.as_deref(),
-            None, // History recall is now handled by hooks
-        );
-
-        // ── 9. AfterHistory hooks (semantic recall, etc.) ───────────
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut messages,
-            user_input: Some(&content),
-            response: None,
-            tool_calls: None,
-            token_usage: None,
-        };
-        self.hooks
-            .execute(HookPoint::AfterHistory, &mut ctx)
+        // Phase 2: Load history, save events, assemble prompt
+        let messages = self
+            .process_history_phase(&session_key_str, &content)
             .await?;
 
-        // ── 10. BeforeLLM hooks (vault injection, etc.) ────────────
-        self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
-
-        // Get vault values for log redaction
-        let local_vault_values = self.vault_values.read().await.clone();
-
-        // ── 11. Run agent loop ─────────────────────────────────────
-        let result = self.run_agent_loop(messages, &local_vault_values).await?;
-
-        // ── 12. Save assistant event FIRST (critical data safety) ───────
-        // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
-        // This ensures that if external shell hooks hang or panic, the expensive
-        // LLM response is already saved to SQLite and won't be lost.
-        let history_content = redact_secrets(&result.content, &local_vault_values);
-        let assistant_event = SessionEvent {
-            id: uuid::Uuid::now_v7(),
-            session_key: session_key_str.clone(),
-            parent_id: None,
-            event_type: EventType::AssistantMessage,
-            content: history_content,
-            embedding: None,
-            metadata: EventMetadata {
-                tools_used: result.tools_used.clone(),
-                ..Default::default()
-            },
-            created_at: chrono::Utc::now(),
-        };
-        self.context.save_event(assistant_event).await?;
-
-        // ── 13. AfterResponse hooks (audit, logging, etc.) ────────
-        let tools_used: Vec<crate::hooks::ToolCallInfo> = result
-            .tools_used
-            .iter()
-            .map(|name| crate::hooks::ToolCallInfo {
-                id: name.clone(),
-                name: name.clone(),
-                arguments: None,
-            })
-            .collect();
-
-        let mut ctx = MutableContext {
-            session_key: &session_key_str,
-            messages: &mut vec![],
-            user_input: Some(&content),
-            response: Some(&result.content),
-            tool_calls: Some(&tools_used),
-            token_usage: result.token_usage.as_ref(),
-        };
-        self.hooks
-            .execute(HookPoint::AfterResponse, &mut ctx)
+        // Phase 3: Execute LLM loop
+        let result = self
+            .execute_llm_phase(messages, &content, &session_key_str)
             .await?;
 
-        // Log token usage if available
-        if let Some(ref usage) = result.token_usage {
-            info!(
-                "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-                usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
-            );
-        }
+        // Phase 4: Save response and execute AfterResponse hooks
+        self.finalize_response_phase(&result, &content, &session_key_str)
+            .await?;
 
         Ok(AgentResponse {
             content: result.content.clone(),
@@ -884,6 +759,193 @@ impl AgentLoop {
     }
 
     // Note: handle_tool_calls was moved to executor_core.rs as part of the AgentExecutor refactoring.
+
+    // ── Phase Helper Methods ─────────────────────────────────────────────
+
+    /// Phase 1: Prepare request context and execute BeforeRequest hooks.
+    ///
+    /// Returns the (possibly modified) content and initial messages.
+    async fn prepare_request_context(
+        &self,
+        content: &str,
+        session_key_str: &str,
+    ) -> Result<(String, Vec<ChatMessage>), AgentError> {
+        // Build initial mutable context for hooks
+        let mut messages: Vec<ChatMessage> = vec![ChatMessage::user(content)];
+        let mut ctx = MutableContext {
+            session_key: session_key_str,
+            messages: &mut messages,
+            user_input: Some(content),
+            response: None,
+            tool_calls: None,
+            token_usage: None,
+        };
+
+        // Execute BeforeRequest hooks (can modify input or abort)
+        match self.hooks.execute(HookPoint::BeforeRequest, &mut ctx).await? {
+            HookAction::Abort(msg) => {
+                return Err(AgentError::AbortedByHook(msg));
+            }
+            HookAction::Continue => {}
+        }
+
+        // Get the (possibly modified) user content
+        let modified_content = ctx
+            .messages
+            .iter()
+            .find(|m| m.role == crate::providers::MessageRole::User)
+            .and_then(|m| m.content.clone())
+            .unwrap_or_else(|| content.to_string());
+
+        Ok((modified_content, messages))
+    }
+
+    /// Phase 2: Load session history, save user event, and assemble prompt.
+    ///
+    /// Returns the assembled messages ready for LLM.
+    async fn process_history_phase(
+        &self,
+        session_key_str: &str,
+        content: &str,
+    ) -> Result<Vec<ChatMessage>, AgentError> {
+        // Load session history
+        let history_events = self.context.get_history(session_key_str, None).await;
+
+        // Save user event
+        let user_event = SessionEvent {
+            id: uuid::Uuid::now_v7(),
+            session_key: session_key_str.to_string(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: content.to_string(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: chrono::Utc::now(),
+        };
+        self.context.save_event(user_event).await?;
+
+        // Truncate history
+        let history_snapshot: Vec<SessionEvent> = history_events
+            .into_iter()
+            .rev()
+            .take(self.config.memory_window)
+            .rev()
+            .collect();
+
+        // Load existing summary (TODO: implement event-based summary)
+        let summary: Option<String> = None;
+
+        // Inject system prompts
+        let mut system_prompts = Vec::new();
+        if !self.system_prompt.is_empty() {
+            system_prompts.push(self.system_prompt.clone());
+        }
+        if let Some(ref skills) = self.skills_context {
+            system_prompts.push(skills.clone());
+        }
+
+        // Assemble prompt
+        let messages = Self::assemble_prompt(
+            history_snapshot,
+            content,
+            &system_prompts,
+            summary.as_deref(),
+            None,
+        );
+
+        Ok(messages)
+    }
+
+    /// Phase 3: Execute hooks and LLM loop.
+    ///
+    /// Returns the agent loop result.
+    async fn execute_llm_phase(
+        &self,
+        mut messages: Vec<ChatMessage>,
+        content: &str,
+        session_key_str: &str,
+    ) -> Result<AgentLoopResult, AgentError> {
+        // Execute AfterHistory hooks
+        let mut ctx = MutableContext {
+            session_key: session_key_str,
+            messages: &mut messages,
+            user_input: Some(content),
+            response: None,
+            tool_calls: None,
+            token_usage: None,
+        };
+        self.hooks.execute(HookPoint::AfterHistory, &mut ctx).await?;
+
+        // Execute BeforeLLM hooks (vault injection)
+        self.hooks.execute(HookPoint::BeforeLLM, &mut ctx).await?;
+
+        // Get vault values for log redaction
+        let local_vault_values = self.vault_values.read().await.clone();
+
+        // Run agent loop
+        let result = self.run_agent_loop(messages, &local_vault_values).await?;
+
+        Ok(result)
+    }
+
+    /// Phase 4: Save response and execute AfterResponse hooks.
+    async fn finalize_response_phase(
+        &self,
+        result: &AgentLoopResult,
+        content: &str,
+        session_key_str: &str,
+    ) -> Result<(), AgentError> {
+        // Get vault values for log redaction
+        let local_vault_values = self.vault_values.read().await.clone();
+
+        // Save assistant event FIRST (critical data safety)
+        let history_content = redact_secrets(&result.content, &local_vault_values);
+        let assistant_event = SessionEvent {
+            id: uuid::Uuid::now_v7(),
+            session_key: session_key_str.to_string(),
+            parent_id: None,
+            event_type: EventType::AssistantMessage,
+            content: history_content,
+            embedding: None,
+            metadata: EventMetadata {
+                tools_used: result.tools_used.clone(),
+                ..Default::default()
+            },
+            created_at: chrono::Utc::now(),
+        };
+        self.context.save_event(assistant_event).await?;
+
+        // Execute AfterResponse hooks
+        let tools_used: Vec<crate::hooks::ToolCallInfo> = result
+            .tools_used
+            .iter()
+            .map(|name| crate::hooks::ToolCallInfo {
+                id: name.clone(),
+                name: name.clone(),
+                arguments: None,
+            })
+            .collect();
+
+        let mut ctx = MutableContext {
+            session_key: session_key_str,
+            messages: &mut vec![],
+            user_input: Some(content),
+            response: Some(&result.content),
+            tool_calls: Some(&tools_used),
+            token_usage: result.token_usage.as_ref(),
+        };
+        self.hooks.execute(HookPoint::AfterResponse, &mut ctx).await?;
+
+        // Log token usage
+        if let Some(ref usage) = result.token_usage {
+            info!(
+                "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
+                usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
+            );
+        }
+
+        Ok(())
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────
