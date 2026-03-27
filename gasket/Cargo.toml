@@ -16,6 +16,7 @@ members = [
     "storage",
     "semantic",
     "bus",
+    "engine",
     "core",
     "cli",
     "providers",
@@ -105,6 +106,9 @@ gasket-core = { path = "core" }
 gasket-providers = { path = "providers" }
 gasket-channels = { path = "channels" }
 gasket-sandbox = { path = "sandbox" }
+gasket-bus = { path = "bus" }
+gasket-history = { path = "history" }
+gasket-engine = { path = "engine" }
 
 # Markdown rendering
 termimad = "0.34.1"

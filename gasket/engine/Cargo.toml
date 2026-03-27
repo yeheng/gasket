@@ -1,0 +1,53 @@
+[package]
+name = "gasket-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core execution engine for gasket"
+
+[dependencies]
+gasket-types = { path = "../types" }
+gasket-bus = { path = "../bus" }
+gasket-history = { path = "../history" }
+gasket-storage = { path = "../storage" }
+gasket-semantic = { path = "../semantic" }
+gasket-providers = { path = "../providers" }
+gasket-sandbox = { path = "../sandbox" }
+gasket-core = { path = "../core" }
+gasket-vault = { path = "../vault" }
+gasket-channels = { path = "../channels" }
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+dashmap = "6"
+tiktoken-rs = "0.9"
+parking_lot = "0.12"
+regex = "1"
+which = "8.0"
+html2text = "0.16"
+bytes = "1"
+cron.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+url.workspace = true
+urlencoding = "2.1"
+serde_yaml = "0.9.33"
+json5 = "1.3"
+base64 = "0.22"
+futures = "0.3"
+tokio-stream = "0.1.18"
+reqwest.workspace = true
+dirs.workspace = true
+
+[features]
+default = []
+smart-model-selection = []
+provider-gemini = ["gasket-providers/provider-gemini"]
+provider-copilot = ["gasket-providers/provider-copilot"]
+all-providers = ["gasket-providers/all-providers"]
