@@ -627,45 +627,13 @@ impl AgentLoop {
         })
     }
 
-    /// Process a message with streaming callback.
-    ///
-    /// **Legacy method**: uses synchronous callback which cannot .await.
-    /// For proper backpressure, use `process_direct_streaming_with_channel` instead.
-    pub async fn process_direct_streaming<F>(
-        &self,
-        content: &str,
-        session_key: &SessionKey,
-        mut callback: F,
-    ) -> Result<AgentResponse, AgentError>
-    where
-        F: FnMut(stream::StreamEvent) + Send + 'static,
-    {
-        // For backward compatibility: spawn a task to forward events to callback
-        let (mut event_rx, result_handle) = self
-            .process_direct_streaming_with_channel(content, session_key)
-            .await?;
-
-        // Forward events to callback (this is the old behavior, kept for CLI)
-        let forward_handle = tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                callback(event);
-            }
-        });
-
-        // Wait for forwarding to complete and get final result
-        let (result, _) = tokio::join!(result_handle, forward_handle);
-        result.map_err(|e| AgentError::Other(format!("Task join error: {}", e)))?
-    }
-
     /// Process a message with streaming and return a channel for events.
     ///
-    /// This is the preferred method for Gateway mode. It returns:
+    /// This is the preferred method for streaming. It returns:
     /// - `mpsc::Receiver<StreamEvent>` - for consuming stream events with .await
     /// - `JoinHandle<Result<AgentResponse>>` - final result after streaming completes
     ///
     /// The caller can now await each event send, providing proper backpressure.
-    ///
-    /// ## Usage in SessionActor
     pub async fn process_direct_streaming_with_channel(
         &self,
         content: &str,

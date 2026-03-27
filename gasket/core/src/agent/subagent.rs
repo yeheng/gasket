@@ -357,17 +357,26 @@ impl<'a> SubagentTaskBuilder<'a> {
             let timeout_duration = std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS);
 
             // Use streaming if event_tx is provided
-            let response = if let Some(ref tx) = event_tx {
+            let response: Result<
+                Result<crate::agent::AgentResponse, crate::error::AgentError>,
+                anyhow::Error,
+            > = if let Some(ref tx) = event_tx {
                 let tx_clone = tx.clone();
                 let id_clone = self.subagent_id.clone();
                 let iteration_counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
                 let cancellation_token_clone = cancellation_token.clone();
 
-                let future =
-                    agent.process_direct_streaming(&self.task, &session_key, move |event| {
+                // Use channel-based streaming API
+                let (mut event_rx, result_handle) = agent
+                    .process_direct_streaming_with_channel(&self.task, &session_key)
+                    .await
+                    .expect("Failed to create streaming channel");
+
+                // Spawn task to forward events from channel to callback logic
+                let forward_handle = tokio::spawn(async move {
+                    while let Some(event) = event_rx.recv().await {
                         match event {
                             StreamEvent::Content(content) => {
-                                // Forward LLM output content to main agent
                                 let _ = tx_clone.try_send(SubagentEvent::Content {
                                     id: id_clone.clone(),
                                     content,
@@ -394,7 +403,6 @@ impl<'a> SubagentTaskBuilder<'a> {
                                 });
                             }
                             StreamEvent::Done => {
-                                // Track iteration completion for multi-turn conversations
                                 let iter = iteration_counter
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                                     + 1;
@@ -403,11 +411,10 @@ impl<'a> SubagentTaskBuilder<'a> {
                                     iteration: iter,
                                 });
                             }
-                            StreamEvent::TokenStats { .. } => {
-                                // Token stats can be ignored for subagent events
-                            }
+                            StreamEvent::TokenStats { .. } => {}
                         }
-                    });
+                    }
+                });
 
                 // Use tokio::select! to handle both timeout and cancellation
                 let result = if let Some(ref token) = cancellation_token_clone {
@@ -416,20 +423,22 @@ impl<'a> SubagentTaskBuilder<'a> {
                         biased;
                         _ = token_clone.cancelled() => {
                             warn!("[Subagent {}] Cancelled during execution", self.subagent_id);
-                            // Return a custom error to distinguish cancellation from timeout
                             Err(anyhow::anyhow!("cancelled"))
                         }
-                        result = tokio::time::timeout(timeout_duration, future) => {
+                        result = tokio::time::timeout(timeout_duration, result_handle) => {
                             result.map_err(|_| anyhow::anyhow!("timed out"))
                         }
                     }
                 } else {
-                    tokio::time::timeout(timeout_duration, future)
+                    tokio::time::timeout(timeout_duration, result_handle)
                         .await
                         .map_err(|_| anyhow::anyhow!("timed out"))
                 };
 
-                match result {
+                // Wait for forward task to complete
+                let _ = forward_handle.await;
+
+                Ok(match result {
                     Ok(Ok(resp)) => resp,
                     Ok(Err(e)) => {
                         warn!("[Subagent {}] Execution failed: {}", self.subagent_id, e);
@@ -493,7 +502,7 @@ impl<'a> SubagentTaskBuilder<'a> {
                             return;
                         }
                     }
-                }
+                })
             } else {
                 // Non-streaming path
                 let result = tokio::time::timeout(
@@ -502,7 +511,7 @@ impl<'a> SubagentTaskBuilder<'a> {
                 )
                 .await;
 
-                match result {
+                Ok(Ok(match result {
                     Ok(Ok(resp)) => resp,
                     Ok(Err(e)) => {
                         warn!("[Subagent {}] Execution failed: {}", self.subagent_id, e);
@@ -537,13 +546,15 @@ impl<'a> SubagentTaskBuilder<'a> {
                             .await;
                         return;
                     }
-                }
+                }))
             };
 
             let subagent_result = SubagentResult {
                 id: self.subagent_id.clone(),
                 task: task_clone,
-                response: response.clone(),
+                response: response
+                    .expect("Failed to get response")
+                    .expect("Response is Ok"),
                 model: Some(model_name),
             };
 
@@ -919,15 +930,32 @@ impl SubagentManager {
 
         let session_key = SessionKey::new(crate::bus::ChannelType::Cli, "model_switch_streaming");
 
-        tokio::time::timeout(
-            std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS),
-            agent.process_direct_streaming(prompt_text, &session_key, move |event| {
+        // Use channel-based streaming API
+        let (mut event_rx, result_handle) = agent
+            .process_direct_streaming_with_channel(prompt_text, &session_key)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        // Forward events to callback
+        let forward_handle = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
                 stream_callback(event);
-            }),
+            }
+        });
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(SUBAGENT_TIMEOUT_SECS),
+            async {
+                let (result, _) = tokio::join!(result_handle, forward_handle);
+                result.map_err(|e| anyhow::anyhow!("{}", e))
+            },
         )
         .await
-        .map_err(|_| anyhow::anyhow!("Model switch task timed out after {SUBAGENT_TIMEOUT_SECS}s"))?
-        .map_err(|e| anyhow::anyhow!("{}", e))
+        .map_err(|_| {
+            anyhow::anyhow!("Model switch task timed out after {SUBAGENT_TIMEOUT_SECS}s")
+        })??;
+
+        Ok(result?)
     }
 
     /// Send a WebSocket message to the outbound channel.

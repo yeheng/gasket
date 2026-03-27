@@ -111,30 +111,44 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
             info!("Processing message: {}", msg);
             let session_key = SessionKey::new(gasket_core::bus::events::ChannelType::Cli, "direct");
             if use_streaming {
-                agent
-                    .process_direct_streaming(&msg, &session_key, |event| match event {
-                        StreamEvent::Content(text) => print!("{}", text),
-                        StreamEvent::Reasoning(text) => {
-                            eprint!("{}", text.dimmed().italic());
-                            std::io::stderr().flush().ok();
-                        }
-                        StreamEvent::TokenStats {
-                            input_tokens,
-                            output_tokens,
-                            total_tokens,
-                            cost,
-                            currency,
-                        } => {
-                            let symbol = if currency == "CNY" { "¥" } else { "$" };
-                            eprintln!(
-                                "\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
-                                input_tokens, output_tokens, total_tokens, symbol, cost
-                            );
-                        }
-                        StreamEvent::Done => println!(),
-                        _ => {}
-                    })
+                // Use channel-based streaming API
+                let (mut event_rx, result_handle) = agent
+                    .process_direct_streaming_with_channel(&msg, &session_key)
                     .await?;
+
+                // Forward events to callback
+                let forward_handle = tokio::spawn(async move {
+                    while let Some(event) = event_rx.recv().await {
+                        match event {
+                            StreamEvent::Content(text) => print!("{}", text),
+                            StreamEvent::Reasoning(text) => {
+                                eprint!("{}", text.dimmed().italic());
+                                std::io::stderr().flush().ok();
+                            }
+                            StreamEvent::TokenStats {
+                                input_tokens,
+                                output_tokens,
+                                total_tokens,
+                                cost,
+                                currency,
+                            } => {
+                                let symbol = if currency == "CNY" { "¥" } else { "$" };
+                                eprintln!(
+                                    "\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
+                                    input_tokens, output_tokens, total_tokens, symbol, cost
+                                );
+                            }
+                            StreamEvent::Done => println!(),
+                            _ => {}
+                        }
+                    }
+                });
+
+                // Wait for streaming to complete
+                let (result, _) = tokio::join!(result_handle, forward_handle);
+                if let Err(e) = result {
+                    return Err(anyhow::anyhow!("Task join error: {}", e));
+                }
             } else {
                 let response = agent.process_direct(&msg, &session_key).await?;
                 print_response_with_reasoning(&response, render_md);
@@ -188,27 +202,54 @@ pub async fn cmd_agent(opts: AgentOptions) -> Result<()> {
                         // Process the message
                         if use_streaming {
                             println!();
-                            match agent.process_direct_streaming(line, &interactive_session, |event| {
-                                match event {
-                                    StreamEvent::Content(text) => {
-                                        print!("{}", text);
-                                        std::io::stdout().flush().ok();
+                            // Use channel-based streaming API
+                            let streaming_result = agent
+                                .process_direct_streaming_with_channel(line, &interactive_session)
+                                .await;
+
+                            match streaming_result {
+                                Ok((mut event_rx, result_handle)) => {
+                                    // Forward events to callback
+                                    let forward_handle = tokio::spawn(async move {
+                                        while let Some(event) = event_rx.recv().await {
+                                            match event {
+                                                StreamEvent::Content(text) => {
+                                                    print!("{}", text);
+                                                    std::io::stdout().flush().ok();
+                                                }
+                                                StreamEvent::Reasoning(text) => {
+                                                    eprint!("{}", text.dimmed().italic());
+                                                    std::io::stderr().flush().ok();
+                                                }
+                                                StreamEvent::TokenStats {
+                                                    input_tokens,
+                                                    output_tokens,
+                                                    total_tokens,
+                                                    cost,
+                                                    currency,
+                                                } => {
+                                                    let symbol =
+                                                        if currency == "CNY" { "¥" } else { "$" };
+                                                    eprintln!("\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
+                                                        input_tokens, output_tokens, total_tokens, symbol, cost);
+                                                }
+                                                StreamEvent::Done => {}
+                                                _ => {}
+                                            }
+                                        }
+                                    });
+
+                                    // Wait for streaming to complete
+                                    let (result, _) = tokio::join!(result_handle, forward_handle);
+                                    if result.is_ok() {
+                                        println!("\n");
+                                    } else if let Err(e) = result {
+                                        println!("\n{} {}\n", "Error:".red(), e);
                                     }
-                                    StreamEvent::Reasoning(text) => {
-                                        eprint!("{}", text.dimmed().italic());
-                                        std::io::stderr().flush().ok();
-                                    }
-                                    StreamEvent::TokenStats { input_tokens, output_tokens, total_tokens, cost, currency } => {
-                                        let symbol = if currency == "CNY" { "¥" } else { "$" };
-                                        eprintln!("\n[Token] Input: {} | Output: {} | Total: {} | Cost: {}{:.4}",
-                                            input_tokens, output_tokens, total_tokens, symbol, cost);
-                                    }
-                                    StreamEvent::Done => {}
-                                    _ => {}
                                 }
-                            }).await {
-                                Ok(_) => println!("\n"),
-                                Err(e) => println!("\n{} {}\n", "Error:".red(), e),
+                                Err(e) => {
+                                    println!("\n{} {}\n", "Error:".red(), e);
+                                }
                             }
                         } else {
                             match agent.process_direct(line, &interactive_session).await {
