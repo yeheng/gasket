@@ -16,24 +16,49 @@ This document describes the migration strategy to transform `gasket-core` into a
 2. **Incomplete Migration**: Code has been copied to `gasket-engine` but still uses `use gasket_core::*` imports
 3. **gasket-core Retains Local Modules**: `agent/`, `tools/`, `skills/`, `hooks/`, `cron/` etc. still exist in core
 
+### Module Location Analysis
+
+| Module | gasket-core | gasket-engine | gasket-history | Status |
+|--------|-------------|---------------|----------------|--------|
+| `agent/` | ✅ Local | ✅ Copied (uses core) | - | Needs migration |
+| `tools/` | ✅ Local | ✅ Copied (uses core) | - | Needs migration |
+| `hooks/` | ✅ Local | 📁 Empty dir | - | Needs migration |
+| `skills/` | ✅ Local | 📁 Empty dir | - | Needs migration |
+| `cron/` | ✅ Local | 📁 Empty dir | - | Needs migration |
+| `error.rs` | ✅ Local | ❌ Missing | - | Needs migration |
+| `token_tracker.rs` | ✅ Local | ❌ Missing | - | Needs migration |
+| `memory/` | ✅ Re-export | ❌ Missing | - | Needs migration |
+| `search/` | ✅ Re-export | ❌ Missing | ✅ Implemented | **Already correct** |
+| `config/` | ✅ Local | ❌ Missing | - | Needs migration |
+| `vault/` | ✅ Local | ❌ Missing | - | Needs migration |
+
+**Key Findings:**
+- `gasket-core/src/search/mod.rs` is already a re-export from `gasket-history` and `gasket-semantic`
+- `gasket-engine/src/` has empty placeholder directories: `cron/`, `hooks/`, `skills/`
+- `config/` is used by `tools/shell.rs` via `gasket_core::config::ExecToolConfig`
+
 ### Current Dependencies in gasket-engine
 
 16 places use `use gasket_core::*`:
 
-| File | Import |
-|------|--------|
-| `agent/context.rs` | `gasket_core::error::AgentError` |
-| `agent/pipeline.rs` | `gasket_core::error::AgentError` |
-| `agent/skill_loader.rs` | `gasket_core::skills::{SkillsLoader, SkillsRegistry}` |
-| `agent/summarization.rs` | `gasket_core::memory::SqliteStore`, `gasket_core::search::*` |
-| `agent/subagent.rs` | `gasket_core::hooks::HookRegistry` |
-| `agent/loop_.rs` | `gasket_core::error::AgentError`, `gasket_core::hooks::*`, `gasket_core::vault::*` |
-| `agent/executor_core.rs` | `gasket_core::error::AgentError`, `gasket_core::token_tracker::*` |
-| `agent/memory.rs` | `gasket_core::memory::SqliteStore` |
-| `tools/cron.rs` | `gasket_core::cron::CronService` |
-| `tools/registry.rs` | `gasket_core::search::*` |
-| `tools/history_search.rs` | `gasket_core::memory::SqliteStore` |
-| `tools/shell.rs` | `gasket_core::config::ExecToolConfig` |
+| File | Import | Module Location |
+|------|--------|-----------------|
+| `agent/context.rs` | `gasket_core::error::AgentError` | core/error.rs |
+| `agent/pipeline.rs` | `gasket_core::error::AgentError` | core/error.rs |
+| `agent/skill_loader.rs` | `gasket_core::skills::{SkillsLoader, SkillsRegistry}` | core/skills/ |
+| `agent/summarization.rs` | `gasket_core::memory::SqliteStore` | core/memory/ (re-export) |
+| `agent/summarization.rs` | `gasket_core::search::*` | Already in history/semantic |
+| `agent/subagent.rs` | `gasket_core::hooks::HookRegistry` | core/hooks/ |
+| `agent/loop_.rs` | `gasket_core::error::AgentError` | core/error.rs |
+| `agent/loop_.rs` | `gasket_core::hooks::*` | core/hooks/ |
+| `agent/loop_.rs` | `gasket_core::vault::*` | core/vault/ |
+| `agent/executor_core.rs` | `gasket_core::error::AgentError` | core/error.rs |
+| `agent/executor_core.rs` | `gasket_core::token_tracker::*` | core/token_tracker.rs |
+| `agent/memory.rs` | `gasket_core::memory::SqliteStore` | core/memory/ (re-export) |
+| `tools/cron.rs` | `gasket_core::cron::CronService` | core/cron/ |
+| `tools/registry.rs` | `gasket_core::search::*` | Already in history/semantic |
+| `tools/history_search.rs` | `gasket_core::memory::SqliteStore` | core/memory/ (re-export) |
+| `tools/shell.rs` | `gasket_core::config::ExecToolConfig` | core/config/ |
 
 ## Target Architecture
 
@@ -48,6 +73,7 @@ This document describes the migration strategy to transform `gasket-core` into a
 │                      gasket-core                             │
 │                    (Facade Layer)                            │
 │  Re-exports: types, bus, history, engine, providers, etc.   │
+│  ~50 lines, NO pub mod declarations                          │
 └─────────────────────────────────────────────────────────────┘
                               │
         ┌─────────────────────┼─────────────────────┐
@@ -65,11 +91,27 @@ This document describes the migration strategy to transform `gasket-core` into a
                     └───────────────┘
 ```
 
+## Pre-Migration Baseline
+
+Before starting PR1, capture current state:
+
+```bash
+# Record current dependency count
+cargo tree -p gasket-engine 2>/dev/null | head -50 > /tmp/pre-migration-deps.txt
+
+# Record current import count
+grep -r "use gasket_core::" gasket/engine/src/ | wc -l > /tmp/pre-migration-imports.txt
+# Expected: 16
+
+# Verify current build works
+cargo build --workspace && cargo test --workspace
+```
+
 ## Migration Strategy: 3 PRs
 
 ### PR1: Core Dependency Layer
 
-**Goal**: Migrate basic modules to engine, cut core dependencies for error/memory/search/token_tracker.
+**Goal**: Migrate basic modules to engine, cut core dependencies for error/token_tracker/memory/config.
 
 **Modules to Migrate**:
 
@@ -77,23 +119,31 @@ This document describes the migration strategy to transform `gasket-core` into a
 |--------|------|----|---------|
 | `error.rs` | `gasket-core/src/error.rs` | `gasket-engine/src/error.rs` | agent/*, tools/* |
 | `token_tracker.rs` | `gasket-core/src/token_tracker.rs` | `gasket-engine/src/token_tracker.rs` | executor_core.rs |
-| `memory/` | `gasket-core/src/memory/` | `gasket-engine/src/memory/` | summarization.rs, tools/* |
-| `search/` | `gasket-core/src/search/` | `gasket-engine/src/search/` | summarization.rs, tools/* |
+| `config/` (partial) | `gasket-core/src/config/exec.rs` | `gasket-engine/src/config/exec.rs` | tools/shell.rs |
 
-**Import Changes** (16 → ~8 remaining):
+**Import Changes** (16 → ~12 remaining):
 
 ```rust
 // Before
 use gasket_core::error::AgentError;
-use gasket_core::memory::SqliteStore;
-use gasket_core::search::{top_k_similar, TextEmbedder};
 use gasket_core::token_tracker::{ModelPricing, TokenUsage};
+use gasket_core::config::ExecToolConfig;
 
 // After
 use crate::error::AgentError;
-use crate::memory::SqliteStore;
-use crate::search::{top_k_similar, TextEmbedder};
 use crate::token_tracker::{ModelPricing, TokenUsage};
+use crate::config::ExecToolConfig;
+```
+
+**Search/Memory imports** - Change to use gasket-semantic/gasket-storage directly:
+```rust
+// Before
+use gasket_core::memory::SqliteStore;
+use gasket_core::search::{top_k_similar, TextEmbedder};
+
+// After
+use gasket_storage::SqliteStore;
+use gasket_semantic::{top_k_similar, TextEmbedder};
 ```
 
 **gasket-core Changes**:
@@ -103,15 +153,35 @@ use crate::token_tracker::{ModelPricing, TokenUsage};
 // gasket-core/src/error.rs
 pub use gasket_engine::error::*;
 
-// gasket-core/src/memory/mod.rs
-pub use gasket_engine::memory::*;
+// gasket-core/src/token_tracker.rs
+pub use gasket_engine::token_tracker::*;
+```
 
-// etc.
+**gasket-engine/src/lib.rs after PR1**:
+```rust
+//! Core execution engine for gasket AI assistant
+
+pub mod agent;
+pub mod tools;
+pub mod bus_adapter;
+pub mod error;
+pub mod token_tracker;
+pub mod config;
+
+pub use agent::*;
+pub use tools::*;
+pub use bus_adapter::*;
+pub use error::*;
+pub use token_tracker::*;
 ```
 
 **Verification**:
-- `cargo build --workspace` passes
-- `cargo test --workspace` passes
+```bash
+cargo build --workspace
+cargo test --workspace
+# Verify dependency reduction
+cargo tree -p gasket-engine --invert | grep gasket-core
+```
 
 ---
 
@@ -121,14 +191,14 @@ pub use gasket_engine::memory::*;
 
 **Modules to Migrate**:
 
-| Module | From | To | Used By |
-|--------|------|----|---------|
-| `hooks/` | `gasket-core/src/hooks/` | `gasket-engine/src/hooks/` | loop_.rs, subagent.rs |
-| `skills/` | `gasket-core/src/skills/` | `gasket-engine/src/skills/` | skill_loader.rs |
-| `cron/` | `gasket-core/src/cron/` | `gasket-engine/src/cron/` | tools/cron.rs |
-| `vault/` (partial) | `gasket-core/src/vault/` | `gasket-engine/src/vault/` | loop_.rs |
+| Module | From | To | Notes |
+|--------|------|----|-------|
+| `hooks/` | `gasket-core/src/hooks/` | `gasket-engine/src/hooks/` | Remove empty dir first |
+| `skills/` | `gasket-core/src/skills/` | `gasket-engine/src/skills/` | Remove empty dir first |
+| `cron/` | `gasket-core/src/cron/` | `gasket-engine/src/cron/` | Remove empty dir first |
+| `vault/` (partial) | `gasket-core/src/vault/` | `gasket-engine/src/vault/` | Only types used by loop_.rs |
 
-**Import Changes** (~8 → 0):
+**Import Changes** (~12 → 0):
 
 ```rust
 // Before
@@ -136,14 +206,12 @@ use gasket_core::hooks::HookRegistry;
 use gasket_core::skills::{SkillsLoader, SkillsRegistry};
 use gasket_core::cron::CronService;
 use gasket_core::vault::{redact_secrets, VaultInjector, VaultStore};
-use gasket_core::config::ExecToolConfig;
 
 // After
 use crate::hooks::HookRegistry;
 use crate::skills::{SkillsLoader, SkillsRegistry};
 use crate::cron::CronService;
 use crate::vault::{redact_secrets, VaultInjector, VaultStore};
-use crate::config::ExecToolConfig;
 ```
 
 **Critical Change**: Remove from `gasket-engine/Cargo.toml`:
@@ -152,10 +220,39 @@ use crate::config::ExecToolConfig;
 gasket-core = { path = "../core" }
 ```
 
+**gasket-engine/src/lib.rs after PR2**:
+```rust
+//! Core execution engine for gasket AI assistant
+
+pub mod agent;
+pub mod tools;
+pub mod bus_adapter;
+pub mod error;
+pub mod token_tracker;
+pub mod config;
+pub mod hooks;
+pub mod skills;
+pub mod cron;
+pub mod vault;
+
+pub use agent::*;
+pub use tools::*;
+pub use bus_adapter::*;
+pub use error::*;
+pub use token_tracker::*;
+pub use hooks::*;
+pub use skills::*;
+pub use cron::*;
+pub use vault::*;
+```
+
 **Verification**:
-- `cargo build --workspace` passes
-- `cargo tree -p gasket-engine` shows no `gasket-core` dependency
-- `cargo test --workspace` passes
+```bash
+cargo build --workspace
+cargo tree -p gasket-engine 2>/dev/null | grep -c gasket-core
+# Expected: 0
+cargo test --workspace
+```
 
 ---
 
@@ -170,19 +267,27 @@ gasket/core/src/tools/       # Moved to engine
 gasket/core/src/hooks/       # Moved to engine
 gasket/core/src/skills/      # Moved to engine
 gasket/core/src/cron/        # Moved to engine
+gasket/core/src/vault/       # Moved to engine
 gasket/core/src/error.rs     # Moved to engine
 gasket/core/src/token_tracker.rs  # Moved to engine
-gasket/core/src/memory/      # Moved to engine
-gasket/core/src/search/      # Already in history
+gasket/core/src/config/      # Moved to engine
+gasket/core/src/memory/      # Already re-export
+gasket/core/src/search/      # Already re-export
+gasket/core/src/channels/    # Already re-export
+gasket/core/src/providers/   # Already re-export
+gasket/core/src/heartbeat/   # Needs evaluation (keep or move?)
 ```
 
-**New `gasket-core/src/lib.rs`** (~100 lines):
+**New `gasket-core/src/lib.rs`** (~50 lines, NO `pub mod` declarations):
 
 ```rust
 //! gasket-core: Facade for gasket AI assistant framework
 //!
 //! This crate re-exports all gasket crates for backward compatibility.
 //! It provides a single entry point for all gasket functionality.
+//!
+//! NOTE: This crate contains NO local implementations.
+//! All functionality is provided by the underlying crates.
 
 // Core types (canonical source)
 pub use gasket_types::*;
@@ -209,15 +314,43 @@ pub use gasket_semantic as semantic;
 ```
 
 **gasket-core/Cargo.toml Changes**:
-- Remove most direct dependencies
-- Keep only internal crate dependencies
+```toml
+[dependencies]
+# Only internal crate dependencies needed for re-exports
+gasket-types = { path = "../types" }
+gasket-bus = { path = "../bus" }
+gasket-history = { path = "../history" }
+gasket-engine = { path = "../engine" }
+gasket-providers = { path = "../providers" }
+gasket-channels = { path = "../channels" }
+gasket-vault = { path = "../vault" }
+gasket-storage = { path = "../storage" }
+gasket-semantic = { path = "../semantic", features = ["local-embedding"] }
+
+# Feature flags remain for pass-through
+[features]
+default = []
+telegram = ["gasket-channels/telegram"]
+discord = ["gasket-channels/discord"]
+# ... etc
+```
 
 **Verification**:
-- `cargo build --workspace` passes
-- `cargo test --workspace` passes
-- `cargo clippy --workspace` has no new warnings
-- CLI still works: `cargo run --package gasket-cli -- agent -m "test"`
-- `cargo tree` shows clean dependency graph (no cycles)
+```bash
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace
+
+# Verify no local modules
+grep -c "pub mod" gasket/core/src/lib.rs
+# Expected: 0
+
+# Verify CLI works
+cargo run --package gasket-cli -- agent -m "test"
+
+# Verify clean dependency graph
+cargo tree -p gasket-core
+```
 
 ---
 
@@ -232,12 +365,22 @@ gasket-vault     (depends on types)
     ↑
 gasket-bus       (depends on types)
 gasket-history   (depends on types, storage, semantic)
-gasket-engine    (depends on types, bus, history, storage, semantic, providers, sandbox)
+gasket-engine    (depends on types, bus, history, storage, semantic, providers, sandbox, vault)
     ↑
-gasket-core      (depends on all, re-exports all)
+gasket-core      (depends on all, re-exports all - NO implementations)
     ↑
 gasket-cli       (depends on core)
 ```
+
+## Feature Flag Considerations
+
+`gasket-engine/Cargo.toml` has these feature flags that must continue to work:
+- `smart-model-selection`
+- `provider-gemini` → passes through to `gasket-providers/provider-gemini`
+- `provider-copilot` → passes through to `gasket-providers/provider-copilot`
+- `all-providers` → passes through to `gasket-providers/all-providers`
+
+After removing `gasket-core` dependency, verify these still work correctly.
 
 ## Rollback Plan
 
@@ -248,9 +391,10 @@ Each PR is independently revertible:
 
 ## Success Criteria
 
-- [ ] `gasket-engine` has zero dependency on `gasket-core`
-- [ ] `gasket-core` is ~100 lines of re-exports
-- [ ] All tests pass
+- [ ] `gasket-engine` has zero dependency on `gasket-core` (verify with `cargo tree`)
+- [ ] `gasket-core/src/lib.rs` has NO `pub mod` declarations (~50 lines of re-exports only)
+- [ ] All tests pass (`cargo test --workspace`)
 - [ ] No circular dependencies in `cargo tree`
 - [ ] CLI works without modification
+- [ ] Feature flags still work correctly
 - [ ] Build time does not increase significantly
