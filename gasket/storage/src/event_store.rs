@@ -1,9 +1,10 @@
 //! Event store for event sourcing architecture.
 
-use chrono::Utc;
-use gasket_types::{EventType, SessionEvent};
+use chrono::{DateTime, Utc};
+use gasket_types::{EventMetadata, EventType, SessionEvent, SummaryType, TokenUsage};
 use serde_json::Value;
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -12,6 +13,12 @@ pub enum StoreError {
 
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    #[error("Invalid UUID: {0}")]
+    InvalidUuid(String),
+
+    #[error("Invalid event type: {0}")]
+    InvalidEventType(String),
 }
 
 /// Event store - core of event sourcing architecture.
@@ -122,6 +129,182 @@ impl EventStore {
 
         Ok(())
     }
+
+    /// Get branch history - retrieve all events for a session/branch ordered by time.
+    ///
+    /// Returns events in chronological order (oldest first).
+    pub async fn get_branch_history(
+        &self,
+        session_key: &str,
+        branch: &str,
+    ) -> Result<Vec<SessionEvent>, StoreError> {
+        let rows = sqlx::query_as::<_, EventRow>(
+            r#"
+            SELECT * FROM session_events
+            WHERE session_key = ? AND branch = ?
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(session_key)
+        .bind(branch)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
+}
+
+/// Database row representation for session events.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct EventRow {
+    id: String,
+    session_key: String,
+    parent_id: Option<String>,
+    event_type: String,
+    content: String,
+    embedding: Option<Vec<u8>>,
+    branch: String,
+    tools_used: String,
+    token_usage: Option<String>,
+    tool_name: Option<String>,
+    tool_arguments: Option<String>,
+    tool_call_id: Option<String>,
+    is_error: Option<i32>,
+    summary_type: Option<String>,
+    summary_topic: Option<String>,
+    covered_events: Option<String>,
+    merge_source: Option<String>,
+    merge_head: Option<String>,
+    extra: String,
+    created_at: String,
+}
+
+impl TryFrom<EventRow> for SessionEvent {
+    type Error = StoreError;
+
+    fn try_from(row: EventRow) -> Result<Self, Self::Error> {
+        let event_type = parse_event_type(
+            &row.event_type,
+            row.tool_name.as_deref(),
+            row.tool_arguments.as_deref(),
+            row.tool_call_id.as_deref(),
+            row.is_error,
+            row.summary_type.as_deref(),
+            row.summary_topic.as_deref(),
+            row.covered_events.as_deref(),
+            row.merge_source.as_deref(),
+            row.merge_head.as_deref(),
+        )?;
+
+        let tools_used: Vec<String> = serde_json::from_str(&row.tools_used)?;
+        let token_usage: Option<TokenUsage> = row
+            .token_usage
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?;
+        let extra: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&row.extra)?;
+        let embedding = row.embedding.map(|b| bytemuck::cast_slice(&b).to_vec());
+
+        Ok(SessionEvent {
+            id: row
+                .id
+                .parse()
+                .map_err(|_| StoreError::InvalidUuid(row.id.clone()))?,
+            session_key: row.session_key,
+            parent_id: row
+                .parent_id
+                .map(|s| s.parse())
+                .transpose()
+                .map_err(|_| StoreError::InvalidUuid("parent_id".into()))?,
+            event_type,
+            content: row.content,
+            embedding,
+            metadata: EventMetadata {
+                branch: if row.branch == "main" {
+                    None
+                } else {
+                    Some(row.branch)
+                },
+                tools_used,
+                token_usage,
+                extra,
+            },
+            created_at: DateTime::parse_from_rfc3339(&row.created_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+        })
+    }
+}
+
+/// Parse event type from database row fields.
+#[allow(clippy::too_many_arguments)]
+fn parse_event_type(
+    type_str: &str,
+    tool_name: Option<&str>,
+    tool_arguments: Option<&str>,
+    tool_call_id: Option<&str>,
+    is_error: Option<i32>,
+    summary_type: Option<&str>,
+    summary_topic: Option<&str>,
+    covered_events: Option<&str>,
+    merge_source: Option<&str>,
+    merge_head: Option<&str>,
+) -> Result<EventType, StoreError> {
+    Ok(match type_str {
+        "user_message" => EventType::UserMessage,
+        "assistant_message" => EventType::AssistantMessage,
+        "tool_call" => EventType::ToolCall {
+            tool_name: tool_name.unwrap_or("").into(),
+            arguments: tool_arguments
+                .map(|s| serde_json::from_str(s).unwrap_or(serde_json::Value::Null))
+                .unwrap_or(serde_json::Value::Null),
+        },
+        "tool_result" => EventType::ToolResult {
+            tool_call_id: tool_call_id.unwrap_or("").into(),
+            tool_name: tool_name.unwrap_or("").into(),
+            is_error: is_error.unwrap_or(0) != 0,
+        },
+        "summary" => {
+            let covered: Vec<Uuid> = covered_events
+                .map(serde_json::from_str::<Vec<String>>)
+                .transpose()?
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+
+            let stype = match summary_type {
+                Some(s) if s.starts_with("time_window:") => {
+                    let hours: u32 = s.split(':').nth(1).unwrap_or("0").parse().unwrap_or(0);
+                    SummaryType::TimeWindow {
+                        duration_hours: hours,
+                    }
+                }
+                Some("topic") => SummaryType::Topic {
+                    topic: summary_topic.unwrap_or("").into(),
+                },
+                Some(s) if s.starts_with("compression:") => {
+                    let budget: usize = s.split(':').nth(1).unwrap_or("0").parse().unwrap_or(0);
+                    SummaryType::Compression {
+                        token_budget: budget,
+                    }
+                }
+                _ => SummaryType::Compression { token_budget: 0 },
+            };
+
+            EventType::Summary {
+                summary_type: stype,
+                covered_event_ids: covered,
+            }
+        }
+        "merge" => EventType::Merge {
+            source_branch: merge_source.unwrap_or("").into(),
+            source_head: merge_head
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(Uuid::nil),
+        },
+        _ => return Err(StoreError::InvalidEventType(type_str.into())),
+    })
 }
 
 fn event_type_to_string(event_type: &EventType) -> String {
@@ -544,10 +727,12 @@ mod tests {
         store.append_event(&event).await.unwrap();
 
         // Verify embedding was stored correctly
-        let row: (Option<Vec<u8>>,) = sqlx::query_as("SELECT embedding FROM session_events WHERE session_key = 'test:session'")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+        let row: (Option<Vec<u8>>,) = sqlx::query_as(
+            "SELECT embedding FROM session_events WHERE session_key = 'test:session'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
 
         // Embedding should be stored as bytes (4 floats * 4 bytes = 16 bytes)
         let stored_bytes = row.0.expect("embedding should be stored");
@@ -556,5 +741,202 @@ mod tests {
         // Verify the embedding values can be reconstructed
         let stored_embedding: Vec<f32> = bytemuck::cast_slice(&stored_bytes).to_vec();
         assert_eq!(stored_embedding, embedding);
+    }
+
+    #[tokio::test]
+    async fn test_get_branch_history() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // Add event chain
+        let e1 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Hello".into(),
+            embedding: None,
+            metadata: EventMetadata {
+                branch: Some("main".into()),
+                ..Default::default()
+            },
+            created_at: Utc::now(),
+        };
+        store.append_event(&e1).await.unwrap();
+
+        let e2 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: Some(e1.id),
+            event_type: EventType::AssistantMessage,
+            content: "Hi!".into(),
+            embedding: None,
+            metadata: EventMetadata {
+                branch: Some("main".into()),
+                ..Default::default()
+            },
+            created_at: Utc::now(),
+        };
+        store.append_event(&e2).await.unwrap();
+
+        // Read history
+        let history = store
+            .get_branch_history("test:session", "main")
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].content, "Hello");
+        assert_eq!(history[1].content, "Hi!");
+        assert_eq!(history[1].parent_id, Some(e1.id));
+    }
+
+    #[tokio::test]
+    async fn test_get_branch_history_empty() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // Query non-existent session
+        let history = store
+            .get_branch_history("nonexistent:session", "main")
+            .await
+            .unwrap();
+        assert!(history.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_branch_history_different_branches() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // Add event to main branch
+        let main_event = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Main branch".into(),
+            embedding: None,
+            metadata: EventMetadata {
+                branch: Some("main".into()),
+                ..Default::default()
+            },
+            created_at: Utc::now(),
+        };
+        store.append_event(&main_event).await.unwrap();
+
+        // Add event to feature branch
+        let feature_event = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Feature branch".into(),
+            embedding: None,
+            metadata: EventMetadata {
+                branch: Some("feature".into()),
+                ..Default::default()
+            },
+            created_at: Utc::now(),
+        };
+        store.append_event(&feature_event).await.unwrap();
+
+        // Query main branch
+        let main_history = store
+            .get_branch_history("test:session", "main")
+            .await
+            .unwrap();
+        assert_eq!(main_history.len(), 1);
+        assert_eq!(main_history[0].content, "Main branch");
+
+        // Query feature branch
+        let feature_history = store
+            .get_branch_history("test:session", "feature")
+            .await
+            .unwrap();
+        assert_eq!(feature_history.len(), 1);
+        assert_eq!(feature_history[0].content, "Feature branch");
+    }
+
+    #[tokio::test]
+    async fn test_get_branch_history_with_tool_call() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // Add tool call event
+        let tool_call = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::ToolCall {
+                tool_name: "read_file".into(),
+                arguments: serde_json::json!({"path": "/test.txt"}),
+            },
+            content: "".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        store.append_event(&tool_call).await.unwrap();
+
+        // Read and verify
+        let history = store
+            .get_branch_history("test:session", "main")
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        match &history[0].event_type {
+            EventType::ToolCall {
+                tool_name,
+                arguments,
+            } => {
+                assert_eq!(tool_name, "read_file");
+                assert_eq!(arguments, &serde_json::json!({"path": "/test.txt"}));
+            }
+            _ => panic!("Expected ToolCall event type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_branch_history_with_summary() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        let covered_ids = vec![Uuid::now_v7(), Uuid::now_v7()];
+        let summary = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::Summary {
+                summary_type: SummaryType::Topic {
+                    topic: "API discussion".into(),
+                },
+                covered_event_ids: covered_ids.clone(),
+            },
+            content: "Summary content".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        store.append_event(&summary).await.unwrap();
+
+        // Read and verify
+        let history = store
+            .get_branch_history("test:session", "main")
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        match &history[0].event_type {
+            EventType::Summary {
+                summary_type,
+                covered_event_ids,
+            } => {
+                match summary_type {
+                    SummaryType::Topic { topic } => assert_eq!(topic, "API discussion"),
+                    _ => panic!("Expected Topic summary type"),
+                }
+                assert_eq!(covered_event_ids, &covered_ids);
+            }
+            _ => panic!("Expected Summary event type"),
+        }
     }
 }
