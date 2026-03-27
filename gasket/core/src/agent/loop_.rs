@@ -39,7 +39,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::agent::context::AgentContext;
-use crate::agent::history_processor::HistoryConfig;
+use crate::agent::HistoryConfig;
 use crate::agent::prompt;
 use crate::agent::stream::{self};
 use crate::bus::events::SessionKey;
@@ -979,7 +979,10 @@ impl gasket_bus::MessageHandler for AgentLoop {
         (
             tokio::sync::mpsc::Receiver<gasket_bus::actors::StreamEvent>,
             tokio::sync::oneshot::Receiver<
-                Result<gasket_types::events::OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
+                Result<
+                    gasket_types::events::OutboundMessage,
+                    Box<dyn std::error::Error + Send + Sync>,
+                >,
             >,
         ),
         Box<dyn std::error::Error + Send + Sync>,
@@ -999,27 +1002,32 @@ impl gasket_bus::MessageHandler for AgentLoop {
 
         // Spawn a task to convert AgentLoop StreamEvents to gasket_bus StreamEvents
         tokio::spawn(async move {
-            use gasket_bus::actors::StreamEvent as BusStreamEvent;
             use crate::agent::stream::StreamEvent as AgentStreamEvent;
+            use gasket_bus::actors::StreamEvent as BusStreamEvent;
 
             while let Some(event) = agent_event_rx.recv().await {
                 let bus_event = match event {
                     AgentStreamEvent::Content(content) => BusStreamEvent::Content(content),
                     AgentStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
-                    AgentStreamEvent::ToolStart { name, arguments } => {
-                        BusStreamEvent::ToolStart { name, arguments: arguments.unwrap_or_default() }
-                    }
+                    AgentStreamEvent::ToolStart { name, arguments } => BusStreamEvent::ToolStart {
+                        name,
+                        arguments: arguments.unwrap_or_default(),
+                    },
                     AgentStreamEvent::ToolEnd { name, output } => {
                         BusStreamEvent::ToolEnd { name, output }
                     }
                     AgentStreamEvent::Done => BusStreamEvent::Done,
-                    AgentStreamEvent::TokenStats { input_tokens, output_tokens, total_tokens, cost: _, currency: _ } => {
-                        BusStreamEvent::TokenStats {
-                            prompt: input_tokens,
-                            completion: output_tokens,
-                            total: total_tokens
-                        }
-                    }
+                    AgentStreamEvent::TokenStats {
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                        cost: _,
+                        currency: _,
+                    } => BusStreamEvent::TokenStats {
+                        prompt: input_tokens,
+                        completion: output_tokens,
+                        total: total_tokens,
+                    },
                 };
 
                 if event_tx.send(bus_event).await.is_err() {
@@ -1044,10 +1052,12 @@ impl gasket_bus::MessageHandler for AgentLoop {
                     let _ = result_tx.send(Ok(outbound_msg));
                 }
                 Ok(Err(e)) => {
-                    let _ = result_tx.send(Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>));
+                    let _ = result_tx
+                        .send(Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>));
                 }
                 Err(e) => {
-                    let _ = result_tx.send(Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>));
+                    let _ = result_tx
+                        .send(Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>));
                 }
             }
         });

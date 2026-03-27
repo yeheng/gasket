@@ -9,7 +9,7 @@ use std::path::Path;
 use tokio::fs;
 use tracing::{debug, info, warn};
 
-use crate::agent::history_processor::count_tokens;
+use crate::agent::count_tokens;
 use crate::agent::skill_loader;
 
 /// Bootstrap files loaded into the system prompt for the full (main agent) profile

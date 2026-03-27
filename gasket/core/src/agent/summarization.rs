@@ -12,7 +12,7 @@ use crate::providers::{ChatMessage, ChatRequest, LlmProvider};
 use crate::search::{top_k_similar, TextEmbedder};
 use gasket_types::SessionEvent;
 
-use super::history_processor::count_tokens;
+use crate::agent::count_tokens;
 
 /// Fixed prompt for LLM summarization
 pub const SUMMARIZATION_PROMPT: &str =

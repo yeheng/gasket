@@ -32,6 +32,7 @@ gasket-types = { path = "../types" }
 gasket-vault = { path = "../vault" }
 gasket-storage = { path = "../storage" }
 gasket-semantic = { path = "../semantic", features = ["local-embedding"] }
+gasket-history = { path = "../history" }
 
 # Async
 tokio.workspace = true
