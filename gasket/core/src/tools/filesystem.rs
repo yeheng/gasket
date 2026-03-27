@@ -11,30 +11,94 @@ use tracing::{debug, instrument};
 use super::base::{simple_schema, ToolContext};
 use super::{Tool, ToolError, ToolResult};
 
-fn validate_path(path: &str, allowed_dir: &Option<PathBuf>) -> Result<PathBuf, ToolError> {
-    let path = PathBuf::from(path);
-    if let Some(allowed) = allowed_dir {
-        let canonical = path.canonicalize().map_err(|e| {
-            ToolError::NotFound(format!("Path not found: {} - {}", path.display(), e))
-        })?;
-        if !canonical.starts_with(allowed) {
-            return Err(ToolError::PermissionDenied(format!(
-                "Path outside workspace: {}",
-                path.display()
-            )));
+/// Secure path validator that canonicalizes allowed directory at initialization
+/// to prevent symlink attacks and path traversal vulnerabilities.
+#[derive(Clone)]
+pub struct PathValidator {
+    /// Canonicalized allowed directory (all symlinks resolved)
+    pub allowed_dir: Option<PathBuf>,
+}
+
+impl PathValidator {
+    /// Create a new path validator with the given allowed directory.
+    pub fn new(allowed_dir: Option<PathBuf>) -> Self {
+        let canonical_allowed = allowed_dir.as_ref().and_then(|p| p.canonicalize().ok());
+        Self {
+            allowed_dir: canonical_allowed,
         }
     }
-    Ok(path)
+
+    /// Validate that a path is within the allowed directory.
+    pub fn validate(&self, path: &str) -> Result<PathBuf, ToolError> {
+        let path = PathBuf::from(path);
+
+        if let Some(allowed) = &self.allowed_dir {
+            if !path.exists() {
+                return Err(ToolError::NotFound(format!(
+                    "Path not found: {}",
+                    path.display()
+                )));
+            }
+
+            let canonical = path.canonicalize().map_err(|e| {
+                ToolError::NotFound(format!("Cannot resolve path: {} - {}", path.display(), e))
+            })?;
+
+            if !canonical.starts_with(allowed) {
+                return Err(ToolError::PermissionDenied(format!(
+                    "Path outside workspace: {}",
+                    path.display()
+                )));
+            }
+        }
+
+        Ok(path)
+    }
+
+    /// Validate a path for write operations (file may not exist yet).
+    pub fn validate_for_write(&self, path: &str) -> Result<PathBuf, ToolError> {
+        let path = PathBuf::from(path);
+
+        if let Some(allowed) = &self.allowed_dir {
+            let parent = path.parent().unwrap_or(&path);
+
+            if parent.exists() {
+                let canonical_parent = parent.canonicalize().map_err(|e| {
+                    ToolError::NotFound(format!(
+                        "Cannot resolve parent path: {} - {}",
+                        parent.display(),
+                        e
+                    ))
+                })?;
+
+                if !canonical_parent.starts_with(allowed) {
+                    return Err(ToolError::PermissionDenied(format!(
+                        "Path outside workspace: {}",
+                        path.display()
+                    )));
+                }
+            } else {
+                return Err(ToolError::NotFound(format!(
+                    "Parent directory not found: {}",
+                    parent.display()
+                )));
+            }
+        }
+
+        Ok(path)
+    }
 }
 
 /// Read file tool
 pub struct ReadFileTool {
-    allowed_dir: Option<PathBuf>,
+    validator: PathValidator,
 }
 
 impl ReadFileTool {
     pub fn new(allowed_dir: Option<PathBuf>) -> Self {
-        Self { allowed_dir }
+        Self {
+            validator: PathValidator::new(allowed_dir),
+        }
     }
 }
 
@@ -80,7 +144,7 @@ impl Tool for ReadFileTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let path = validate_path(&args.absolute_path, &self.allowed_dir)?;
+        let path = self.validator.validate(&args.absolute_path)?;
         debug!("Reading file: {:?}", path);
 
         let content = fs::read_to_string(&path).await.map_err(|e| {
@@ -111,12 +175,14 @@ impl Tool for ReadFileTool {
 /// Write file tool
 #[allow(dead_code)]
 pub struct WriteFileTool {
-    allowed_dir: Option<PathBuf>,
+    validator: PathValidator,
 }
 
 impl WriteFileTool {
     pub fn new(allowed_dir: Option<PathBuf>) -> Self {
-        Self { allowed_dir }
+        Self {
+            validator: PathValidator::new(allowed_dir),
+        }
     }
 }
 
@@ -148,25 +214,7 @@ impl Tool for WriteFileTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        // Extract path (and handle non-existent path validation properly later if needed, but we check prefix first)
-        let path = PathBuf::from(&args.file_path);
-        if let Some(allowed) = &self.allowed_dir {
-            // For write, the file might not exist yet, so we canonicalize the parent
-            let parent = path.parent().unwrap_or(&path);
-            let canonical_parent = parent.canonicalize().map_err(|e| {
-                ToolError::NotFound(format!(
-                    "Parent path not found: {} - {}",
-                    parent.display(),
-                    e
-                ))
-            })?;
-            if !canonical_parent.starts_with(allowed) {
-                return Err(ToolError::PermissionDenied(format!(
-                    "Path outside workspace: {}",
-                    path.display()
-                )));
-            }
-        }
+        let path = self.validator.validate_for_write(&args.file_path)?;
         debug!("Writing file: {:?}", path);
 
         // Create parent directories if needed
@@ -195,12 +243,14 @@ impl Tool for WriteFileTool {
 /// Edit file tool (string replacement)
 #[allow(dead_code)]
 pub struct EditFileTool {
-    allowed_dir: Option<PathBuf>,
+    validator: PathValidator,
 }
 
 impl EditFileTool {
     pub fn new(allowed_dir: Option<PathBuf>) -> Self {
-        Self { allowed_dir }
+        Self {
+            validator: PathValidator::new(allowed_dir),
+        }
     }
 }
 
@@ -252,7 +302,7 @@ impl Tool for EditFileTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let path = validate_path(&args.file_path, &self.allowed_dir)?;
+        let path = self.validator.validate(&args.file_path)?;
         debug!("Editing file: {:?} - {}", path, args.instruction);
 
         let content = fs::read_to_string(&path).await.map_err(|e| {
@@ -294,12 +344,14 @@ impl Tool for EditFileTool {
 /// List directory tool
 #[allow(dead_code)]
 pub struct ListDirTool {
-    allowed_dir: Option<PathBuf>,
+    validator: PathValidator,
 }
 
 impl ListDirTool {
     pub fn new(allowed_dir: Option<PathBuf>) -> Self {
-        Self { allowed_dir }
+        Self {
+            validator: PathValidator::new(allowed_dir),
+        }
     }
 }
 
@@ -332,7 +384,7 @@ impl Tool for ListDirTool {
         let args: Args =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
 
-        let path = PathBuf::from(&args.path);
+        let path = self.validator.validate(&args.path)?;
         debug!("Listing directory: {:?}", path);
 
         let mut entries = fs::read_dir(&path).await.map_err(|e| {
@@ -508,5 +560,77 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_file(&test_file).await;
+    }
+
+    // === Security Tests ===
+
+    mod security_tests {
+        use super::*;
+        use std::os::unix::fs::symlink;
+        use tempfile::TempDir;
+
+        #[tokio::test]
+        async fn test_symlink_escape_attack() {
+            let temp_workspace = TempDir::new().unwrap();
+            let temp_external = TempDir::new().unwrap();
+            let external_file = temp_external.path().join("secret.txt");
+            tokio::fs::write(&external_file, "secret data")
+                .await
+                .unwrap();
+
+            let symlink_path = temp_workspace.path().join("malicious_link");
+            symlink(&external_file, &symlink_path).unwrap();
+
+            let tool = ReadFileTool::new(Some(temp_workspace.path().to_path_buf()));
+            let args = serde_json::json!({
+                "absolute_path": symlink_path.to_str().unwrap()
+            });
+
+            let result = tool.execute(args, &ToolContext::empty()).await;
+            assert!(
+                result.is_err(),
+                "Should reject symlink pointing outside workspace"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_path_traversal_attack() {
+            let temp_workspace = TempDir::new().unwrap();
+            let temp_external = TempDir::new().unwrap();
+
+            let external_file = temp_external.path().join("secret.txt");
+            tokio::fs::write(&external_file, "secret data")
+                .await
+                .unwrap();
+
+            let workspace_canonical = temp_workspace.path().canonicalize().unwrap();
+            let external_canonical = external_file.canonicalize().unwrap();
+
+            let tool = ReadFileTool::new(Some(workspace_canonical));
+            let args = serde_json::json!({
+                "absolute_path": external_canonical.to_str().unwrap()
+            });
+
+            let result = tool.execute(args, &ToolContext::empty()).await;
+            assert!(result.is_err(), "Should reject path outside workspace");
+        }
+
+        #[tokio::test]
+        async fn test_legitimate_path_in_workspace() {
+            let temp_workspace = TempDir::new().unwrap();
+            let test_file = temp_workspace.path().join("test.txt");
+            tokio::fs::write(&test_file, "legitimate content")
+                .await
+                .unwrap();
+
+            let tool = ReadFileTool::new(Some(temp_workspace.path().to_path_buf()));
+            let args = serde_json::json!({
+                "absolute_path": test_file.to_str().unwrap()
+            });
+
+            let result = tool.execute(args, &ToolContext::empty()).await;
+            assert!(result.is_ok(), "Should allow legitimate path");
+            assert_eq!(result.unwrap(), "legitimate content");
+        }
     }
 }
