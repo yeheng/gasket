@@ -152,6 +152,40 @@ impl EventStore {
 
         rows.into_iter().map(|r| r.try_into()).collect()
     }
+
+    /// Get events by their IDs - retrieve specific events for summarization.
+    ///
+    /// Returns events in chronological order (oldest first).
+    /// Returns an empty vector if no events are found for the given IDs.
+    pub async fn get_events_by_ids(
+        &self,
+        session_key: &str,
+        event_ids: &[Uuid],
+    ) -> Result<Vec<SessionEvent>, StoreError> {
+        if event_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let placeholders: String = event_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let query = format!(
+            "SELECT * FROM session_events WHERE session_key = ? AND id IN ({}) ORDER BY created_at ASC",
+            placeholders
+        );
+
+        let mut sql_query = sqlx::query_as::<_, EventRow>(&query);
+        sql_query = sql_query.bind(session_key);
+        for id in event_ids {
+            sql_query = sql_query.bind(id.to_string());
+        }
+
+        let rows = sql_query.fetch_all(&self.pool).await?;
+        rows.into_iter().map(|r| r.try_into()).collect()
+    }
 }
 
 /// Database row representation for session events.
@@ -938,5 +972,68 @@ mod tests {
             }
             _ => panic!("Expected Summary event type"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_events_by_ids() {
+        let pool = setup_test_db().await;
+        let store = EventStore::new(pool);
+
+        // Add event chain
+        let e1 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: None,
+            event_type: EventType::UserMessage,
+            content: "Event 1".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        store.append_event(&e1).await.unwrap();
+
+        let e2 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: Some(e1.id),
+            event_type: EventType::AssistantMessage,
+            content: "Event 2".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        store.append_event(&e2).await.unwrap();
+
+        let e3 = SessionEvent {
+            id: Uuid::now_v7(),
+            session_key: "test:session".into(),
+            parent_id: Some(e2.id),
+            event_type: EventType::UserMessage,
+            content: "Event 3".into(),
+            embedding: None,
+            metadata: EventMetadata::default(),
+            created_at: Utc::now(),
+        };
+        store.append_event(&e3).await.unwrap();
+
+        // Query specific events
+        let events = store
+            .get_events_by_ids("test:session", &[e1.id, e3.id])
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].content, "Event 1");
+        assert_eq!(events[1].content, "Event 3");
+
+        // Query with non-existent ID
+        let events = store
+            .get_events_by_ids("test:session", &[Uuid::now_v7()])
+            .await
+            .unwrap();
+        assert!(events.is_empty());
+
+        // Query with empty list
+        let events = store.get_events_by_ids("test:session", &[]).await.unwrap();
+        assert!(events.is_empty());
     }
 }

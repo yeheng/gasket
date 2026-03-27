@@ -1,5 +1,6 @@
 //! Agent module: core processing engine
 
+pub mod compression;
 pub mod context;
 pub mod context_v2;
 pub mod executor;
@@ -18,6 +19,7 @@ pub mod subagent;
 pub mod subagent_tracker;
 pub mod summarization;
 
+pub use compression::{CompressionActor, EmbeddingService, SummarizationService};
 pub use context::{AgentContext, PersistentContext, StatelessContext};
 pub use context_v2::{
     AgentContext as AgentContextV2, CompressionTask, PersistentContext as PersistentContextV2,
