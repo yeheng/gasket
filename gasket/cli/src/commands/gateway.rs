@@ -253,13 +253,11 @@ pub async fn cmd_gateway() -> Result<()> {
     // 2. Start Router Actor (dispatches inbound to per-session channels)
     {
         let outbound_tx = bus.outbound_sender();
-        let agent_for_router = agent.clone();
-        let manager_for_router = Some(subagent_manager.clone());
+        // AgentLoop implements MessageHandler, so we can pass it directly
         tasks.push(tokio::spawn(gasket_core::bus::run_router_actor(
             inbound_rx,
             outbound_tx,
-            agent_for_router,
-            manager_for_router,
+            agent.clone(),
         )));
     }
 

@@ -9,3 +9,8 @@ pub mod queue;
 pub use actors::{run_outbound_actor, run_router_actor, run_session_actor, MessageHandler};
 pub use gasket_types::events::*;
 pub use queue::MessageBus;
+
+// Re-export gasket_types::events as a module for backward compatibility
+pub mod events {
+    pub use gasket_types::events::*;
+}

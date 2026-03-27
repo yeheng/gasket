@@ -27,6 +27,7 @@ all-providers = ["gasket-providers/all-providers"]
 
 [dependencies]
 # Internal crates
+gasket-bus = { path = "../bus" }
 gasket-types = { path = "../types" }
 gasket-vault = { path = "../vault" }
 gasket-storage = { path = "../storage" }

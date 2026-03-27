@@ -8,6 +8,7 @@ description = "Message bus for gasket AI assistant"
 
 [dependencies]
 gasket-types = { path = "../types" }
+gasket-channels = { path = "../channels" }
 tokio.workspace = true
 tokio-util.workspace = true
 async-trait.workspace = true
@@ -16,3 +17,4 @@ thiserror.workspace = true
 
 [features]
 default = []
+webhook = ["gasket-channels/webhook"]

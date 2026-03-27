@@ -957,3 +957,101 @@ impl AgentLoop {
         messages
     }
 }
+
+// ── MessageHandler Implementation ───────────────────────────────────────────
+
+#[async_trait::async_trait]
+impl gasket_bus::MessageHandler for AgentLoop {
+    async fn handle_message(
+        &self,
+        session_key: &gasket_types::events::SessionKey,
+        message: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let response = self.process_direct(message, session_key).await?;
+        Ok(response.content)
+    }
+
+    async fn handle_streaming_message(
+        &self,
+        message: &str,
+        session_key: &gasket_types::events::SessionKey,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::Receiver<gasket_bus::actors::StreamEvent>,
+            tokio::sync::oneshot::Receiver<
+                Result<gasket_types::events::OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
+            >,
+        ),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        use tokio::sync::mpsc;
+
+        let (event_tx, event_rx) = mpsc::channel(32);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+        // Clone session_key for the spawned task
+        let session_key_owned = session_key.clone();
+
+        // Get the streaming result from AgentLoop
+        let (mut agent_event_rx, result_handle) = self
+            .process_direct_streaming_with_channel(message, session_key)
+            .await?;
+
+        // Spawn a task to convert AgentLoop StreamEvents to gasket_bus StreamEvents
+        tokio::spawn(async move {
+            use gasket_bus::actors::StreamEvent as BusStreamEvent;
+            use crate::agent::stream::StreamEvent as AgentStreamEvent;
+
+            while let Some(event) = agent_event_rx.recv().await {
+                let bus_event = match event {
+                    AgentStreamEvent::Content(content) => BusStreamEvent::Content(content),
+                    AgentStreamEvent::Reasoning(content) => BusStreamEvent::Reasoning(content),
+                    AgentStreamEvent::ToolStart { name, arguments } => {
+                        BusStreamEvent::ToolStart { name, arguments: arguments.unwrap_or_default() }
+                    }
+                    AgentStreamEvent::ToolEnd { name, output } => {
+                        BusStreamEvent::ToolEnd { name, output }
+                    }
+                    AgentStreamEvent::Done => BusStreamEvent::Done,
+                    AgentStreamEvent::TokenStats { input_tokens, output_tokens, total_tokens, cost: _, currency: _ } => {
+                        BusStreamEvent::TokenStats {
+                            prompt: input_tokens,
+                            completion: output_tokens,
+                            total: total_tokens
+                        }
+                    }
+                };
+
+                if event_tx.send(bus_event).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Spawn a task to wrap the final result
+        tokio::spawn(async move {
+            match result_handle.await {
+                Ok(Ok(response)) => {
+                    // Create an OutboundMessage from the response
+                    let outbound_msg = gasket_types::events::OutboundMessage {
+                        channel: gasket_types::events::ChannelType::Cli,
+                        chat_id: session_key_owned.to_string(),
+                        content: response.content,
+                        metadata: None,
+                        trace_id: None,
+                        ws_message: None,
+                    };
+                    let _ = result_tx.send(Ok(outbound_msg));
+                }
+                Ok(Err(e)) => {
+                    let _ = result_tx.send(Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>));
+                }
+                Err(e) => {
+                    let _ = result_tx.send(Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>));
+                }
+            }
+        });
+
+        Ok((event_rx, result_rx))
+    }
+}

@@ -48,7 +48,9 @@ pub trait MessageHandler: Send + Sync {
     ) -> Result<
         (
             mpsc::Receiver<StreamEvent>,
-            tokio::sync::oneshot::Receiver<Result<OutboundMessage, Box<dyn std::error::Error + Send + Sync>>>,
+            tokio::sync::oneshot::Receiver<
+                Result<OutboundMessage, Box<dyn std::error::Error + Send + Sync>>,
+            >,
         ),
         Box<dyn std::error::Error + Send + Sync>,
     >;
@@ -68,7 +70,11 @@ pub enum StreamEvent {
     /// Stream completed
     Done,
     /// Token usage statistics
-    TokenStats { prompt: usize, completion: usize, total: usize },
+    TokenStats {
+        prompt: usize,
+        completion: usize,
+        total: usize,
+    },
 }
 
 // ── Outbound Actor ──────────────────────────────────────────
@@ -82,28 +88,35 @@ pub enum StreamEvent {
 /// both built-in channels and custom channels registered at runtime.
 pub async fn run_outbound_actor(
     mut rx: mpsc::Receiver<OutboundMessage>,
-    registry: Arc<dyn OutboundSender + Send + Sync>,
+    registry: Arc<gasket_channels::outbound::OutboundSenderRegistry>,
+    #[cfg(feature = "webhook")] websocket_manager: Option<
+        Arc<gasket_channels::websocket::WebSocketManager>,
+    >,
 ) {
     tracing::info!("Outbound Actor started");
     while let Some(msg) = rx.recv().await {
+        #[cfg(feature = "webhook")]
+        if let gasket_types::events::ChannelType::WebSocket = msg.channel {
+            if let Some(ref manager) = websocket_manager {
+                manager.send(msg).await;
+            } else {
+                tracing::warn!(
+                    "Outbound Actor: websocket_manager is None, cannot send WebSocket message"
+                );
+            }
+            continue;
+        }
+
         let reg = registry.clone();
         // Fire-and-forget: each send runs in its own task,
         // eliminating Head-of-Line Blocking across messages.
         tokio::spawn(async move {
-            if let Err(e) = reg.send_outbound(msg).await {
+            if let Err(e) = reg.send(msg).await {
                 tracing::error!("Outbound delivery failed: {}", e);
             }
         });
     }
     tracing::info!("Outbound Actor shutting down");
-}
-
-/// Trait for outbound message sending.
-///
-/// This allows decoupling the outbound actor from the concrete OutboundSenderRegistry.
-#[async_trait::async_trait]
-pub trait OutboundSender {
-    async fn send_outbound(&self, msg: OutboundMessage) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 // ── Session Actor ───────────────────────────────────────────
@@ -148,7 +161,7 @@ pub async fn run_session_actor<H>(
             }
         };
 
-        // Process message and handle result immediately (avoid holding non-Send across await)
+        // Process message and handle result immediately
         match process_session_message(msg, &session_key, &handler, &outbound_tx).await {
             Ok(()) => {}
             Err(e) => {
@@ -206,7 +219,9 @@ where
     );
 
     // Use the channel-based API for proper backpressure
-    let (mut event_rx, result_handle) = handler.handle_streaming_message(&msg.content, session_key).await?;
+    let (mut event_rx, result_handle) = handler
+        .handle_streaming_message(&msg.content, session_key)
+        .await?;
 
     // Consume events with proper awaiting
     let mut event_count = 0usize;
