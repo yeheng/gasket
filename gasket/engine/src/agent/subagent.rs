@@ -93,10 +93,6 @@ pub struct SubagentManager {
     session_key: Arc<std::sync::Mutex<Option<SessionKey>>>,
     /// Subagent execution timeout in seconds
     timeout_secs: u64,
-    /// Optional model registry for model selection
-    model_registry: Option<Arc<gasket_core::config::ModelRegistry>>,
-    /// Optional provider registry for creating providers
-    provider_registry: Option<Arc<gasket_core::providers::ProviderRegistry>>,
 }
 
 /// Builder for configuring and spawning subagent tasks.
@@ -596,27 +592,7 @@ impl SubagentManager {
             outbound_tx,
             session_key: Arc::new(std::sync::Mutex::new(None)),
             timeout_secs: super::loop_::DEFAULT_SUBAGENT_TIMEOUT_SECS,
-            model_registry: None,
-            provider_registry: None,
         }
-    }
-
-    /// Set the model registry for model selection.
-    pub fn with_model_registry(
-        mut self,
-        registry: Arc<gasket_core::config::ModelRegistry>,
-    ) -> Self {
-        self.model_registry = Some(registry);
-        self
-    }
-
-    /// Set the provider registry for creating providers.
-    pub fn with_provider_registry(
-        mut self,
-        registry: Arc<gasket_core::providers::ProviderRegistry>,
-    ) -> Self {
-        self.provider_registry = Some(registry);
-        self
     }
 
     /// Get the configured timeout in seconds.
@@ -1020,34 +996,7 @@ impl SubagentSpawner for SubagentManager {
         );
 
         // Prepare spawn configuration using Builder pattern
-        let mut builder = self.task(subagent_id.clone(), task.clone());
-
-        // Model selection logic - if model_id is provided, try to use it
-        if let Some(ref mid) = model_id {
-            if let Some(ref model_registry) = self.model_registry {
-                if let Some((profile_id, profile)) =
-                    model_registry.get_profile_with_fallback(Some(mid))
-                {
-                    if let Some(ref provider_registry) = self.provider_registry {
-                        if let Ok(provider) = provider_registry.get_or_create(&profile.provider) {
-                            let agent_config = AgentConfig {
-                                model: profile.model.clone(),
-                                temperature: profile.temperature.unwrap_or(0.7),
-                                thinking_enabled: profile.thinking_enabled.unwrap_or(false),
-                                max_tokens: profile.max_tokens.unwrap_or(4096),
-                                ..Default::default()
-                            };
-
-                            builder = builder.with_provider(provider).with_config(agent_config);
-                            info!(
-                                "[SubagentSpawner] Using model profile '{}' (model: {}) for subagent {}",
-                                profile_id, profile.model, subagent_id
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        let builder = self.task(subagent_id.clone(), task.clone());
 
         // Spawn the subagent
         let spawn_result = builder

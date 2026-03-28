@@ -1,33 +1,345 @@
-//! Configuration management
+//! Configuration types
 //!
-//! Compatible with Python gasket config format (`~/.gasket/config.yaml`)
+//! This module re-exports configuration types.
 //!
-//! ## Module Structure
-//!
-//! - [`schema`] - Root configuration and re-exports
-//! - [`loader`] - Configuration loading from files
-//! - [`resolver`] - Vault placeholder resolution
-//! - [`provider`] - LLM provider configuration (OpenAI, Anthropic, etc.)
-//! - [`agent`] - Agent default settings
-//! - [`channel`] - Messaging channels (Telegram, Discord, Slack, etc.)
-//! - [`tools`] - Tool configuration (Web, MCP, Exec)
-//! - [`model_registry`] - Model profile registry for dynamic model switching
-//! - [`embedding`] - Embedding configuration for semantic search
+//! NOTE: The full Config struct and related types are deprecated and will be removed
+//! in a future version. Use the individual config types from their respective crates:
+//! - Provider config: `gasket_providers::ProviderConfig`
+//! - Channel config: `gasket_channels::ChannelsConfig`
+//! - Tools config: `gasket_engine::ToolsConfig`
 
-mod agent;
-mod channel;
-mod embedding;
-mod loader;
-mod model_registry;
-mod provider;
-mod resolver;
-mod schema;
-mod tools;
+use std::collections::HashMap;
 
-pub use agent::{AgentDefaults, AgentDefaults as AgentConfig, AgentsConfig, ModelProfile};
-pub use embedding::EmbeddingConfig;
-pub use loader::{config_dir, config_path, load_config, ConfigLoader};
-pub use model_registry::ModelRegistry;
-pub use provider::{ModelConfig, ProviderConfig, ProviderType};
-pub use resolver::{resolve_string_placeholders, VaultPlaceholderResolve, VAULT_PASSWORD_ENV};
-pub use schema::*;
+use serde::{Deserialize, Serialize};
+
+pub use gasket_engine::config_dir;
+pub use gasket_engine::{
+    CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
+    WebToolsConfig,
+};
+
+// Re-export channel config types
+pub use gasket_channels::{
+    ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, SlackConfig,
+    TelegramConfig,
+};
+
+/// Embedding configuration (simplified version for config file)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EmbeddingConfig {
+    #[serde(default)]
+    pub model_name: String,
+    #[serde(default)]
+    pub cache_dir: Option<String>,
+}
+
+impl From<EmbeddingConfig> for gasket_semantic::EmbeddingConfig {
+    fn from(config: EmbeddingConfig) -> Self {
+        let mut result = gasket_semantic::EmbeddingConfig::default();
+        if !config.model_name.is_empty() {
+            result.model_name = config.model_name;
+        }
+        if let Some(dir) = config.cache_dir {
+            result.cache_dir = Some(std::path::PathBuf::from(dir));
+        }
+        result
+    }
+}
+
+/// Provider API protocol type
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderType {
+    #[default]
+    Openai,
+    Anthropic,
+    Gemini,
+}
+
+/// Provider configuration (deprecated - use gasket_providers::ProviderConfig instead)
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub provider_type: ProviderType,
+    #[serde(default)]
+    pub api_base: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub models: HashMap<String, ModelConfig>,
+    #[serde(default)]
+    pub proxy: Option<bool>,
+}
+
+impl ProviderConfig {
+    pub fn is_available(&self, _name: &str) -> bool {
+        // Local providers (ollama, lmstudio) don't need API key
+        self.api_key.is_some() || self.api_base.contains("localhost") || self.api_base.contains("127.0.0.1")
+    }
+
+    pub fn proxy_enabled(&self) -> bool {
+        self.proxy.unwrap_or(true)
+    }
+
+    pub fn thinking_enabled_for_model(&self, model: &str) -> bool {
+        self.models
+            .get(model)
+            .and_then(|m| m.thinking_enabled)
+            .unwrap_or(false)
+    }
+
+    pub fn get_pricing_for_model(&self, model: &str) -> Option<ModelPricing> {
+        self.models.get(model).and_then(|m| {
+            match (m.price_input_per_million, m.price_output_per_million) {
+                (Some(input), Some(output)) => Some(ModelPricing {
+                    price_input_per_million: input,
+                    price_output_per_million: output,
+                    currency: m.currency.clone().unwrap_or_else(|| "USD".to_string()),
+                }),
+                _ => None,
+            }
+        })
+    }
+}
+
+/// Model pricing information
+#[derive(Debug, Clone)]
+pub struct ModelPricing {
+    pub price_input_per_million: f64,
+    pub price_output_per_million: f64,
+    pub currency: String,
+}
+
+/// Model-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelConfig {
+    #[serde(default, alias = "priceInputPerMillion")]
+    pub price_input_per_million: Option<f64>,
+    #[serde(default, alias = "priceOutputPerMillion")]
+    pub price_output_per_million: Option<f64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default, alias = "maxTokens")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, alias = "maxIterations")]
+    pub max_iterations: Option<u32>,
+    #[serde(default, alias = "memoryWindow")]
+    pub memory_window: Option<usize>,
+    #[serde(default, alias = "thinkingEnabled")]
+    pub thinking_enabled: Option<bool>,
+    #[serde(default)]
+    pub streaming: Option<bool>,
+}
+
+/// Agent profile for model switching
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelProfile {
+    pub model: String,
+    pub provider: String,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default, alias = "maxTokens")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, alias = "thinkingEnabled")]
+    pub thinking_enabled: Option<bool>,
+}
+
+/// Agent defaults configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentDefaults {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default, alias = "maxTokens")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, alias = "maxIterations")]
+    pub max_iterations: Option<u32>,
+    #[serde(default, alias = "memoryWindow")]
+    pub memory_window: Option<usize>,
+    #[serde(default, alias = "thinkingEnabled")]
+    pub thinking_enabled: Option<bool>,
+    #[serde(default)]
+    pub streaming: Option<bool>,
+}
+
+/// Agents configuration section
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentsConfig {
+    #[serde(default)]
+    pub defaults: AgentDefaults,
+    #[serde(default)]
+    pub models: HashMap<String, ModelProfile>,
+}
+
+/// Root configuration structure (deprecated)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Config {
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub agents: AgentsConfig,
+    #[serde(default)]
+    pub channels: ChannelsConfig,
+    #[serde(default)]
+    pub tools: ToolsConfig,
+    #[serde(default)]
+    pub embedding: EmbeddingConfig,
+    #[serde(default)]
+    pub state_machine: Option<serde_json::Value>,
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<(), Vec<crate::ConfigValidationError>> {
+        let mut errors = Vec::new();
+        for (name, provider) in &self.providers {
+            if !provider.is_available(name) {
+                errors.push(crate::ConfigValidationError::ProviderNotAvailable(name.clone()));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+/// Load configuration from file
+pub fn load_config() -> anyhow::Result<Config> {
+    let config_path = config_path()?;
+    if !config_path.exists() {
+        return Ok(Config::default());
+    }
+    let content = std::fs::read_to_string(&config_path)?;
+    let config: Config = serde_yaml::from_str(&content)?;
+    Ok(config)
+}
+
+/// Get the config file path
+pub fn config_path() -> std::io::Result<std::path::PathBuf> {
+    Ok(config_dir().join("config.yaml"))
+}
+
+/// Configuration loader (deprecated)
+pub struct ConfigLoader;
+
+impl ConfigLoader {
+    pub fn load() -> anyhow::Result<Config> {
+        load_config()
+    }
+}
+
+/// Registry for managing model profiles
+#[derive(Debug, Clone, Default)]
+pub struct ModelRegistry {
+    profiles: HashMap<String, ModelProfile>,
+    default_model_id: Option<String>,
+}
+
+impl ModelRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_config(config: &AgentsConfig) -> Self {
+        let mut registry = Self::default();
+        for (id, profile) in &config.models {
+            registry.profiles.insert(id.clone(), profile.clone());
+        }
+        if let Some(ref model) = config.defaults.model {
+            registry.default_model_id = Some(model.clone());
+        }
+        registry
+    }
+
+    pub fn get_profile(&self, id: &str) -> Option<&ModelProfile> {
+        self.profiles.get(id)
+    }
+
+    pub fn get_profile_with_fallback<'a>(&'a self, id: Option<&'a str>) -> Option<(&'a str, &'a ModelProfile)> {
+        match id {
+            Some(id) => self.profiles.get(id).map(|p| (id, p)),
+            None => self.get_default_profile(),
+        }
+    }
+
+    pub fn get_default_profile(&self) -> Option<(&str, &ModelProfile)> {
+        self.default_model_id
+            .as_ref()
+            .and_then(|id| self.profiles.get(id).map(|p| (id.as_str(), p)))
+    }
+
+    pub fn get_default_model_id(&self) -> Option<&str> {
+        self.default_model_id.as_deref()
+    }
+
+    pub fn list_available_models(&self) -> Vec<&str> {
+        self.profiles.keys().map(|s| s.as_str()).collect()
+    }
+
+    pub fn contains(&self, id: &str) -> bool {
+        self.profiles.contains_key(id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.profiles.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
+    }
+}
+
+/// Registry for managing LLM provider instances
+#[derive(Debug, Default)]
+pub struct ProviderRegistry {
+    configs: HashMap<String, ProviderConfig>,
+    default_provider: Option<String>,
+}
+
+impl ProviderRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_config(config: &Config) -> Self {
+        let mut registry = Self::default();
+        for (name, provider_config) in &config.providers {
+            registry.configs.insert(name.clone(), provider_config.clone());
+        }
+        if let Some(ref model) = config.agents.defaults.model {
+            let provider_name: Option<&str> = model.split('/').next();
+            if let Some(name) = provider_name {
+                registry.default_provider = Some(name.to_string());
+            }
+        }
+        registry
+    }
+
+    pub fn get_or_create(&self, name: &str) -> anyhow::Result<std::sync::Arc<dyn gasket_providers::LlmProvider>> {
+        let config = self.configs.get(name)
+            .ok_or_else(|| anyhow::anyhow!("Provider not found: {}", name))?;
+
+        if !config.is_available(name) {
+            anyhow::bail!("Provider {} is not available (missing API key)", name);
+        }
+
+        let api_key = config.api_key.as_deref().unwrap_or("");
+        let provider_config = gasket_providers::ProviderConfig {
+            name: name.to_string(),
+            api_base: config.api_base.clone(),
+            api_key: api_key.to_string(),
+            default_model: "default".to_string(),
+            extra_headers: HashMap::new(),
+            proxy_enabled: config.proxy_enabled(),
+        };
+
+        Ok(std::sync::Arc::new(gasket_providers::OpenAICompatibleProvider::new(provider_config)))
+    }
+
+    pub fn get_default_provider(&self) -> Option<&str> {
+        self.default_provider.as_deref()
+    }
+}

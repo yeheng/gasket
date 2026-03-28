@@ -1,53 +1,10 @@
-//! Vault: Sensitive data isolation module
+//! Vault system
 //!
-//! Provides secure storage and runtime injection for sensitive data.
-//!
-//! This module re-exports core types from `gasket_vault` crate and provides
-//! the `VaultInjector` for injecting secrets into `ChatMessage` objects.
-//!
-//! # Design Principles
-//!
-//! 1. **Data Structure Isolation**: VaultStore is completely separated from memory/history
-//! 2. **Runtime Injection**: Secrets are only injected at the last moment before sending to LLM
-//! 3. **Zero Trust**: Sensitive data never persists to LLM-accessible storage
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use gasket_core::vault::{VaultStore, VaultInjector};
-//! use std::sync::Arc;
-//!
-//! // Create store
-//! let store = Arc::new(VaultStore::new()?);
-//! store.set("api_key", "sk-12345", Some("OpenAI API key"))?;
-//!
-//! // Create injector
-//! let injector = VaultInjector::new(store);
-//!
-//! // Inject messages
-//! let mut messages = vec![ChatMessage::user("Use {{vault:api_key}}")];
-//! let report = injector.inject(&mut messages);
-//! // messages[0].content == "Use sk-12345"
-//! ```
-//!
-//! # Placeholder Format
-//!
-//! Use `{{vault:key_name}}` in your messages:
-//!
-//! ```text
-//! "Connect to database with {{vault:db_password}}"
-//! "API key: {{vault:openai_api_key}}"
-//! "AWS credentials: {{vault:aws_access_key}} {{vault:aws_secret_key}}"
-//! ```
+//! This module re-exports types from the `gasket-vault` and `gasket-engine` vault modules.
 
-// Re-export from gasket_vault crate
+pub use gasket_engine::{InjectionReport, VaultInjector};
 pub use gasket_vault::{
     contains_placeholders, contains_secrets, extract_keys, redact_message_secrets, redact_secrets,
     replace_placeholders, scan_placeholders, AtomicTimestamp, EncryptedData, KdfParams,
     Placeholder, VaultCrypto, VaultEntryV2, VaultError, VaultFileV2, VaultMetadata, VaultStore,
 };
-
-// Local module for ChatMessage-specific injection
-mod injector;
-
-pub use injector::{InjectionReport, VaultInjector};

@@ -1,22 +1,78 @@
 //! gasket-core: Facade for gasket AI assistant framework
 //!
-//! This crate is a facade that re-exports all gasket crates for backward
-//! compatibility. It provides a single entry point for all gasket functionality.
+//! This crate provides a unified API for the gasket assistant framework.
+//! All implementation is delegated to specialized crates.
 
-// Re-export types first (canonical source)
+// Local modules that still exist
+pub mod bus;
+pub mod channels;
+pub mod config;
+pub mod heartbeat;
+pub mod providers;
+pub mod tools;
+pub mod vault;
+
+// Re-export types from gasket-types (canonical source)
 pub use gasket_types::*;
 
-// Re-export other crates (avoiding glob imports to prevent ambiguity)
-pub use gasket_bus::{
-    events as bus_events, run_outbound_actor, run_router_actor, run_session_actor, MessageBus,
-    MessageHandler, StreamEvent,
+// Re-export from gasket-engine (the main implementation crate)
+pub use gasket_engine::{
+    // Agent types
+    AgentConfig, AgentContext, AgentExecutor, AgentLoop, AgentResponse, ExecutionResult,
+    ExecutorOptions, StreamEvent,
+    // Tool types
+    CronTool, EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool,
+    MessageTool, ReadFileTool, SpawnParallelTool, SpawnTool, ToolRegistry, WebFetchTool,
+    WebSearchTool, WriteFileTool,
+    // Config
+    config_dir,
+    // Error types
+    AgentError, ChannelError, ConfigValidationError, PipelineError, ProviderError,
+    // Token tracking
+    SessionTokenStats,
+    // Subagent
+    SubagentManager, run_subagent, SessionKeyGuard,
+    // Memory
+    MemoryStore,
+    // Pipeline
+    PipelineContext, process_message,
+    // Compression
+    CompressionActor, EmbeddingService, SummarizationService,
+    // Tracker
+    SubagentTracker, TrackerError,
 };
 
+// Re-export tool config types from engine
+pub use gasket_engine::{
+    CommandPolicyConfig, ExecToolConfig, ResourceLimitsConfig, SandboxConfig, ToolsConfig,
+    WebToolsConfig,
+};
+
+// Re-export skills types from engine
+pub use gasket_engine::{Skill, SkillsLoader, SkillMetadata, SkillsRegistry};
+
+// Re-export hooks types from engine
+pub use gasket_engine::{HookRegistry, HookPoint, HookAction, MutableContext, HookContext, PipelineHook};
+
+// Re-export cron types from engine
+pub use gasket_engine::{CronJob, CronService};
+
+// Re-export vault types from engine
+pub use gasket_engine::{InjectionReport, VaultInjector};
+
+// Re-export bus types (via local bus module which re-exports from gasket_bus)
+pub use gasket_bus::{
+    events as bus_events, run_outbound_actor, run_router_actor, run_session_actor, MessageBus,
+    MessageHandler,
+};
+
+// Re-export history types
 pub use gasket_history::{
     count_tokens, process_history, HistoryConfig, HistoryQuery, HistoryQueryBuilder, HistoryResult,
     HistoryRetriever, ProcessedHistory, QueryOrder, ResultMeta, SemanticQuery, TimeRange,
 };
 
+// Re-export providers
 pub use gasket_providers::{
     build_http_client, parse_json_args, streaming, ChatMessage, ChatRequest, ChatResponse,
     ChatStream, ChatStreamChunk, ChatStreamDelta, FinishReason, FunctionCall, FunctionDefinition,
@@ -31,7 +87,7 @@ pub use gasket_providers::{
     CopilotOAuth, CopilotProvider, CopilotTokenResponse, DeviceCodeResponse,
 };
 
-// Re-export channels (avoiding name conflicts with local modules)
+// Re-export channels
 pub use gasket_channels::{
     base, log_inbound, middleware, outbound, Channel, ChannelConfigError, ChannelType,
     ChannelsConfig, DingTalkConfig, DiscordConfig, EmailConfig, FeishuConfig, InboundMessage,
@@ -61,35 +117,3 @@ pub use gasket_semantic as semantic;
 
 // Re-export storage
 pub use gasket_storage as storage;
-
-// Keep local modules that contain core business logic or re-exports
-pub mod agent;
-pub mod bus;
-pub mod channels;
-pub mod config;
-pub mod cron;
-pub mod error;
-pub mod heartbeat;
-pub mod hooks;
-pub mod memory;
-pub mod providers;
-pub mod search;
-pub mod skills;
-pub mod token_tracker;
-pub mod tools;
-pub mod vault;
-
-// Re-export error types for backward compatibility
-pub use error::{AgentError, PipelineError, ProviderError};
-
-// Re-export config
-pub use config::Config;
-
-// Re-export skills types
-pub use skills::{Skill, SkillMetadata, SkillsLoader, SkillsRegistry};
-
-// Re-export tool types
-pub use tools::{MessageTool, Tool, ToolRegistry};
-
-// Re-export vault types (including local injector types)
-pub use vault::{InjectionReport, VaultInjector};

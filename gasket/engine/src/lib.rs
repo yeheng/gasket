@@ -21,5 +21,9 @@ pub use hooks::*;
 pub use search::*;
 pub use skills::*;
 pub use token_tracker::*;
-pub use tools::ExecTool;
+pub use tools::{
+    CronTool, EditFileTool, ExecTool, HistorySearchTool, ListDirTool, MemorySearchTool,
+    MessageTool, ReadFileTool, SpawnParallelTool, SpawnTool, ToolRegistry, WebFetchTool,
+    WebSearchTool, WriteFileTool,
+};
 pub use vault::*;
