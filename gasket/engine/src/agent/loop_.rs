@@ -42,8 +42,8 @@ use crate::agent::context::AgentContext;
 use crate::agent::prompt;
 use crate::agent::stream::{self};
 use crate::agent::HistoryConfig;
+use crate::error::AgentError;
 use crate::tools::ToolRegistry;
-use gasket_core::error::AgentError;
 use gasket_core::hooks::{
     ExternalHookRunner, ExternalShellHook, HookAction, HookBuilder, HookPoint, HookRegistry,
     MutableContext, VaultHook,
@@ -125,7 +125,7 @@ pub struct AgentResponse {
     /// Model name used for this response
     pub model: Option<String>,
     /// Token usage for this request (if tracking enabled)
-    pub token_usage: Option<gasket_core::token_tracker::TokenUsage>,
+    pub token_usage: Option<crate::token_tracker::TokenUsage>,
     /// Cost for this request (if pricing configured)
     pub cost: f64,
 }
@@ -141,7 +141,7 @@ struct AgentLoopResult {
     /// Tools used during processing
     tools_used: Vec<String>,
     /// Token usage for this request
-    token_usage: Option<gasket_core::token_tracker::TokenUsage>,
+    token_usage: Option<crate::token_tracker::TokenUsage>,
     /// Cost for this request
     cost: f64,
 }
@@ -200,7 +200,7 @@ pub struct AgentLoop {
     /// Replaces external_hooks, vault_injector, embedder, history_recall_k.
     hooks: Arc<HookRegistry>,
     /// Pricing configuration for cost calculation (optional)
-    pricing: Option<gasket_core::token_tracker::ModelPricing>,
+    pricing: Option<crate::token_tracker::ModelPricing>,
     /// Injected vault values for log redaction (shared with VaultHook)
     vault_values: Arc<RwLock<Vec<String>>>,
 }
@@ -342,7 +342,7 @@ impl AgentLoop {
         config: AgentConfig,
         tools: ToolRegistry,
         memory_store: Arc<MemoryStore>,
-        pricing: Option<gasket_core::token_tracker::ModelPricing>,
+        pricing: Option<crate::token_tracker::ModelPricing>,
     ) -> Result<Self, AgentError> {
         let event_store = Arc::new(EventStore::new(memory_store.sqlite_store().pool()));
 
@@ -597,13 +597,22 @@ impl AgentLoop {
             })
             .collect();
 
+        let token_usage_for_hooks =
+            result
+                .token_usage
+                .as_ref()
+                .map(|usage| gasket_core::token_tracker::TokenUsage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    total_tokens: usage.total_tokens,
+                });
         let mut ctx = MutableContext {
             session_key: &session_key_str,
             messages: &mut vec![],
             user_input: Some(&content),
             response: Some(&result.content),
             tool_calls: Some(&tools_used),
-            token_usage: result.token_usage.as_ref(),
+            token_usage: token_usage_for_hooks.as_ref(),
         };
         self.hooks
             .execute(HookPoint::AfterResponse, &mut ctx)
@@ -622,7 +631,14 @@ impl AgentLoop {
             reasoning_content: result.reasoning_content.clone(),
             tools_used: result.tools_used.clone(),
             model: Some(self.config.model.clone()),
-            token_usage: result.token_usage.clone(),
+            token_usage: result
+                .token_usage
+                .clone()
+                .map(|usage| crate::token_tracker::TokenUsage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    total_tokens: usage.total_tokens,
+                }),
             cost: result.cost,
         })
     }
@@ -763,83 +779,101 @@ impl AgentLoop {
         let context = self.context.clone();
 
         // Spawn task to execute agent loop and handle post-processing
-        let result_handle = tokio::spawn(async move {
-            use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
+        let result_handle =
+            tokio::spawn(async move {
+                use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-            let executor = AgentExecutor::new(provider, tools, &config);
+                let executor = AgentExecutor::new(provider, tools, &config);
 
-            let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
-            if let Some(ref p) = pricing {
-                options = options.with_pricing(p.clone());
-            }
+                let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
+                if let Some(ref p) = pricing {
+                    options = options.with_pricing(gasket_core::token_tracker::ModelPricing {
+                        price_input_per_million: p.price_input_per_million,
+                        price_output_per_million: p.price_output_per_million,
+                        currency: p.currency.clone(),
+                    });
+                }
 
-            // Execute with streaming
-            let result = executor
-                .execute_stream_with_options(messages, event_tx, &options)
-                .await?;
+                // Execute with streaming
+                let result = executor
+                    .execute_stream_with_options(messages, event_tx, &options)
+                    .await?;
 
-            // Save to history FIRST (critical data safety)
-            // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
-            // This ensures that if external shell hooks hang or panic, the expensive
-            // LLM response is already saved to SQLite and won't be lost.
-            let history_content = redact_secrets(&result.content, &local_vault_values);
-            let assistant_event = SessionEvent {
-                id: uuid::Uuid::now_v7(),
-                session_key: session_key_str.clone(),
-                parent_id: None,
-                event_type: EventType::AssistantMessage,
-                content: history_content,
-                embedding: None,
-                metadata: EventMetadata {
-                    tools_used: result.tools_used.clone(),
-                    ..Default::default()
-                },
-                created_at: chrono::Utc::now(),
-            };
-            if let Err(e) = context.save_event(assistant_event).await {
-                warn!("Failed to persist assistant event: {}", e);
-            }
+                // Save to history FIRST (critical data safety)
+                // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
+                // This ensures that if external shell hooks hang or panic, the expensive
+                // LLM response is already saved to SQLite and won't be lost.
+                let history_content = redact_secrets(&result.content, &local_vault_values);
+                let assistant_event = SessionEvent {
+                    id: uuid::Uuid::now_v7(),
+                    session_key: session_key_str.clone(),
+                    parent_id: None,
+                    event_type: EventType::AssistantMessage,
+                    content: history_content,
+                    embedding: None,
+                    metadata: EventMetadata {
+                        tools_used: result.tools_used.clone(),
+                        ..Default::default()
+                    },
+                    created_at: chrono::Utc::now(),
+                };
+                if let Err(e) = context.save_event(assistant_event).await {
+                    warn!("Failed to persist assistant event: {}", e);
+                }
 
-            // AfterResponse hooks (audit, logging, etc.)
-            let tools_used: Vec<gasket_core::hooks::ToolCallInfo> = result
-                .tools_used
-                .iter()
-                .map(|name| gasket_core::hooks::ToolCallInfo {
-                    id: name.clone(),
-                    name: name.clone(),
-                    arguments: None,
+                // AfterResponse hooks (audit, logging, etc.)
+                let tools_used: Vec<gasket_core::hooks::ToolCallInfo> = result
+                    .tools_used
+                    .iter()
+                    .map(|name| gasket_core::hooks::ToolCallInfo {
+                        id: name.clone(),
+                        name: name.clone(),
+                        arguments: None,
+                    })
+                    .collect();
+
+                let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
+                    gasket_core::token_tracker::TokenUsage {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        total_tokens: usage.total_tokens,
+                    }
+                });
+                let mut ctx = MutableContext {
+                    session_key: &session_key_str,
+                    messages: &mut vec![],
+                    user_input: Some(&content_str),
+                    response: Some(&result.content),
+                    tool_calls: Some(&tools_used),
+                    token_usage: token_usage_for_hooks.as_ref(),
+                };
+                if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
+                    warn!("AfterResponse hook failed (ignored): {}", e);
+                }
+
+                // Log token usage if available
+                if let Some(ref usage) = result.token_usage {
+                    info!(
+                        "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
+                        usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
+                    );
+                }
+
+                Ok(AgentResponse {
+                    content: result.content,
+                    reasoning_content: result.reasoning_content,
+                    tools_used: result.tools_used,
+                    model: Some(config.model.clone()),
+                    token_usage: result.token_usage.clone().map(|usage| {
+                        crate::token_tracker::TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            total_tokens: usage.total_tokens,
+                        }
+                    }),
+                    cost: result.cost,
                 })
-                .collect();
-
-            let mut ctx = MutableContext {
-                session_key: &session_key_str,
-                messages: &mut vec![],
-                user_input: Some(&content_str),
-                response: Some(&result.content),
-                tool_calls: Some(&tools_used),
-                token_usage: result.token_usage.as_ref(),
-            };
-            if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
-                warn!("AfterResponse hook failed (ignored): {}", e);
-            }
-
-            // Log token usage if available
-            if let Some(ref usage) = result.token_usage {
-                info!(
-                    "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-                    usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
-                );
-            }
-
-            Ok(AgentResponse {
-                content: result.content,
-                reasoning_content: result.reasoning_content,
-                tools_used: result.tools_used,
-                model: Some(config.model.clone()),
-                token_usage: result.token_usage.clone(),
-                cost: result.cost,
-            })
-        });
+            });
 
         Ok((event_rx, result_handle))
     }
@@ -869,7 +903,11 @@ impl AgentLoop {
 
         let mut options = ExecutorOptions::new().with_vault_values(vault_values);
         if let Some(ref pricing) = self.pricing {
-            options = options.with_pricing(pricing.clone());
+            options = options.with_pricing(gasket_core::token_tracker::ModelPricing {
+                price_input_per_million: pricing.price_input_per_million,
+                price_output_per_million: pricing.price_output_per_million,
+                currency: pricing.currency.clone(),
+            });
         }
 
         let result = executor.execute_with_options(messages, &options).await?;
@@ -878,7 +916,13 @@ impl AgentLoop {
             content: result.content,
             reasoning_content: result.reasoning_content,
             tools_used: result.tools_used,
-            token_usage: result.token_usage,
+            token_usage: result
+                .token_usage
+                .map(|usage| crate::token_tracker::TokenUsage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    total_tokens: usage.total_tokens,
+                }),
             cost: result.cost,
         })
     }

@@ -18,7 +18,7 @@ use tracing::{debug, info, instrument, warn};
 
 use super::base::{simple_schema, ToolContext};
 use super::{Tool, ToolError, ToolResult};
-use gasket_core::config::ExecToolConfig;
+use crate::config::ExecToolConfig;
 
 // Re-export types from gasket-sandbox for external use
 pub use gasket_sandbox::ProcessManager;

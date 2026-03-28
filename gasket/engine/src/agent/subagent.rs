@@ -362,7 +362,7 @@ impl<'a> SubagentTaskBuilder<'a> {
 
             // Use streaming if event_tx is provided
             let response: Result<
-                Result<crate::agent::AgentResponse, gasket_core::error::AgentError>,
+                Result<crate::agent::AgentResponse, crate::error::AgentError>,
                 anyhow::Error,
             > = if let Some(ref tx) = event_tx {
                 let tx_clone = tx.clone();

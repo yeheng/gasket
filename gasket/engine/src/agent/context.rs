@@ -31,7 +31,7 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use gasket_core::error::AgentError;
+use crate::error::AgentError;
 use gasket_storage::EventStore;
 use gasket_types::SessionKey;
 use gasket_types::{Session, SessionEvent, SummaryType};

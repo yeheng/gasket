@@ -344,11 +344,7 @@ mod slack_e2e {
 
         // Send a parent message first
         let result = channel
-            .send_message(
-                &channel_id,
-                "[E2E Test] Slack thread parent - gasket",
-                None,
-            )
+            .send_message(&channel_id, "[E2E Test] Slack thread parent - gasket", None)
             .await;
 
         assert!(
@@ -1001,10 +997,7 @@ mod wecom_e2e {
             .expect("WeCom start failed");
 
         let result = channel
-            .send_text(
-                &to_user,
-                "[E2E Test] WeCom send_text - gasket channel test",
-            )
+            .send_text(&to_user, "[E2E Test] WeCom send_text - gasket channel test")
             .await;
 
         assert!(result.is_ok(), "WeCom send_text failed: {:?}", result.err());

@@ -222,7 +222,9 @@ impl From<gasket_core::error::AgentError> for AgentError {
             gasket_core::error::AgentError::ContextError(e) => AgentError::ContextError(e),
             gasket_core::error::AgentError::ConfigError(e) => AgentError::ConfigError(e),
             gasket_core::error::AgentError::IoError(e) => AgentError::IoError(e),
-            gasket_core::error::AgentError::HookFailed { name, message } => AgentError::HookFailed { name, message },
+            gasket_core::error::AgentError::HookFailed { name, message } => {
+                AgentError::HookFailed { name, message }
+            }
             gasket_core::error::AgentError::AbortedByHook(e) => AgentError::AbortedByHook(e),
             gasket_core::error::AgentError::Other(e) => AgentError::Other(e),
             gasket_core::error::AgentError::Internal(e) => AgentError::Internal(e),
@@ -235,11 +237,21 @@ impl From<gasket_core::error::ProviderError> for ProviderError {
         // Convert core ProviderError to engine ProviderError
         match err {
             gasket_core::error::ProviderError::AuthError(e) => ProviderError::AuthError(e),
-            gasket_core::error::ProviderError::RateLimitError(e) => ProviderError::RateLimitError(e),
-            gasket_core::error::ProviderError::InvalidRequest(e) => ProviderError::InvalidRequest(e),
+            gasket_core::error::ProviderError::RateLimitError(e) => {
+                ProviderError::RateLimitError(e)
+            }
+            gasket_core::error::ProviderError::InvalidRequest(e) => {
+                ProviderError::InvalidRequest(e)
+            }
             gasket_core::error::ProviderError::ModelNotFound(e) => ProviderError::ModelNotFound(e),
             gasket_core::error::ProviderError::NetworkError(e) => ProviderError::NetworkError(e),
-            gasket_core::error::ProviderError::ApiError { status_code, message } => ProviderError::ApiError { status_code, message },
+            gasket_core::error::ProviderError::ApiError {
+                status_code,
+                message,
+            } => ProviderError::ApiError {
+                status_code,
+                message,
+            },
             gasket_core::error::ProviderError::ParseError(e) => ProviderError::ParseError(e),
             gasket_core::error::ProviderError::Other(e) => ProviderError::Other(e),
             gasket_core::error::ProviderError::Internal(e) => ProviderError::Internal(e),
@@ -265,10 +277,18 @@ impl From<gasket_core::error::ConfigValidationError> for ConfigValidationError {
     fn from(err: gasket_core::error::ConfigValidationError) -> Self {
         // Convert core ConfigValidationError to engine ConfigValidationError
         match err {
-            gasket_core::error::ConfigValidationError::ProviderNotAvailable(e) => ConfigValidationError::ProviderNotAvailable(e),
-            gasket_core::error::ConfigValidationError::IncompleteEmailConfig => ConfigValidationError::IncompleteEmailConfig,
-            gasket_core::error::ConfigValidationError::MissingEmailField(e) => ConfigValidationError::MissingEmailField(e),
-            gasket_core::error::ConfigValidationError::InvalidChannelConfig(ch, msg) => ConfigValidationError::InvalidChannelConfig(ch, msg),
+            gasket_core::error::ConfigValidationError::ProviderNotAvailable(e) => {
+                ConfigValidationError::ProviderNotAvailable(e)
+            }
+            gasket_core::error::ConfigValidationError::IncompleteEmailConfig => {
+                ConfigValidationError::IncompleteEmailConfig
+            }
+            gasket_core::error::ConfigValidationError::MissingEmailField(e) => {
+                ConfigValidationError::MissingEmailField(e)
+            }
+            gasket_core::error::ConfigValidationError::InvalidChannelConfig(ch, msg) => {
+                ConfigValidationError::InvalidChannelConfig(ch, msg)
+            }
         }
     }
 }
@@ -279,10 +299,18 @@ impl From<gasket_core::error::PipelineError> for PipelineError {
         match err {
             gasket_core::error::PipelineError::NotEnabled => PipelineError::NotEnabled,
             gasket_core::error::PipelineError::TaskNotFound(e) => PipelineError::TaskNotFound(e),
-            gasket_core::error::PipelineError::InvalidTransition { from, to } => PipelineError::InvalidTransition { from, to },
-            gasket_core::error::PipelineError::PermissionDenied { caller, target } => PipelineError::PermissionDenied { caller, target },
-            gasket_core::error::PipelineError::ReviewLimitExceeded(task, limit) => PipelineError::ReviewLimitExceeded(task, limit),
-            gasket_core::error::PipelineError::StallDetected(task) => PipelineError::StallDetected(task),
+            gasket_core::error::PipelineError::InvalidTransition { from, to } => {
+                PipelineError::InvalidTransition { from, to }
+            }
+            gasket_core::error::PipelineError::PermissionDenied { caller, target } => {
+                PipelineError::PermissionDenied { caller, target }
+            }
+            gasket_core::error::PipelineError::ReviewLimitExceeded(task, limit) => {
+                PipelineError::ReviewLimitExceeded(task, limit)
+            }
+            gasket_core::error::PipelineError::StallDetected(task) => {
+                PipelineError::StallDetected(task)
+            }
             gasket_core::error::PipelineError::StoreError(e) => PipelineError::StoreError(e),
         }
     }
