@@ -7,7 +7,7 @@ use tracing::instrument;
 use uuid::Uuid;
 
 use super::{Tool, ToolContext, ToolError, ToolResult};
-use gasket_core::cron::CronService;
+use crate::cron::CronService;
 
 /// Cron tool for managing scheduled tasks
 pub struct CronTool {
@@ -112,7 +112,7 @@ impl Tool for CronTool {
                 let channel = self.channel.read().ok().and_then(|c| c.clone());
                 let chat_id = self.chat_id.read().ok().and_then(|c| c.clone());
 
-                let mut job = gasket_core::cron::CronJob::new(&id, &name, &cron, &message);
+                let mut job = crate::cron::CronJob::new(&id, &name, &cron, &message);
                 job.channel = channel;
                 job.chat_id = chat_id;
 

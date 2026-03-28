@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod bus_adapter;
 pub mod config;
+pub mod cron;
 pub mod error;
 pub mod hooks;
 pub mod search;
@@ -13,6 +14,7 @@ pub mod tools;
 pub use agent::*;
 pub use bus_adapter::*;
 pub use config::*;
+pub use cron::*;
 pub use error::*;
 pub use hooks::*;
 pub use search::*;
