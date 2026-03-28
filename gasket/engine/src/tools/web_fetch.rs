@@ -15,7 +15,7 @@ use super::{Tool, ToolError, ToolResult};
 /// 1. Explicit proxy URLs in config (http_proxy, https_proxy, socks5_proxy)
 /// 2. System environment variables (if use_env_proxy is true)
 fn build_client_with_proxy(
-    config: Option<&gasket_core::config::WebToolsConfig>,
+    config: Option<&crate::config::WebToolsConfig>,
 ) -> Result<Client, ToolError> {
     let mut builder = Client::builder();
 
@@ -79,7 +79,7 @@ impl WebFetchTool {
 
     /// Create a new web fetch tool with proxy configuration
     pub fn with_config(
-        config: Option<gasket_core::config::WebToolsConfig>,
+        config: Option<crate::config::WebToolsConfig>,
     ) -> Result<Self, ToolError> {
         let client = build_client_with_proxy(config.as_ref())?;
         Ok(Self {

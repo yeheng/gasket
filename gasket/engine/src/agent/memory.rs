@@ -7,8 +7,8 @@
 //! lives exclusively in `~/.gasket/memory/*.md` files (SSOT).
 //! SQLite is only used for machine-state.
 
-use gasket_storage::SqliteStore;
 use gasket_storage::SqlitePool;
+use gasket_storage::SqliteStore;
 
 /// Memory store — thin wrapper over `SqliteStore` for machine-state.
 ///

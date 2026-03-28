@@ -16,7 +16,7 @@ use super::{Tool, ToolError, ToolResult};
 /// 1. Explicit proxy URLs in config (http_proxy, https_proxy, socks5_proxy)
 /// 2. System environment variables (if use_env_proxy is true)
 fn build_client_with_proxy(
-    config: Option<&gasket_core::config::WebToolsConfig>,
+    config: Option<&crate::config::WebToolsConfig>,
 ) -> Result<Client, ToolError> {
     let mut builder = Client::builder();
 
@@ -402,12 +402,12 @@ async fn check_status(response: &reqwest::Response, provider_name: &str) -> Resu
 /// Web search tool
 pub struct WebSearchTool {
     client: Client,
-    config: Option<gasket_core::config::WebToolsConfig>,
+    config: Option<crate::config::WebToolsConfig>,
 }
 
 impl WebSearchTool {
     /// Create a new web search tool with optional proxy configuration
-    pub fn new(config: Option<gasket_core::config::WebToolsConfig>) -> Self {
+    pub fn new(config: Option<crate::config::WebToolsConfig>) -> Self {
         let client = build_client_with_proxy(config.as_ref()).unwrap_or_else(|e| {
             warn!(
                 "Failed to create HTTP client with proxy config: {}. Using default client.",
@@ -465,7 +465,7 @@ impl WebSearchTool {
     /// Extract an API key from config, or return a descriptive error.
     fn require_key<F>(&self, extractor: F, name: &str) -> Result<String, ToolError>
     where
-        F: FnOnce(&gasket_core::config::WebToolsConfig) -> Option<&String>,
+        F: FnOnce(&crate::config::WebToolsConfig) -> Option<&String>,
     {
         self.config
             .as_ref()

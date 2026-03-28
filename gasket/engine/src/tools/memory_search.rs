@@ -33,7 +33,7 @@ impl Default for MemorySearchTool {
 impl MemorySearchTool {
     /// Create a new memory search tool with the default memory directory.
     pub fn new() -> Self {
-        let memory_dir = gasket_core::config::config_dir().join("memory");
+        let memory_dir = crate::config::config_dir().join("memory");
         Self { memory_dir }
     }
 
@@ -44,7 +44,7 @@ impl MemorySearchTool {
 
     /// Create with default paths.
     pub fn with_defaults() -> Result<Self, ToolError> {
-        let config_dir = gasket_core::config::config_dir();
+        let config_dir = crate::config::config_dir();
         let memory_dir = config_dir.join("memory");
 
         Ok(Self { memory_dir })

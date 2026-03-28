@@ -32,15 +32,6 @@ impl TokenUsage {
     pub fn from_api_fields(prompt_tokens: usize, completion_tokens: usize) -> Self {
         Self::new(prompt_tokens, completion_tokens)
     }
-
-    /// Convert from gasket_core::token_tracker::TokenUsage
-    pub fn from_core(other: gasket_core::token_tracker::TokenUsage) -> Self {
-        Self {
-            input_tokens: other.input_tokens,
-            output_tokens: other.output_tokens,
-            total_tokens: other.total_tokens,
-        }
-    }
 }
 
 /// Pricing configuration for a model

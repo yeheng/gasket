@@ -786,7 +786,7 @@ impl AgentLoop {
 
             let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
             if let Some(ref p) = pricing {
-                options = options.with_pricing(gasket_core::token_tracker::ModelPricing {
+                options = options.with_pricing(crate::token_tracker::ModelPricing {
                     price_input_per_million: p.price_input_per_million,
                     price_output_per_million: p.price_output_per_million,
                     currency: p.currency.clone(),
@@ -904,7 +904,7 @@ impl AgentLoop {
 
         let mut options = ExecutorOptions::new().with_vault_values(vault_values);
         if let Some(ref pricing) = self.pricing {
-            options = options.with_pricing(gasket_core::token_tracker::ModelPricing {
+            options = options.with_pricing(crate::token_tracker::ModelPricing {
                 price_input_per_million: pricing.price_input_per_million,
                 price_output_per_million: pricing.price_output_per_million,
                 currency: pricing.currency.clone(),

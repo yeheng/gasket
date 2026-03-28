@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use tracing::debug;
 
-use gasket_storage::SqliteStore;
-use gasket_semantic::{top_k_similar, TextEmbedder};
 use gasket_providers::{ChatMessage, ChatRequest, LlmProvider};
+use gasket_semantic::{top_k_similar, TextEmbedder};
+use gasket_storage::SqliteStore;
 use gasket_types::SessionEvent;
 
 use crate::agent::count_tokens;
