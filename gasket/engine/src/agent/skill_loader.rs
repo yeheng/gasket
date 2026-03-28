@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
 
-use gasket_core::skills::{SkillsLoader, SkillsRegistry};
+use crate::skills::{SkillsLoader, SkillsRegistry};
 
 /// Load skills from builtin and user directories.
 ///
