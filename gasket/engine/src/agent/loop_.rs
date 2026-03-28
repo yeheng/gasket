@@ -43,12 +43,12 @@ use crate::agent::prompt;
 use crate::agent::stream::{self};
 use crate::agent::HistoryConfig;
 use crate::error::AgentError;
-use crate::tools::ToolRegistry;
 use crate::hooks::{
     ExternalHookRunner, ExternalShellHook, HookAction, HookBuilder, HookPoint, HookRegistry,
     MutableContext, VaultHook,
 };
-use gasket_core::vault::{redact_secrets, VaultInjector, VaultStore};
+use crate::tools::ToolRegistry;
+use crate::vault::{redact_secrets, VaultInjector, VaultStore};
 use gasket_providers::{ChatMessage, LlmProvider};
 use gasket_types::SessionKey;
 use tokio::sync::RwLock;
@@ -779,101 +779,102 @@ impl AgentLoop {
         let context = self.context.clone();
 
         // Spawn task to execute agent loop and handle post-processing
-        let result_handle =
-            tokio::spawn(async move {
-                use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
+        let result_handle = tokio::spawn(async move {
+            use crate::agent::executor_core::{AgentExecutor, ExecutorOptions};
 
-                let executor = AgentExecutor::new(provider, tools, &config);
+            let executor = AgentExecutor::new(provider, tools, &config);
 
-                let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
-                if let Some(ref p) = pricing {
-                    options = options.with_pricing(gasket_core::token_tracker::ModelPricing {
-                        price_input_per_million: p.price_input_per_million,
-                        price_output_per_million: p.price_output_per_million,
-                        currency: p.currency.clone(),
+            let mut options = ExecutorOptions::new().with_vault_values(&local_vault_values);
+            if let Some(ref p) = pricing {
+                options = options.with_pricing(gasket_core::token_tracker::ModelPricing {
+                    price_input_per_million: p.price_input_per_million,
+                    price_output_per_million: p.price_output_per_million,
+                    currency: p.currency.clone(),
+                });
+            }
+
+            // Execute with streaming
+            let result = executor
+                .execute_stream_with_options(messages, event_tx, &options)
+                .await?;
+
+            // Save to history FIRST (critical data safety)
+            // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
+            // This ensures that if external shell hooks hang or panic, the expensive
+            // LLM response is already saved to SQLite and won't be lost.
+            let history_content = redact_secrets(&result.content, &local_vault_values);
+            let assistant_event = SessionEvent {
+                id: uuid::Uuid::now_v7(),
+                session_key: session_key_str.clone(),
+                parent_id: None,
+                event_type: EventType::AssistantMessage,
+                content: history_content,
+                embedding: None,
+                metadata: EventMetadata {
+                    tools_used: result.tools_used.clone(),
+                    ..Default::default()
+                },
+                created_at: chrono::Utc::now(),
+            };
+            if let Err(e) = context.save_event(assistant_event).await {
+                warn!("Failed to persist assistant event: {}", e);
+            }
+
+            // AfterResponse hooks (audit, logging, etc.)
+            let tools_used: Vec<crate::hooks::ToolCallInfo> = result
+                .tools_used
+                .iter()
+                .map(|name| crate::hooks::ToolCallInfo {
+                    id: name.clone(),
+                    name: name.clone(),
+                    arguments: None,
+                })
+                .collect();
+
+            let token_usage_for_hooks =
+                result
+                    .token_usage
+                    .as_ref()
+                    .map(|usage| crate::token_tracker::TokenUsage {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        total_tokens: usage.total_tokens,
                     });
-                }
+            let mut ctx = MutableContext {
+                session_key: &session_key_str,
+                messages: &mut vec![],
+                user_input: Some(&content_str),
+                response: Some(&result.content),
+                tool_calls: Some(&tools_used),
+                token_usage: token_usage_for_hooks.as_ref(),
+            };
+            if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
+                warn!("AfterResponse hook failed (ignored): {}", e);
+            }
 
-                // Execute with streaming
-                let result = executor
-                    .execute_stream_with_options(messages, event_tx, &options)
-                    .await?;
+            // Log token usage if available
+            if let Some(ref usage) = result.token_usage {
+                info!(
+                    "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
+                    usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
+                );
+            }
 
-                // Save to history FIRST (critical data safety)
-                // IMPORTANT: Persist the LLM response BEFORE running AfterResponse hooks.
-                // This ensures that if external shell hooks hang or panic, the expensive
-                // LLM response is already saved to SQLite and won't be lost.
-                let history_content = redact_secrets(&result.content, &local_vault_values);
-                let assistant_event = SessionEvent {
-                    id: uuid::Uuid::now_v7(),
-                    session_key: session_key_str.clone(),
-                    parent_id: None,
-                    event_type: EventType::AssistantMessage,
-                    content: history_content,
-                    embedding: None,
-                    metadata: EventMetadata {
-                        tools_used: result.tools_used.clone(),
-                        ..Default::default()
-                    },
-                    created_at: chrono::Utc::now(),
-                };
-                if let Err(e) = context.save_event(assistant_event).await {
-                    warn!("Failed to persist assistant event: {}", e);
-                }
-
-                // AfterResponse hooks (audit, logging, etc.)
-                let tools_used: Vec<crate::hooks::ToolCallInfo> = result
-                    .tools_used
-                    .iter()
-                    .map(|name| crate::hooks::ToolCallInfo {
-                        id: name.clone(),
-                        name: name.clone(),
-                        arguments: None,
-                    })
-                    .collect();
-
-                let token_usage_for_hooks = result.token_usage.as_ref().map(|usage| {
+            Ok(AgentResponse {
+                content: result.content,
+                reasoning_content: result.reasoning_content,
+                tools_used: result.tools_used,
+                model: Some(config.model.clone()),
+                token_usage: result.token_usage.clone().map(|usage| {
                     crate::token_tracker::TokenUsage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
                         total_tokens: usage.total_tokens,
                     }
-                });
-                let mut ctx = MutableContext {
-                    session_key: &session_key_str,
-                    messages: &mut vec![],
-                    user_input: Some(&content_str),
-                    response: Some(&result.content),
-                    tool_calls: Some(&tools_used),
-                    token_usage: token_usage_for_hooks.as_ref(),
-                };
-                if let Err(e) = hooks.execute(HookPoint::AfterResponse, &mut ctx).await {
-                    warn!("AfterResponse hook failed (ignored): {}", e);
-                }
-
-                // Log token usage if available
-                if let Some(ref usage) = result.token_usage {
-                    info!(
-                        "[Token] Input: {} | Output: {} | Total: {} | Cost: ${:.4}",
-                        usage.input_tokens, usage.output_tokens, usage.total_tokens, result.cost
-                    );
-                }
-
-                Ok(AgentResponse {
-                    content: result.content,
-                    reasoning_content: result.reasoning_content,
-                    tools_used: result.tools_used,
-                    model: Some(config.model.clone()),
-                    token_usage: result.token_usage.clone().map(|usage| {
-                        crate::token_tracker::TokenUsage {
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            total_tokens: usage.total_tokens,
-                        }
-                    }),
-                    cost: result.cost,
-                })
-            });
+                }),
+                cost: result.cost,
+            })
+        });
 
         Ok((event_rx, result_handle))
     }

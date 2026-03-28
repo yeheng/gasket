@@ -12,7 +12,7 @@ use tracing::debug;
 
 use super::{HookAction, HookPoint, MutableContext, PipelineHook, ReadonlyContext};
 use crate::error::AgentError;
-use gasket_core::vault::VaultInjector;
+use crate::vault::VaultInjector;
 
 /// Hook for injecting vault secrets into messages.
 ///
@@ -30,7 +30,7 @@ use gasket_core::vault::VaultInjector;
 /// ```rust,ignore
 /// use std::sync::Arc;
 /// use gasket_core::hooks::VaultHook;
-/// use gasket_core::vault::{VaultStore, VaultInjector};
+/// use crate::vault::{VaultStore, VaultInjector};
 ///
 /// // Create vault store
 /// let store = Arc::new(VaultStore::new()?);
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn test_vault_hook_point() {
         // Compile-time check that the trait is implemented correctly
-        let store = Arc::new(gasket_core::vault::VaultStore::new_in_memory());
+        let store = Arc::new(crate::vault::VaultStore::new_in_memory());
         let injector = VaultInjector::new(store);
         let hook = VaultHook::new(injector);
 
@@ -122,7 +122,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_injected_values_empty() {
-        let store = Arc::new(gasket_core::vault::VaultStore::new_in_memory());
+        let store = Arc::new(crate::vault::VaultStore::new_in_memory());
         let injector = VaultInjector::new(store);
         let hook = VaultHook::new(injector);
 

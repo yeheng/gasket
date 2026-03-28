@@ -10,6 +10,7 @@ pub mod search;
 pub mod skills;
 pub mod token_tracker;
 pub mod tools;
+pub mod vault;
 
 pub use agent::*;
 pub use bus_adapter::*;
@@ -21,3 +22,4 @@ pub use search::*;
 pub use skills::*;
 pub use token_tracker::*;
 pub use tools::ExecTool;
+pub use vault::*;
