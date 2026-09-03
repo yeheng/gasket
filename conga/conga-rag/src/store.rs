@@ -1,11 +1,19 @@
-//! SQLite store: documents + chunks + sqlite-vec vec0 KNN, single file.
+//! Store: documents + chunks in SQLite, embeddings in a qdrant-edge shard
+//! (in-process vector engine) living next to the db file.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use qdrant_edge::external::serde_json::json;
+use qdrant_edge::{
+    Condition, CountRequest, Distance, EdgeConfig, EdgeShard, EdgeVectorParams, FieldCondition,
+    Filter, Match, NamedQuery, PointId, PointInsertOperations, PointOperations, PointStruct,
+    QueryEnum, SearchRequestBuilder, UpdateOperation,
+};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
-/// Search hit, `score` = 1 − cosine distance (higher is better).
+/// Search hit, `score` = cosine similarity (higher is better).
 #[derive(Debug, Clone)]
 pub struct Hit {
     pub source: String,
@@ -31,37 +39,56 @@ pub struct SourceStat {
 
 pub struct Store {
     pool: SqlitePool,
+    /// Vector index; `None` until `ensure_vec` creates it (the embedding
+    /// dimension is only known at first ingest).
+    shard: Option<EdgeShard>,
+    /// Db file path — the edge shard directory is derived from it.
+    db_path: PathBuf,
 }
 
-/// Entry-point prototype `sqlite3_auto_extension` expects.
-type AutoExtensionEntry = unsafe extern "C" fn(
-    *mut libsqlite3_sys::sqlite3,
-    *mut *mut std::os::raw::c_char,
-    *const libsqlite3_sys::sqlite3_api_routines,
-) -> std::os::raw::c_int;
+/// Persisted qdrant-edge shard manifest (kept in sync with the crate's
+/// `EDGE_CONFIG_FILE`, which is `pub(crate)` there).
+const EDGE_CONFIG_FILE: &str = "edge_config.json";
 
-/// Register the sqlite-vec extension exactly once per process, BEFORE any
-/// connection is opened (sqlite3_auto_extension applies to future opens).
-/// Relies on cargo resolving this `libsqlite3_sys` to the same crate
-/// instance sqlx links against — see the workspace Cargo.toml note.
-fn register_vec_once() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| unsafe {
-        // Safety: documented sqlite-vec registration pattern — the extension
-        // init function has the auto-extension entry-point ABI; transmuting
-        // the fn pointer makes every later-opened connection load vec0.
-        libsqlite3_sys::sqlite3_auto_extension(Some(std::mem::transmute::<
-            *const (),
-            AutoExtensionEntry,
-        >(
-            sqlite_vec::sqlite3_vec_init as *const ()
-        )));
-    });
+/// Edge shard directory for a db path: `<db>.edge/` sibling. Public for
+/// the pipeline's `--rebuild` cleanup.
+pub fn edge_dir(db: &Path) -> PathBuf {
+    let mut s = db.as_os_str().to_os_string();
+    s.push(".edge");
+    PathBuf::from(s)
 }
 
-/// f32 slice → little-endian byte blob (sqlite-vec binary format).
-fn f32_le_blob(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+/// Keyword-equality filter on one payload field (values are bound, never
+/// interpolated into SQL).
+fn kw_filter(field: &str, value: &str) -> Filter {
+    Filter {
+        should: None,
+        min_should: None,
+        must: Some(vec![Condition::Field(FieldCondition::new_match(
+            field.try_into().expect("static field name"),
+            Match::from(value.to_string()),
+        ))]),
+        must_not: None,
+    }
+}
+
+/// Filter matching every point of one document (source + path).
+fn doc_filter(source: &str, path: &str) -> Filter {
+    Filter {
+        should: None,
+        min_should: None,
+        must: Some(vec![
+            Condition::Field(FieldCondition::new_match(
+                "source".try_into().unwrap(),
+                Match::from(source.to_string()),
+            )),
+            Condition::Field(FieldCondition::new_match(
+                "path".try_into().unwrap(),
+                Match::from(path.to_string()),
+            )),
+        ]),
+        must_not: None,
+    }
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS meta(
@@ -83,7 +110,6 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS meta(
 
 impl Store {
     pub async fn open(path: &Path) -> anyhow::Result<Store> {
-        register_vec_once();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建库目录失败 {}", parent.display()))?;
@@ -102,7 +128,32 @@ impl Store {
             .await
             .with_context(|| format!("打开库失败 {}", path.display()))?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok(Store { pool })
+        // Reopen the vector shard when a previous ingest created it. A
+        // leftover directory without a persisted config (crash between dir
+        // creation and shard creation) is treated as absent and recreated
+        // by the next `ensure_vec`.
+        let dir = edge_dir(path);
+        let shard = if dir.join(EDGE_CONFIG_FILE).exists() {
+            Some(
+                EdgeShard::load(&dir, None)
+                    .with_context(|| format!("打开向量索引失败 {}", dir.display()))?,
+            )
+        } else {
+            None
+        };
+        Ok(Store {
+            pool,
+            shard,
+            db_path: path.to_path_buf(),
+        })
+    }
+
+    /// Close the SQLite connection synchronously. SQLite checkpoints and
+    /// removes the `-wal` sidecar on the last clean close, so callers that
+    /// inspect or delete store files afterwards see their final state.
+    pub async fn close(self) -> anyhow::Result<()> {
+        self.pool.close().await;
+        Ok(())
     }
 
     async fn meta_get(&self, key: &str) -> anyhow::Result<Option<String>> {
@@ -132,45 +183,49 @@ impl Store {
         Some((model, dim))
     }
 
-    pub async fn ensure_vec(&self, dim: usize, model: &str) -> anyhow::Result<()> {
-        if let Some((m, d)) = self.fingerprint().await {
-            anyhow::ensure!(
-                m == model && d == dim,
-                "embedding 指纹变更:库中 {m}[{d}],请求 {model}[{dim}]。请使用 --rebuild 重建索引"
-            );
-            return Ok(());
+    /// Create the vector shard on first ingest; idempotent afterwards.
+    /// Errors when the requested fingerprint differs from the stored one.
+    pub async fn ensure_vec(&mut self, dim: usize, model: &str) -> anyhow::Result<()> {
+        let stored = self.fingerprint().await;
+        let dim = match &stored {
+            Some((m, d)) => {
+                anyhow::ensure!(
+                    m == model && d == &dim,
+                    "embedding 指纹变更:库中 {m}[{d}],请求 {model}[{dim}]。请使用 --rebuild 重建索引"
+                );
+                *d
+            }
+            None => dim,
+        };
+        if self.shard.is_some() {
+            return Ok(()); // idempotent
         }
-        // Audited dynamic SQL: `dim` is a usize interpolated into the
-        // vec0 table declaration; no user input reaches this string.
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[{dim}] distance_metric=cosine)"
-        )))
-        .execute(&self.pool)
-        .await?;
-        self.meta_set("embedding_model", model).await?;
-        self.meta_set("embedding_dim", &dim.to_string()).await?;
+        let dir = edge_dir(&self.db_path);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("创建向量索引目录失败 {}", dir.display()))?;
+        let config = EdgeConfig::builder()
+            .on_disk_payload(false)
+            .vector(
+                qdrant_edge::DEFAULT_VECTOR_NAME,
+                EdgeVectorParams::builder(dim, Distance::Cosine).build(),
+            )
+            .build();
+        let shard = EdgeShard::new(&dir, config)
+            .with_context(|| format!("创建向量索引失败 {}", dir.display()))?;
+        if stored.is_none() {
+            self.meta_set("embedding_model", model).await?;
+            self.meta_set("embedding_dim", &dim.to_string()).await?;
+        }
+        self.shard = Some(shard);
         Ok(())
     }
 
-    async fn has_vec_table(&self) -> bool {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='vec_chunks'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map(|n| n > 0)
-        .unwrap_or(false)
-    }
-
+    /// Vector (point) count; 0 when no shard exists yet.
     pub async fn chunk_count(&self) -> anyhow::Result<i64> {
-        if !self.has_vec_table().await {
-            return Ok(0);
+        match &self.shard {
+            None => Ok(0),
+            Some(shard) => Ok(shard.count(CountRequest::new())? as i64),
         }
-        Ok(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM vec_chunks")
-                .fetch_one(&self.pool)
-                .await?,
-        )
     }
 
     pub async fn docs_for_source(&self, source: &str) -> anyhow::Result<Vec<DocRow>> {
@@ -199,8 +254,14 @@ impl Store {
         Ok(())
     }
 
-    /// Document-level upsert in ONE transaction: delete old rows (chunks via
-    /// FK cascade, vectors explicitly), then insert fresh.
+    /// Document-level upsert in ONE SQLite transaction (old rows die via FK
+    /// cascade, fresh chunks get new rowids), then the vector points are
+    /// rewritten in the edge shard. The shard is derived data: points are
+    /// deleted by (source, path) filter — which also sweeps stale points
+    /// left by an earlier crashed run — and re-upserted with point ids
+    /// matching the new chunk rowids. A crash between the SQLite commit and
+    /// the edge write leaves the doc without vectors until its next content
+    /// change (or `--rebuild`).
     pub async fn upsert_doc(
         &self,
         source: &str,
@@ -211,15 +272,6 @@ impl Store {
     ) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         let p = path.to_string_lossy();
-        sqlx::query(
-            "DELETE FROM vec_chunks WHERE rowid IN (
-                 SELECT c.rowid FROM chunks c JOIN documents d ON d.id = c.doc_id
-                 WHERE d.source = ?1 AND d.path = ?2)",
-        )
-        .bind(source)
-        .bind(&*p)
-        .execute(&mut *tx)
-        .await?;
         sqlx::query("DELETE FROM documents WHERE source = ?1 AND path = ?2")
             .bind(source)
             .bind(&*p)
@@ -238,7 +290,8 @@ impl Store {
         .execute(&mut *tx)
         .await?;
         let doc_id = doc_res.last_insert_rowid();
-        for (ordinal, content, embedding) in chunks {
+        let mut rowids = Vec::with_capacity(chunks.len());
+        for (ordinal, content, _) in chunks {
             let chunk_res =
                 sqlx::query("INSERT INTO chunks(doc_id, ordinal, content) VALUES(?1, ?2, ?3)")
                     .bind(doc_id)
@@ -246,101 +299,139 @@ impl Store {
                     .bind(content)
                     .execute(&mut *tx)
                     .await?;
-            let rowid = chunk_res.last_insert_rowid();
-            sqlx::query("INSERT INTO vec_chunks(rowid, embedding) VALUES(?1, ?2)")
-                .bind(rowid)
-                .bind(f32_le_blob(embedding))
-                .execute(&mut *tx)
-                .await?;
+            rowids.push(chunk_res.last_insert_rowid());
         }
         tx.commit().await?;
+
+        if chunks.is_empty() {
+            return Ok(());
+        }
+        let Some(shard) = &self.shard else {
+            // The pipeline always calls ensure_vec before upserting.
+            anyhow::bail!("向量索引未初始化:请先运行 conga-rag ingest");
+        };
+        shard.update(UpdateOperation::PointOperation(
+            PointOperations::DeletePointsByFilter(doc_filter(source, &p)),
+        ))?;
+        let points = chunks
+            .iter()
+            .zip(rowids)
+            .map(|((_, _, embedding), rowid)| {
+                PointStruct::new(
+                    rowid as u64,
+                    embedding.clone(),
+                    json!({"source": source, "path": &*p}),
+                )
+                .into()
+            })
+            .collect();
+        shard.update(UpdateOperation::PointOperation(
+            PointOperations::UpsertPoints(PointInsertOperations::PointsList(points)),
+        ))?;
         Ok(())
     }
 
-    /// Delete documents of `source` whose path is not in `live`. Returns count.
+    /// Delete documents of `source` whose path is not in `live`. Returns
+    /// count. Vector points die first (by filter, sweeping orphans), then
+    /// the SQLite rows — same derived-data ordering contract as
+    /// [`upsert_doc`].
     pub async fn remove_missing(&self, source: &str, live: &[PathBuf]) -> anyhow::Result<usize> {
-        let mut tx = self.pool.begin().await?;
         let rows: Vec<(i64, String)> =
             sqlx::query_as("SELECT id, path FROM documents WHERE source = ?1")
                 .bind(source)
-                .fetch_all(&mut *tx)
+                .fetch_all(&self.pool)
                 .await?;
-        let mut removed = 0;
-        for (id, path) in rows {
-            if !live.iter().any(|p| p.to_string_lossy() == path) {
-                sqlx::query(
-                    "DELETE FROM vec_chunks WHERE rowid IN (
-                         SELECT c.rowid FROM chunks c WHERE c.doc_id = ?1)",
-                )
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-                sqlx::query("DELETE FROM documents WHERE id = ?1")
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-                removed += 1;
+        let to_remove: Vec<String> = rows
+            .iter()
+            .filter(|(_, path)| !live.iter().any(|p| p.to_string_lossy() == *path))
+            .map(|(_, path)| path.clone())
+            .collect();
+        if let Some(shard) = &self.shard {
+            for path in &to_remove {
+                shard.update(UpdateOperation::PointOperation(
+                    PointOperations::DeletePointsByFilter(doc_filter(source, path)),
+                ))?;
             }
         }
+        let mut tx = self.pool.begin().await?;
+        for path in &to_remove {
+            sqlx::query("DELETE FROM documents WHERE source = ?1 AND path = ?2")
+                .bind(source)
+                .bind(path)
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
-        Ok(removed)
+        Ok(to_remove.len())
     }
 
-    /// KNN over vec0. Errors when the index is empty (no vec table).
+    /// KNN over the edge shard. Errors when the index is empty (no shard).
+    /// Hits join back to SQLite by point id (= chunk rowid), so orphaned
+    /// points from a crashed run simply disappear from results.
     pub async fn knn(
         &self,
         query: &[f32],
         k: usize,
         source: Option<&str>,
     ) -> anyhow::Result<Vec<Hit>> {
-        if !self.has_vec_table().await {
+        let Some(shard) = &self.shard else {
             anyhow::bail!("索引为空:请先运行 conga-rag ingest");
-        }
-        // Source filter is bound as ?3 (never string-interpolated). vec0
-        // pre-filters KNN candidates via `rowid IN (SELECT ...)`.
-        let (filter, src): (&str, Option<&str>) = match source {
-            Some(s) => (
-                " AND rowid IN (SELECT c.rowid FROM chunks c \
-                 JOIN documents d ON d.id = c.doc_id WHERE d.source = ?3)",
-                Some(s),
-            ),
-            None => ("", None),
         };
-        let sql = format!(
-            "SELECT k.rowid, k.distance, d.source, d.path, c.ordinal, c.content
-             FROM (SELECT rowid, distance FROM vec_chunks
-                   WHERE embedding MATCH ?1 AND k = ?2{filter}) k
-             JOIN chunks c ON c.rowid = k.rowid
-             JOIN documents d ON d.id = c.doc_id
-             ORDER BY k.distance"
+        let mut builder = SearchRequestBuilder::new(
+            QueryEnum::Nearest(NamedQuery {
+                query: query.to_vec().into(),
+                using: None,
+            }),
+            k,
         );
-        // Audited dynamic SQL: `filter` is a static fragment; user input
-        // only ever travels through bound parameters (?1..?3).
-        let rows: Vec<(i64, f64, String, String, i64, String)> = match src {
-            Some(s) => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-                    .bind(f32_le_blob(query))
-                    .bind(k as i64)
-                    .bind(s)
-                    .fetch_all(&self.pool)
-                    .await?
-            }
-            None => {
-                sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-                    .bind(f32_le_blob(query))
-                    .bind(k as i64)
-                    .fetch_all(&self.pool)
-                    .await?
-            }
-        };
-        Ok(rows
+        if let Some(s) = source {
+            builder = builder.filter(kw_filter("source", s));
+        }
+        let scored = shard.search(builder.build())?;
+        if scored.is_empty() {
+            return Ok(Vec::new());
+        }
+        // One round trip back into SQLite: ids travel as a bound JSON array
+        // (never interpolated). Rows are re-ordered to the shard's
+        // score-descending order below.
+        let ids = serde_json::to_string(
+            &scored
+                .iter()
+                .filter_map(|p| match p.id {
+                    PointId::NumId(n) => Some(n as i64),
+                    PointId::Uuid(_) => None,
+                })
+                .collect::<Vec<i64>>(),
+        )?;
+        let rows: Vec<(i64, String, String, i64, String)> = sqlx::query_as(
+            "SELECT c.rowid, d.source, d.path, c.ordinal, c.content
+             FROM chunks c JOIN documents d ON d.id = c.doc_id
+             WHERE c.rowid IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        let by_id: HashMap<i64, (String, String, i64, String)> = rows
             .into_iter()
-            .map(|(_, distance, source, path, ordinal, content)| Hit {
-                score: 1.0 - distance,
-                source,
-                path,
-                ordinal: ordinal as usize,
-                content,
+            .map(|(rowid, source, path, ordinal, content)| {
+                (rowid, (source, path, ordinal, content))
+            })
+            .collect();
+        Ok(scored
+            .iter()
+            .filter_map(|p| {
+                let PointId::NumId(id) = p.id else {
+                    return None;
+                };
+                by_id
+                    .get(&(id as i64))
+                    .map(|(source, path, ordinal, content)| Hit {
+                        source: source.clone(),
+                        path: path.clone(),
+                        ordinal: *ordinal as usize,
+                        content: content.clone(),
+                        score: p.score as f64,
+                    })
             })
             .collect())
     }
@@ -383,21 +474,26 @@ mod tests {
         let (_d, s) = store().await;
         assert_eq!(s.chunk_count().await.unwrap(), 0);
         assert!(s.fingerprint().await.is_none());
+        assert!(!edge_dir(&_d.path().join("t.db")).exists());
     }
 
     #[tokio::test]
     async fn ensure_vec_is_idempotent_and_locks_fingerprint() {
-        let (_d, s) = store().await;
+        let (_d, mut s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.ensure_vec(4, "m1").await.unwrap(); // idempotent
         assert_eq!(s.fingerprint().await.unwrap(), ("m1".to_string(), 4));
         let err = s.ensure_vec(8, "m2").await.unwrap_err();
         assert!(err.to_string().contains("--rebuild"), "err: {err}");
+        // The persisted shard survives a reopen.
+        drop(s);
+        let s2 = Store::open(&_d.path().join("t.db")).await.unwrap();
+        assert_eq!(s2.chunk_count().await.unwrap(), 0, "shard reopens empty");
     }
 
     #[tokio::test]
     async fn upsert_and_knn_roundtrip() {
-        let (_d, s) = store().await;
+        let (_d, mut s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "src",
@@ -454,7 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_replaces_previous_chunks() {
-        let (_d, s) = store().await;
+        let (_d, mut s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "src",
@@ -485,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_missing_deletes_only_absent() {
-        let (_d, s) = store().await;
+        let (_d, mut s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "src",
@@ -524,8 +620,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn orphaned_points_drop_out_of_knn() {
+        // Simulate a crash between the SQLite commit and the edge write:
+        // a point whose chunk row is gone must not surface in results.
+        let (_d, mut s) = store().await;
+        s.ensure_vec(4, "m1").await.unwrap();
+        s.upsert_doc(
+            "src",
+            Path::new("/n/a.md"),
+            1,
+            "h1",
+            &[(0, "live".into(), dim4([1.0, 0.0, 0.0, 0.0]))],
+        )
+        .await
+        .unwrap();
+        let shard = s.shard.as_ref().unwrap();
+        shard
+            .update(UpdateOperation::PointOperation(
+                PointOperations::UpsertPoints(PointInsertOperations::PointsList(vec![
+                    PointStruct::new(
+                        999_999u64,
+                        dim4([0.9, 0.1, 0.0, 0.0]),
+                        json!({"source": "src", "path": "/n/ghost"}),
+                    )
+                    .into(),
+                ])),
+            ))
+            .unwrap();
+        assert_eq!(s.chunk_count().await.unwrap(), 2, "orphan is counted");
+        let hits = s.knn(&dim4([1.0, 0.0, 0.0, 0.0]), 10, None).await.unwrap();
+        assert_eq!(hits.len(), 1, "orphan never surfaces in knn");
+        assert_eq!(hits[0].content, "live");
+    }
+
+    #[tokio::test]
     async fn stats_groups_by_source() {
-        let (_d, s) = store().await;
+        let (_d, mut s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "a",
@@ -556,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn touch_mtime_updates_row() {
-        let (_d, s) = store().await;
+        let (_d, mut s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "s",

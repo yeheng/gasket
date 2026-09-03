@@ -30,9 +30,8 @@ globset = { workspace = true }
 ignore = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
-libsqlite3-sys = { workspace = true }
+qdrant-edge = { workspace = true }
 axum = { workspace = true }
-sqlite-vec = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

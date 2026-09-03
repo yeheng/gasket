@@ -50,9 +50,18 @@ cd web && pnpm install && pnpm dev
 
 ---
 
-## 3. 后端配置(`.env`)
+## 3. 后端配置(`.env` / `config.toml`)
 
-后端所有配置走**环境变量 + dotenvy**(`conga/.env`)。模板见 `conga/.env.example`(已覆盖常用变量,完整清单见 §10)。
+后端配置支持两种形式,优先级从低到高:
+
+1. **配置文件 `config.toml`**(基础层):放在 `./.conga/config.toml`(项目级)或 `~/.conga/config.toml`(全局),模板见 `conga/config.example.toml`。用 `$CONGA_CONFIG` 可显式指定路径(不存在则启动报错)。
+2. **环境变量 + dotenvy**(`conga/.env`,模板 `conga/.env.example`):**同名环境变量覆盖配置文件**。
+
+完整优先级链:`config.toml` < `.env` < 进程环境变量 < `~/.conga/settings.json`(Web UI,每次 LLM 调用前重读)。三处都没配才回退内置默认值;`config.toml` 里的键名与环境变量一一对应(分节写法,如 `[llm] base_url` → `CONGA_LLM_BASE_URL`),未知键启动时报错(防拼错),空字符串视为未设置。
+
+`conga` CLI、`conga-gateway`、`conga-rag` 三个入口启动时都会先加载 `config.toml`。
+
+`conga-rag` 另有独立的 `rag.toml`(数据源/分块/向量库,模板见 `conga/rag.example.toml`,查找顺序 `$CONGA_RAG_CONFIG` → `./rag.toml` → `~/.conga/rag.toml`)。`config.toml` 的 `[rag]` 节对应 `CONGA_RAG_*` 环境变量,优先级高于 `rag.toml` 文件内的同名配置。
 
 ### 3.1 必填:LLM 连接
 

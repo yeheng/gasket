@@ -6,6 +6,7 @@
 
 pub mod agent_loop;
 pub mod cancel;
+pub mod config_file;
 pub mod error;
 pub mod extension;
 pub mod guard;

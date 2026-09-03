@@ -400,4 +400,16 @@ overlap_chars = 50
         assert!(p.to_string_lossy().contains("rag"));
         assert!(p.to_string_lossy().ends_with("index.db"));
     }
+
+    #[test]
+    fn shipped_example_file_parses_and_validates() {
+        let raw =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../rag.example.toml"))
+                .expect("rag.example.toml must exist next to the workspace");
+        let mut cfg: RagConfig = toml::from_str(&raw).expect("example must parse");
+        cfg.expand_tilde();
+        cfg.validate().expect("example must be a valid config");
+        assert!(cfg.sources.contains_key("docs"));
+        assert!(cfg.sources.contains_key("code"));
+    }
 }

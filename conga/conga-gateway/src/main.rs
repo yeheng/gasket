@@ -58,8 +58,9 @@ mod ws;
 
 /// Cross-origin callers allowed by default: the Vite dev server (1420) is a
 /// different origin than the gateway (3000), so browser-mode dev genuinely
-/// needs CORS. In production the bundled frontend is served same-origin by
-/// the gateway itself and needs none.
+/// needs CORS. The frontend is always served from its own origin (Vite dev
+/// server, or any separate static host in production) — add its origin via
+/// `CONGA_GATEWAY_CORS_ORIGINS`.
 ///
 /// This used to be `CorsLayer::permissive()`, which let ANY website read
 /// authenticated responses and widened the DNS-rebinding surface. Extra
@@ -104,6 +105,12 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    // config.toml base layer: file first, .env/env override. Must run before
+    // any CONGA_* env read (dotenvy inside is idempotent with the one below).
+    if let Err(e) = conga::config_file::apply() {
+        eprintln!("conga-gateway: {e}");
+        std::process::exit(1);
+    }
     let _ = dotenvy::dotenv();
 
     let (auth_token, token_source) = match auth::load_or_create_token() {
@@ -122,8 +129,6 @@ async fn main() {
         index_db: conga::storage::config_dir().join("index.db"),
         auth_token,
     });
-    let frontend_dist =
-        std::env::var("CONGA_GATEWAY_STATIC_DIR").unwrap_or_else(|_| "../web/dist".to_string());
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -137,11 +142,6 @@ async fn main() {
         .route("/api/sessions/{key}/cache", get(get_cache_stats))
         .route("/api/sessions/{key}/name", put(rename_session))
         .route("/api/sessions/{key}", delete(delete_session))
-        .fallback_service(
-            tower_http::services::ServeDir::new(&frontend_dist).not_found_service(
-                tower_http::services::ServeFile::new(format!("{frontend_dist}/index.html")),
-            ),
-        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_token,

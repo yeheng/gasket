@@ -51,7 +51,7 @@ pub async fn run_ingest(
     }
     let resolved = cfg.resolve_embedding()?;
     let client = EmbeddingsClient::new(&resolved);
-    let store = Store::open(&db_path).await?;
+    let mut store = Store::open(&db_path).await?;
     let mut pending: Vec<Pending> = Vec::new();
 
     for (name, src_cfg) in &cfg.sources {
@@ -164,6 +164,7 @@ pub async fn run_ingest(
             cursor += n;
         }
     }
+    store.close().await?;
     Ok(stats)
 }
 
@@ -171,9 +172,10 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Remove the store file plus its WAL sidecars (`<db>-wal`, `<db>-shm`).
-/// Tolerates absence; an orphaned `-wal` left by an unclean shutdown could
-/// otherwise replay onto the freshly recreated db and resurrect the old index.
+/// Remove the store file, its WAL sidecars (`<db>-wal`, `<db>-shm`) and
+/// the qdrant-edge shard directory (`<db>.edge/`). Tolerates absence; an
+/// orphaned `-wal` left by an unclean shutdown could otherwise replay onto
+/// the freshly recreated db and resurrect the old index.
 fn remove_store_files(db: &Path) -> anyhow::Result<()> {
     let sidecar = |suffix: &str| -> PathBuf {
         let mut s = db.as_os_str().to_os_string();
@@ -188,6 +190,15 @@ fn remove_store_files(db: &Path) -> anyhow::Result<()> {
                 return Err(anyhow::Error::new(e)
                     .context(format!("删除旧库失败(--rebuild): {}", p.display())));
             }
+        }
+    }
+    let edge = crate::store::edge_dir(db);
+    match fs::remove_dir_all(&edge) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(anyhow::Error::new(e)
+                .context(format!("删除旧向量索引失败(--rebuild): {}", edge.display())));
         }
     }
     Ok(())
@@ -275,9 +286,12 @@ pub(crate) mod tests {
         std::fs::write(dir.path().join("a.md"), "match").unwrap();
         run_ingest(&cfg, None, false).await.unwrap();
 
-        // Simulate an unclean shutdown: orphaned WAL sidecars next to the db.
+        // Simulate an unclean shutdown: orphaned WAL sidecars next to the db
+        // and a stale marker inside the vector shard directory.
         std::fs::write(dbdir.path().join("t.db-wal"), b"stale wal").unwrap();
         std::fs::write(dbdir.path().join("t.db-shm"), b"stale shm").unwrap();
+        let edge = crate::store::edge_dir(&db);
+        std::fs::write(edge.join("stale.bin"), b"stale shard").unwrap();
 
         let s = run_ingest(&cfg, None, true).await.unwrap();
         assert_eq!(
@@ -293,6 +307,10 @@ pub(crate) mod tests {
         assert!(
             !dbdir.path().join("t.db-shm").exists(),
             "-shm sidecar must be gone"
+        );
+        assert!(
+            !edge.join("stale.bin").exists(),
+            "stale edge shard contents must be gone"
         );
 
         // The doc is registered in the recreated index: a plain re-run skips it.

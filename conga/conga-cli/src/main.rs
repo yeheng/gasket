@@ -28,6 +28,12 @@ fn load_inprocess_ext() -> (Vec<ToolDefinition>, Option<Arc<dyn conga::HookChain
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // config.toml base layer: file first, .env/env override. Must run before
+    // any CONGA_* env read (both the exec path and the REPL below).
+    if let Err(e) = conga::config_file::apply() {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    }
     // `conga exec ...` is the headless one-shot path; everything else is
     // the interactive REPL.
     let argv: Vec<String> = std::env::args().skip(1).collect();

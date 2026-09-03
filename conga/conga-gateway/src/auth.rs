@@ -8,8 +8,8 @@
 //! * `?token=<token>` query parameter (browser WebSocket, which cannot set
 //!   headers on the upgrade request).
 //!
-//! Static assets (`/`, `/assets/...`) are exempt: the SPA must load before
-//! the user can enter the token, and the bundle itself carries no secrets.
+//! The gateway serves no static assets; unmatched paths fall through to a
+//! plain 404.
 //!
 //! Token resolution order:
 //! 1. `CONGA_GATEWAY_TOKEN` env (set = use verbatim, no file is touched);
@@ -189,8 +189,8 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
-/// Axum middleware: gate `/ws` and `/api/*`; everything else (static SPA
-/// assets) passes through so the app can load before a token is entered.
+/// Axum middleware: gate `/ws` and `/api/*`; every other path has no route
+/// and falls through to the router's default 404.
 pub(crate) async fn require_token(
     State(state): State<Arc<AppState>>,
     req: Request,

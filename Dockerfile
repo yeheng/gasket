@@ -1,8 +1,9 @@
 # =============================================================================
-# conga Dockerfile - Multi-stage build (Rust gateway + Vue frontend)
+# conga Dockerfile - Multi-stage build (Rust gateway)
 # =============================================================================
-# Produces a single image running `conga-gateway` on port 3000, serving the
-# built Vue frontend from /app/web/dist.
+# Produces a single image running `conga-gateway` on port 3000. The gateway
+# serves only /ws + /api/* — deploy the web frontend separately (any static
+# host) and point it at this gateway via VITE_WS_URL / VITE_API_URL.
 #
 # Usage:
 #   docker build -t conga .
@@ -13,26 +14,7 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: Frontend builder (Vue 3 + Vite → dist/)
-# -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS web-builder
-
-WORKDIR /web
-
-# Install pnpm
-RUN npm install -g pnpm@9
-
-# Copy lockfile + package.json first for cache
-COPY web/package.json web/pnpm-lock.yaml ./
-
-RUN pnpm install --frozen-lockfile
-
-# Copy the rest of the frontend source and build
-COPY web/ ./
-RUN pnpm build
-
-# -----------------------------------------------------------------------------
-# Stage 2: Rust builder (conga-gateway binary)
+# Stage 1: Rust builder (conga-gateway binary)
 # -----------------------------------------------------------------------------
 FROM rust:1.82-bookworm AS rust-builder
 
@@ -85,7 +67,7 @@ RUN touch \
     cargo build --release --bin conga-gateway --all-features
 
 # -----------------------------------------------------------------------------
-# Stage 3: Runtime
+# Stage 2: Runtime
 # -----------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 
@@ -101,17 +83,11 @@ WORKDIR /app
 # Copy the gateway binary
 COPY --from=rust-builder /build/target/release/conga-gateway /usr/local/bin/conga-gateway
 
-# Copy the built frontend
-COPY --from=web-builder /web/dist /app/web/dist
-
 # Create config directory
 RUN mkdir -p /root/.conga
 
 # Gateway default port
 EXPOSE 3000
-
-# Point the gateway at the bundled frontend
-ENV CONGA_GATEWAY_STATIC_DIR=/app/web/dist
 
 # The gateway binds 127.0.0.1 by default (it runs the agent's bash tool).
 # Inside the container the port is only reachable via an explicit -p, so the

@@ -86,6 +86,12 @@ fn print_stats(json: bool, path: &std::path::Path, s: &pipeline::IngestStats) {
 
 #[tokio::main]
 async fn main() {
+    // config.toml base layer: file first, .env/env override. Must run before
+    // RagConfig::load() reads CONGA_RAG_* / CONGA_LLM_* fallbacks.
+    if let Err(e) = conga::config_file::apply() {
+        eprintln!("conga-rag: {e}");
+        exit(1)
+    }
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Ingest { source, rebuild } => {

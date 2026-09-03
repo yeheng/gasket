@@ -1,0 +1,45 @@
+# =============================================================================
+# conga-rag config example (rag.toml)
+# Copy to ./rag.toml (project root) or ~/.conga/rag.toml (global), or point
+# CONGA_RAG_CONFIG at an explicit path. Discovery: $CONGA_RAG_CONFIG →
+# ./rag.toml → ~/.conga/rag.toml (first existing file wins).
+#
+# Env vars CONGA_RAG_EMBED_* / CONGA_RAG_STORE_PATH override the file values
+# (see [rag] in config.example.toml); embedding base_url/key also fall back
+# to CONGA_LLM_BASE_URL / CONGA_LLM_KEY when unset here.
+
+# ── Input sources (at least one required) ───────────────────────────────────
+# Each source is a named directory; `include`/`exclude` are glob patterns
+# matched against the path relative to `path` ('/'-separated). Empty
+# include = match every file.
+[sources.docs]
+type = "dir"                       # only "dir" is supported for now
+path = "~/notes"                   # ~/ expands to the home directory
+include = ["**/*.md"]              # optional
+exclude = ["**/drafts/**"]         # optional
+
+[sources.code]
+type = "dir"
+path = "~/workspaces/Github/conga"
+include = ["**/*.rs", "**/*.md"]
+exclude = ["**/target/**", "**/.git/**"]
+
+# ── Embedding connection (model required; url/key fall back to CONGA_LLM_*) ─
+[embedding]
+# base_url = "https://api.deepseek.com/v1"
+# api_key = "your-api-key"
+model = "text-embedding-v3"
+batch = 64                         # docs per embedding request, must be > 0
+
+# ── Chunking (optional, defaults shown) ─────────────────────────────────────
+[chunking]
+target_chars = 1200                # overlap must stay below target
+overlap_chars = 200
+
+# ── Vector store (optional) ─────────────────────────────────────────────────
+[store]
+# path = "~/.conga/rag/index.db"   # default shown
+
+# ── Retrieval (optional, defaults shown) ────────────────────────────────────
+[ask]
+top_k = 6                          # context chunks per `conga-rag ask`
