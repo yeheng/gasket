@@ -76,7 +76,7 @@ All backend config is via environment variables + `conga/.env`. See [`.env.examp
 
 Key groups:
 - **LLM connection** (required): `CONGA_LLM_BASE_URL` / `CONGA_LLM_KEY` / `CONGA_LLM_MODEL` / `CONGA_LLM_API`
-- **Gateway**: `CONGA_GATEWAY_HOST` (127.0.0.1) / `CONGA_GATEWAY_PORT` (3000) / `CONGA_GATEWAY_MODE` / `CONGA_GATEWAY_STATIC_DIR` / `CONGA_GATEWAY_TOKEN` (auth for `/ws` + `/api/*`) / `CONGA_GATEWAY_CORS_ORIGINS`
+- **Gateway**: `CONGA_GATEWAY_HOST` (127.0.0.1) / `CONGA_GATEWAY_PORT` (3000) / `CONGA_GATEWAY_MODE` / `CONGA_GATEWAY_TOKEN` (auth for `/ws` + `/api/*`) / `CONGA_GATEWAY_CORS_ORIGINS`
 
 ## Security
 

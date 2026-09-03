@@ -56,7 +56,7 @@ conga 后端是一个 Cargo workspace(`conga/Cargo.toml`),包含 5 个 crate,呈
 │ core + host      │         │ host + core      │
 └──────────────────┘         └──────────────────┘
         │
-        ▼  (WebSocket + REST + 静态托管 web/dist)
+        ▼  (WebSocket + REST)
 ┌──────────────────────────────────────────────────────────────┐
 │                web/  (Vue 3 + Vite + Tauri 2)                 │
 │   浏览器应用  ─── WS/HTTP ──┐                                │
@@ -71,7 +71,7 @@ conga 后端是一个 Cargo workspace(`conga/Cargo.toml`),包含 5 个 crate,呈
 | **`conga`** | lib(`conga`) | 内核:agent loop、消息/事件/工具类型、内置工具、LLM provider、扩展 API、JSONL 存储。**无内部依赖** | reqwest、ignore、glob、regex、async-stream |
 | **`conga-host`** | lib | 可复用宿主层:配置加载、会话管理、权限策略、hook 组合、上下文压缩、外部工具桥接、事件渲染。把 loop 装进一个 `Host` 驱动器 | `conga` |
 | **`conga-ext`** | lib | 可选的进程内扩展 crate(`hello`/`todo`/`search`/`permission_gate`),启动时经 `ExtensionApi` 注册工具与 hook | `conga` |
-| **`conga-gateway`** | bin(`conga-gateway`) | WebSocket 网关服务器,把 Vue 前端桥接到 agent loop,并提供 REST 上下文接口 + 托管前端静态资源 | `conga` + `conga-host`、axum |
+| **`conga-gateway`** | bin(`conga-gateway`) | WebSocket 网关服务器,把 Vue 前端桥接到 agent loop,并提供 REST 上下文接口 | `conga` + `conga-host`、axum |
 | **`conga-cli`** | bin(`conga`) | 交互式终端 REPL agent,每行输入调一次 `run_turn`。带斜杠命令 | `conga-host` + `conga` + 可选 `conga-ext`、reedline |
 
 > **两个二进制要分清**:包名是 `conga-cli`,但产出的二进制名是 **`conga`**;另一个二进制是 **`conga-gateway`**。
@@ -369,9 +369,8 @@ forwarder 任务: AgentEvent → event_to_ws() → JSON → 推回 WS
 | `/api/sessions/{key}/context/compact` | POST | 手动触发压缩(现已在 `run_turn` 内每轮从日志现算,此端点保留为前端兼容,返回最新统计) |
 | `/api/sessions/{key}/name` | PUT | 重命名会话(原子写 `meta.json` 侧车) |
 | `/api/sessions/{key}` | DELETE | 删除会话 |
-| *(fallback)* | — | 托管 `web/dist` 静态资源,SPA 回退到 `index.html` |
 
-- 端口 `CONGA_GATEWAY_PORT`(默认 **3000**),监听 `0.0.0.0`;静态目录 `CONGA_GATEWAY_STATIC_DIR`(默认 `../web/dist`);CORS 放开。
+- 端口 `CONGA_GATEWAY_PORT`(默认 **3000**),监听 `0.0.0.0`;CORS 放开。
 
 ### 7.2 连接模型(每连接一会话)
 

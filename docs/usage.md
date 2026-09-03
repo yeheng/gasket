@@ -38,7 +38,7 @@ cp conga/.env.example conga/.env
 #     CONGA_LLM_MODEL=deepseek-chat
 #     CONGA_LLM_API=openai        # 或 anthropic
 
-# 3) 启动后端网关(监听 127.0.0.1:3000,并托管前端)
+# 3) 启动后端网关(监听 127.0.0.1:3000)
 cd conga && cargo run --release --bin conga-gateway
 
 # 4) 另开终端,启动 Web 前端(浏览器开发模式,端口 1420)
@@ -135,14 +135,13 @@ cargo run --release --bin conga-gateway
 
 > **只监听回环是有意的**:网关驱动的是带 `bash` 工具的完整 agent,任何能连上端口的人都能以你的身份执行代码。默认绑定回环意味着只有本机可访问;需要局域网 / 容器访问时用 `CONGA_GATEWAY_HOST=0.0.0.0` 显式放开(此时启动会打一条 warning)。Docker 镜像已内置 `CONGA_GATEWAY_HOST=0.0.0.0`,因为容器内由 `-p` 决定暴露范围。
 
-**鉴权(必读)**:网关驱动的是一个带 `bash` 工具的完整 agent,任何能连上端口的人都能以你的身份执行代码。因此 `/ws` 与全部 `/api/*` 都要求携带网关 token(`Authorization: Bearer <token>` 或 `?token=<token>`,浏览器 WebSocket 无法带 header 故两者皆可);静态资源(SP 页面本身)豁免。token 解析顺序:
+**鉴权(必读)**:网关驱动的是一个带 `bash` 工具的完整 agent,任何能连上端口的人都能以你的身份执行代码。因此 `/ws` 与全部 `/api/*` 都要求携带网关 token(`Authorization: Bearer <token>` 或 `?token=<token>`,浏览器 WebSocket 无法带 header 故两者皆可)。token 解析顺序:
 
 1. `CONGA_GATEWAY_TOKEN` 环境变量(设置即用,不落盘);
 2. `~/.conga/gateway_token`——首次启动自动生成(64 位十六进制,`0600` 权限),稳定复用。
 
 浏览器前端在 **Settings → Connection** 粘贴 token(保存在本机,桌面端走 IPC 不需要)。
 
-- 自动托管 `web/dist` 静态资源(`CONGA_GATEWAY_STATIC_DIR` 可改,默认 `../web/dist`)——**先 `pnpm build` 出 dist,网关就能直接serve 整个 Web 应用**(无需单独跑前端服务器)。
 - 暴露:WebSocket `/ws`、REST `/api/commands`、`/api/sessions`、`GET /api/sessions/search?q=…`(FTS5 跨会话全文检索;每进程首个请求先增量重建 `~/.conga/index.db` 索引)、`/api/sessions/{key}/context`、`/api/sessions/{key}/context/compact`、`/api/sessions/{key}/messages`(后端真相端点:对磁盘 `events.jsonl` 跑 `derive_messages`,未知 key→404、损坏日志→500)。
 - **会话存储**:每个会话是 `~/.conga/sessions/<id>/events.jsonl` 的一份**崩溃安全事件日志**——一轮里每个已发生的事实(助手消息、工具结果)在它发生时就落盘,而非等到整轮成功才追加;崩溃 / 失败 / 中断的轮次仍保有其已经发生的全部副作用。旧 `messages.jsonl` 会话首次打开时自动迁移并删除旧文件(不可逆)。详见 [架构 §5.5](./architecture.md) 与 [ADR 0001](./adr/0001-event-sourced-session-log.md)。
 
@@ -268,7 +267,7 @@ pnpm tauri:build    # = tauri build
 
 ## 7. Docker 部署
 
-仓库根 `Dockerfile` 是可用的多阶段构建:构建阶段编译 Rust workspace 全部 5 个 crate 并 `pnpm build` 产出 `web/dist`,运行阶段 `CONGA_GATEWAY_STATIC_DIR=/app/web/dist`、`EXPOSE 3000`、`ENTRYPOINT ["conga-gateway"]`。
+仓库根 `Dockerfile` 是可用的多阶段构建:构建阶段编译 Rust workspace 全部 5 个 crate,运行阶段 `EXPOSE 3000`、`ENTRYPOINT ["conga-gateway"]`。镜像只包含网关(`/ws` + `/api/*`),Web 前端需单独部署(如 `pnpm build` 后用任意静态服务器托管 `web/dist`,并通过 `VITE_WS_URL`/`VITE_API_URL` 指向网关,来源加入 `CONGA_GATEWAY_CORS_ORIGINS`)。
 
 ```bash
 docker build -t conga .
@@ -278,7 +277,7 @@ docker run -d -p 3000:3000 \
   -e CONGA_LLM_MODEL=deepseek-chat \
   -e CONGA_LLM_API=openai \
   --name conga conga:latest
-# 访问 http://localhost:3000/
+# 网关 API: http://localhost:3000/api/... (前端需另行部署)
 ```
 
 运行时通过 `-e` 或 `--env-file` 注入 `CONGA_LLM_*` 等环境变量(完整清单见 §10)。
@@ -451,8 +450,7 @@ Write commit titles as `type(scope): summary`, lowercase, imperative mood...
 
 | `CONGA_GATEWAY_HOST` | `127.0.0.1` | 监听地址。默认只绑回环——网关能执行 shell,放开到 `0.0.0.0` 等于把本机 shell 暴露给整个网络(Docker 镜像内置此值) |
 | `CONGA_GATEWAY_PORT` | `3000` | 监听端口 |
-| `CONGA_GATEWAY_CORS_ORIGINS` | `http://localhost:1420,http://127.0.0.1:1420` | 追加允许的跨域来源(逗号分隔)。生产环境前端由网关同源托管,不需要跨域;默认放行的仅为 Vite 开发服务器 |
-| `CONGA_GATEWAY_STATIC_DIR` | `../web/dist` | 前端静态资源目录 |
+| `CONGA_GATEWAY_CORS_ORIGINS` | `http://localhost:1420,http://127.0.0.1:1420` | 追加允许的跨域来源(逗号分隔)。前端始终独立部署(Vite 开发服务器或其他静态托管),把实际来源加入此列表 |
 | `CONGA_GATEWAY_MODE` | `auto-edit` | 审批模式 `suggest`/`auto-edit`/`full-auto` |
 | `CONGA_GATEWAY_TOKEN` | 自动生成 | 网关鉴权 token;未设置时首次启动生成 `~/.conga/gateway_token`(0600)。`/ws` 与 `/api/*` 必须携带(Bearer header 或 `?token=`) |
 | `CONGA_APPROVAL_TIMEOUT_S` | `300` | 审批等待超时(秒) |
