@@ -13,8 +13,8 @@ pub async fn run_search(
     let resolved = cfg.resolve_embedding()?;
     let client = EmbeddingsClient::new(&resolved);
     let qv = client.embed_query(query).await?;
-    let store = Store::open(&cfg.store_path())?;
-    let mut hits = store.knn(&qv, k, source)?;
+    let store = Store::open(&cfg.store_path()).await?;
+    let mut hits = store.knn(&qv, k, source).await?;
     // Present paths relative to their source root (spec §9: 相对路径).
     for h in &mut hits {
         if let Some(src) = cfg.sources.get(&h.source) {

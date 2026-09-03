@@ -24,7 +24,12 @@ botpy.log
 .iflow
 .opencode
 nanobot
-*.lock
+# Python lockfiles only. NOT `*.lock`: that glob silently swallowed
+# conga/Cargo.lock, which must be committed for reproducible binary builds
+# (and which ci.yml keys its cargo cache on via hashFiles).
+uv.lock
+Pipfile.lock
+pdm.lock
 .repomix*
 repomix*
 config.yaml

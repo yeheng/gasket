@@ -140,22 +140,30 @@ pub(crate) async fn get_cache_stats(
 
 // ── Web-UI LLM env settings (file-backed, applied per LLM call) ──────────
 
-/// The masked settings view: raw API keys never cross this API (the
-/// gateway listens on 0.0.0.0 with open CORS). See
+/// The masked settings view: raw API keys never cross this API. See
 /// `conga_host::settings::settings_to_masked_json`.
 pub(crate) async fn get_settings() -> Json<Value> {
     Json(conga_host::settings::settings_to_masked_json(
-        &conga_host::settings::load_settings(),
+        &conga_host::settings::load_settings_async().await,
     ))
 }
 
 /// Validate → merge (blank `apiKey` keeps the stored one) → persist
 /// atomically. The next LLM call picks the new provider up (the host
 /// re-resolves the provider from this file every turn).
+///
+/// `put_settings` is synchronous std::fs work (read + write + rename), so it
+/// runs on the blocking pool: inside an `async fn` it would stall whatever
+/// worker thread picked up this request, including live WebSocket turns.
 pub(crate) async fn put_settings(Json(payload): Json<Value>) -> Response {
-    match conga_host::settings::put_settings(&payload) {
-        Ok(masked) => Json(masked).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+    match tokio::task::spawn_blocking(move || conga_host::settings::put_settings(&payload)).await {
+        Ok(Ok(masked)) => Json(masked).into_response(),
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("settings task failed: {e}") })),
+        )
+            .into_response(),
     }
 }
 
@@ -190,18 +198,9 @@ pub(crate) async fn search_sessions(
     let root = state.store_root.clone();
     let db = state.index_db.clone();
     let q = params.q;
-    match tokio::task::spawn_blocking(move || {
-        conga_host::session_api::search_sessions(&root, &db, &q, limit)
-    })
-    .await
-    {
-        Ok(Ok(hits)) => Json(json!({ "hits": hits })).into_response(),
-        Ok(Err(e)) => err_response(&e),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("engine task join failed: {e}") })),
-        )
-            .into_response(),
+    match conga_host::session_api::search_sessions(&root, &db, &q, limit).await {
+        Ok(hits) => Json(json!({ "hits": hits })).into_response(),
+        Err(e) => err_response(&e),
     }
 }
 

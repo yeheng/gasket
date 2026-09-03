@@ -51,7 +51,7 @@ pub async fn run_ingest(
     }
     let resolved = cfg.resolve_embedding()?;
     let client = EmbeddingsClient::new(&resolved);
-    let store = Store::open(&db_path)?;
+    let store = Store::open(&db_path).await?;
     let mut pending: Vec<Pending> = Vec::new();
 
     for (name, src_cfg) in &cfg.sources {
@@ -64,16 +64,19 @@ pub async fn run_ingest(
         let files = dir.scan()?;
         stats.scanned += files.len();
         let existing: HashMap<PathBuf, DocRow> = store
-            .docs_for_source(name)?
+            .docs_for_source(name)
+            .await?
             .into_iter()
             .map(|d| (d.path.clone(), d))
             .collect();
 
         // Removals first.
-        stats.removed += store.remove_missing(
-            name,
-            &files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
-        )?;
+        stats.removed += store
+            .remove_missing(
+                name,
+                &files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+            )
+            .await?;
 
         // Collect pending (changed) docs.
         for f in &files {
@@ -103,7 +106,7 @@ pub async fn run_ingest(
             let hash = hex(&Sha256::digest(cleaned.as_bytes()));
             if let Some(prev) = existing.get(&f.path) {
                 if prev.content_hash == hash {
-                    store.touch_mtime(name, &f.path, mtime)?;
+                    store.touch_mtime(name, &f.path, mtime).await?;
                     stats.skipped += 1;
                     continue;
                 }
@@ -137,7 +140,7 @@ pub async fn run_ingest(
             .context("embedding 调用失败")?;
         if !flat.is_empty() {
             let first_dim = vectors.first().map(|v| v.len()).unwrap_or(0);
-            store.ensure_vec(first_dim, &resolved.model)?;
+            store.ensure_vec(first_dim, &resolved.model).await?;
         }
         let mut cursor = 0usize;
         for p in &pending {
@@ -149,7 +152,9 @@ pub async fn run_ingest(
                 .zip(&vectors[cursor..cursor + n])
                 .map(|((ordinal, c), v)| (ordinal, c.content.clone(), v.clone()))
                 .collect();
-            store.upsert_doc(&p.source, &p.path, p.mtime, &p.hash, &parts)?;
+            store
+                .upsert_doc(&p.source, &p.path, p.mtime, &p.hash, &parts)
+                .await?;
             stats.chunks += n;
             if p.existed {
                 stats.updated += 1;

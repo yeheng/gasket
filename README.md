@@ -76,7 +76,20 @@ All backend config is via environment variables + `conga/.env`. See [`.env.examp
 
 Key groups:
 - **LLM connection** (required): `CONGA_LLM_BASE_URL` / `CONGA_LLM_KEY` / `CONGA_LLM_MODEL` / `CONGA_LLM_API`
-- **Gateway**: `CONGA_GATEWAY_PORT` (3000) / `CONGA_GATEWAY_MODE` / `CONGA_GATEWAY_STATIC_DIR` / `CONGA_GATEWAY_TOKEN` (auth for `/ws` + `/api/*`)
+- **Gateway**: `CONGA_GATEWAY_HOST` (127.0.0.1) / `CONGA_GATEWAY_PORT` (3000) / `CONGA_GATEWAY_MODE` / `CONGA_GATEWAY_STATIC_DIR` / `CONGA_GATEWAY_TOKEN` (auth for `/ws` + `/api/*`) / `CONGA_GATEWAY_CORS_ORIGINS`
+
+## Security
+
+The gateway drives a full agent with a `bash` tool: **anyone who can reach the port can run commands as your user.** Three controls, in order of importance:
+
+1. **Bind address** — the gateway listens on `127.0.0.1` by default. Exposing it to a network is an explicit opt-in via `CONGA_GATEWAY_HOST=0.0.0.0` (which logs a warning at startup). The Docker image sets it, because inside a container the `-p` flag — not the gateway — defines the exposure.
+2. **Token** — every `/ws` and `/api/*` request must present the gateway token (`Authorization: Bearer <t>` or `?token=<t>`; the query form exists because browser WebSocket cannot set headers on the upgrade). Without `CONGA_GATEWAY_TOKEN`, a random 64-hex token is generated on first start into `~/.conga/gateway_token` (0600). Static assets are exempt so the SPA can load before a token is entered. The desktop app uses in-process IPC and needs no token.
+3. **CORS** — only the Vite dev server origins are allowed by default (`http://localhost:1420`, `http://127.0.0.1:1420`). In production the frontend is served same-origin by the gateway itself and needs no CORS at all. Add origins with `CONGA_GATEWAY_CORS_ORIGINS`; this used to be permissive-any-origin, which let any site read authenticated responses.
+
+Two further boundaries worth knowing before you trust them:
+
+- **`CONGA_SANDBOX=1` restricts file *writes* only.** Network egress, arbitrary file reads, and process exec stay open, so "read `~/.ssh/id_rsa` and upload it" still works under the sandbox. Treat it as a guardrail against accidental damage (`rm -rf`, stray writes outside the project), not as a boundary against hostile code — use a container or VM for that. On recent macOS the Seatbelt backend may be unavailable entirely; conga detects this and refuses to run rather than pretending to confine. See [docs/usage.md §9.6](./docs/usage.md).
+- **The `fetch` SSRF guard binds conga's own DNS resolution.** A transparent proxy in the network path re-resolves on its own and defeats it. See [docs/usage.md §fetch](./docs/usage.md).
 
 ## Docker
 

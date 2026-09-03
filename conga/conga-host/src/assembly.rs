@@ -146,6 +146,28 @@ pub struct SessionAssembly {
     pub cancel_tx: tokio::sync::watch::Sender<bool>,
 }
 
+/// Lock the approval registry without letting a poisoned mutex panic.
+///
+/// Rust poisons a mutex when a thread panics while holding it, but
+/// `ApprovalRegistry` is a plain map and every critical section here is a
+/// few microseconds — a panic cannot have left it half-updated, so the data
+/// behind a `PoisonError` is still valid.
+///
+/// Propagating the poison instead would mean one bad frame anywhere in the
+/// session kills the whole connection on the *next* lock (`unwrap()`), i.e.
+/// a remotely reachable DoS on the gateway. Recovering is strictly better:
+/// the alternative is a dead session.
+///
+/// Note this is a `std` Mutex held across an `await`-free critical section
+/// by design — these are map insert/lookup/clear, never I/O, so blocking a
+/// runtime thread is not a concern and switching to an async mutex would
+/// only add a cancellation hazard around `register`.
+pub fn lock_registry(
+    registry: &StdMutex<ApprovalRegistry>,
+) -> std::sync::MutexGuard<'_, ApprovalRegistry> {
+    registry.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Fail-loud resume of a session's event log (the config-independent step,
 /// so tests can exercise corruption refusal without provider config).
 /// Corruption is an `Err`, never adopt-and-restart over a damaged log.
@@ -204,7 +226,7 @@ impl SessionAssembly {
                 let cancel_tx = cancel_tx.clone();
                 let emit = Arc::clone(&emit);
                 Box::pin(async move {
-                    let outcome = { registry.lock().unwrap().register(tool_name) };
+                    let outcome = { lock_registry(&registry).register(tool_name) };
                     let (request_id, rx) = match outcome {
                         RegisterOutcome::Remembered(v) => return v,
                         RegisterOutcome::Pending { request_id, rx } => (request_id, rx),
@@ -452,6 +474,39 @@ mod tests {
                 Box::pin(async { Ok(conga::ToolResult::error("stub")) })
             }),
         }
+    }
+
+    /// A panic while holding the registry must not disable the session.
+    /// `lock_registry` recovers the guard instead of propagating the poison;
+    /// the old `lock().unwrap()` would have panicked the whole transport task
+    /// on its next approval, which on the gateway is remotely reachable.
+    ///
+    /// The spawned thread panics on purpose, so the harness prints one panic
+    /// message — that is the point of the test, not a failure.
+    #[test]
+    fn lock_registry_recovers_from_a_poisoned_mutex() {
+        let registry = Arc::new(StdMutex::new(ApprovalRegistry::new()));
+        let r = Arc::clone(&registry);
+        let joined = std::thread::spawn(move || {
+            let _guard = r.lock().unwrap();
+            panic!("poison the registry on purpose");
+        })
+        .join();
+        assert!(joined.is_err(), "precondition: the thread must panic");
+        assert!(
+            registry.is_poisoned(),
+            "precondition: the mutex must be poisoned"
+        );
+
+        let mut guard = lock_registry(&registry);
+        // Still functional: a new approval can be registered and answered.
+        match guard.register("bash") {
+            RegisterOutcome::Pending { request_id, .. } => {
+                guard.respond(&request_id, true, false);
+            }
+            other => panic!("expected a pending approval, got {other:?}"),
+        }
+        guard.clear_pending();
     }
 
     #[test]

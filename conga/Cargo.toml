@@ -96,8 +96,12 @@ parking_lot = "0.12"
 # Test utilities
 tempfile = "3"
 
-# conga-rag
-rusqlite = { version = "0.40", features = ["bundled"] }
+# conga-rag / conga-host (session-index)
+# NOTE: libsqlite3-sys must resolve to the SAME crate instance sqlx links
+# against (sqlx 0.9 accepts >=0.30.1, <0.38.0) — sqlite-vec is registered
+# via sqlite3_auto_extension on that shared instance.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 sqlite-vec = "0.1"
 toml = "0.9"
 globset = "0.4"

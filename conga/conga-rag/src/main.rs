@@ -222,15 +222,15 @@ async fn main() {
         }
         Cmd::Status => {
             let (_path, cfg) = load_config_or_exit();
-            let store = match conga_rag::store::Store::open(&cfg.store_path()) {
+            let store = match conga_rag::store::Store::open(&cfg.store_path()).await {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("conga-rag: {e:#}");
                     exit(1)
                 }
             };
-            let stats = store.stats().unwrap_or_default();
-            let fp = store.fingerprint();
+            let stats = store.stats().await.unwrap_or_default();
+            let fp = store.fingerprint().await;
             if cli.json {
                 println!(
                     "{}",

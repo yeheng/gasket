@@ -85,7 +85,7 @@ jobs:
           path: conga/target/release/conga
 
   build-macos:
-    name: Build (macOS)
+    name: Test + Build (macOS)
     runs-on: macos-latest
     needs: test
     steps:
@@ -104,6 +104,26 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('conga/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      # The seatbelt sandbox is #[cfg(target_os = "macos")] end to end, so a
+      # Linux-only test job leaves it at zero coverage.
+      - name: Run tests
+        run: cd conga && cargo test --all-features
+
+      # Probe the platform directly rather than grepping the test log: the
+      # sandbox tests SKIP (with a printed reason) when confinement is
+      # unavailable, and under --nocapture parallel test output interleaves
+      # badly enough to mangle those lines. This is the same check
+      # `sandbox::seatbelt_usable()` performs, so the annotation is exact —
+      # and without it a dead sandbox would skip silently forever.
+      - name: Report sandbox status
+        if: always()
+        run: |
+          if sandbox-exec -p '(version 1)(allow default)(deny file-write*)' /usr/bin/true >/dev/null 2>&1; then
+            echo "sandbox confinement active on this runner"
+          else
+            echo "::warning::this macOS refuses restrictive Seatbelt profiles (sandbox-exec is neutered); the bash sandbox cannot confine here"
+          fi
 
       - name: Build release
         run: cd conga && cargo build --release --all-features

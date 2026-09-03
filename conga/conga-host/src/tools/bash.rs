@@ -138,6 +138,26 @@ mod tests {
     use conga::types::tool::ToolContext;
     use std::sync::atomic::AtomicBool;
 
+    /// False = the sandbox cannot confine on this host; the caller must bail.
+    /// (macOS-only: every confinement test here is `cfg`-gated the same way.)
+    ///
+    /// Newer macOS refuses any Seatbelt profile containing a `deny` rule, so
+    /// these tests would fail for a platform reason rather than a code
+    /// defect. Skipping is correct, but silently skipping would hide a dead
+    /// security control — so the reason is always printed, and
+    /// `sandbox::tests::seatbelt_usable_matches_direct_sandbox_exec` asserts
+    /// the probe itself still agrees with the platform.
+    #[cfg(target_os = "macos")]
+    fn sandbox_works(name: &str) -> bool {
+        match crate::tools::sandbox::seatbelt_usable() {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("SKIP {name}: {e}");
+                false
+            }
+        }
+    }
+
     async fn run(args: serde_json::Value, cwd: &std::path::Path) -> ToolResult {
         // Unique session per call: the persistent shell serializes per
         // session id, and parallel tests sharing one id would interleave.
@@ -302,6 +322,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn sandbox_blocks_writes_outside_cwd() {
+        if !sandbox_works("sandbox_blocks_writes_outside_cwd") {
+            return;
+        }
         let cwd = tempfile::tempdir().unwrap();
         // /tmp (-> /private/tmp) is NOT whitelisted; only /var/tmp is.
         let outside = tempfile::tempdir_in("/tmp").unwrap();
@@ -336,6 +359,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn sandbox_allows_writes_under_tmpdir() {
+        if !sandbox_works("sandbox_allows_writes_under_tmpdir") {
+            return;
+        }
         let cwd = tempfile::tempdir().unwrap();
         let target = std::env::temp_dir().join("conga_sandbox_tmpdir_probe.txt");
         let mut env: std::collections::HashMap<_, _> = std::env::vars().collect();
@@ -355,11 +381,44 @@ mod tests {
         let _ = std::fs::remove_file(&target);
     }
 
+    /// A sandbox that cannot confine must refuse the command outright, not
+    /// run it wrapped in a no-op. The old failure mode was exit 71 plus
+    /// `sandbox_apply: Operation not permitted` — technically "fail closed"
+    /// but it told the operator nothing about their sandbox being dead.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn sandbox_unavailable_refuses_loudly() {
+        if crate::tools::sandbox::seatbelt_usable().is_ok() {
+            eprintln!("SKIP sandbox_unavailable_refuses_loudly: confinement works on this host");
+            return;
+        }
+        let cwd = tempfile::tempdir().unwrap();
+        let mut env: std::collections::HashMap<_, _> = std::env::vars().collect();
+        env.insert("CONGA_SANDBOX".to_string(), "1".to_string());
+        let r = run_with_env(serde_json::json!({"command": "echo x"}), cwd.path(), env).await;
+        assert!(r.is_error, "must refuse to run when confinement is a no-op");
+        let text = match &r.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            _ => panic!("expected text content"),
+        };
+        assert!(
+            text.contains("sandbox"),
+            "the refusal must name the sandbox: {text}"
+        );
+        assert!(
+            !text.contains("Operation not permitted"),
+            "must not degrade to a raw sandbox-exec error: {text}"
+        );
+    }
+
     /// Sandbox ON + short timeout: sandbox-exec execs the command in place
     /// after applying the profile, so the timeout still kills the child.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn sandbox_timeout_kills_wrapped_command() {
+        if !sandbox_works("sandbox_timeout_kills_wrapped_command") {
+            return;
+        }
         let cwd = tempfile::tempdir().unwrap();
         let mut env: std::collections::HashMap<_, _> = std::env::vars().collect();
         env.insert("CONGA_SANDBOX".to_string(), "1".to_string());

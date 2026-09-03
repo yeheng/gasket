@@ -37,10 +37,11 @@
 
 use std::sync::Arc;
 
+use axum::http::{HeaderValue, Method};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use dashmap::DashMap;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::api::{
     compact_context, delete_session, get_cache_stats, get_commands, get_context, get_messages,
@@ -54,6 +55,49 @@ mod auth;
 mod state;
 mod wire;
 mod ws;
+
+/// Cross-origin callers allowed by default: the Vite dev server (1420) is a
+/// different origin than the gateway (3000), so browser-mode dev genuinely
+/// needs CORS. In production the bundled frontend is served same-origin by
+/// the gateway itself and needs none.
+///
+/// This used to be `CorsLayer::permissive()`, which let ANY website read
+/// authenticated responses and widened the DNS-rebinding surface. Extra
+/// origins (e.g. a `TAURI_DEV_HOST` LAN address) can be added with
+/// `CONGA_GATEWAY_CORS_ORIGINS`.
+const DEFAULT_CORS_ORIGINS: &[&str] = &["http://localhost:1420", "http://127.0.0.1:1420"];
+
+fn cors_layer() -> tower_http::cors::CorsLayer {
+    let mut origins: Vec<HeaderValue> = DEFAULT_CORS_ORIGINS
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+    if let Ok(extra) = std::env::var("CONGA_GATEWAY_CORS_ORIGINS") {
+        for raw in extra.split(',') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            match raw.parse() {
+                Ok(v) => origins.push(v),
+                Err(_) => warn!("ignoring unparseable CONGA_GATEWAY_CORS_ORIGINS entry: {raw}"),
+            }
+        }
+    }
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+        ])
+}
 
 // ── Axum server ────────────────────────────────────────────────
 
@@ -102,7 +146,7 @@ async fn main() {
             state.clone(),
             auth::require_token,
         ))
-        .layer(tower_http::cors::CorsLayer::permissive())
+        .layer(cors_layer())
         .with_state(state);
 
     let port = std::env::var("CONGA_GATEWAY_PORT")
@@ -110,7 +154,18 @@ async fn main() {
         .and_then(|p| p.parse().ok())
         .unwrap_or(3000);
 
-    let addr = format!("0.0.0.0:{port}");
+    // Loopback by default: this process runs the agent's bash tool, so
+    // exposing it to the LAN is a remote-code-execution decision the
+    // operator must make explicitly via CONGA_GATEWAY_HOST (the Dockerfile
+    // sets 0.0.0.0, where the container network is the intended boundary).
+    let host = std::env::var("CONGA_GATEWAY_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+        warn!(
+            "listening on {host} — anyone who can reach this address can run commands as this user"
+        );
+    }
+
+    let addr = format!("{host}:{port}");
     info!("conga-gateway listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await

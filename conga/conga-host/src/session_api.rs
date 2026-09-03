@@ -158,11 +158,11 @@ pub async fn delete_session(store_root: &Path, session_id: &str) -> Result<bool,
 }
 
 /// Full-text search across all session event logs (FTS5 sidecar index).
-/// BLOCKING: callers wrap in `spawn_blocking`. Runs the incremental
-/// high-water reindex check first, then the query — per-call reindex is an
-/// incremental stat check, not a full rebuild. Empty/blank q → BadRequest.
+/// Async (sqlx) — callers just `.await`. Runs the incremental high-water
+/// reindex check first, then the query — per-call reindex is an incremental
+/// stat check, not a full rebuild. Empty/blank q → BadRequest.
 #[cfg(feature = "session-index")]
-pub fn search_sessions(
+pub async fn search_sessions(
     store_root: &Path,
     index_db: &Path,
     q: &str,
@@ -173,8 +173,10 @@ pub fn search_sessions(
         return Err(SessionApiError::BadRequest("q must be non-empty".into()));
     }
     crate::session_index::reindex(store_root, index_db)
+        .await
         .map_err(|e| SessionApiError::Internal(e.to_string()))?;
     crate::session_index::search(store_root, index_db, q, limit)
+        .await
         .map_err(|e| SessionApiError::Internal(e.to_string()))
 }
 

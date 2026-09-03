@@ -113,5 +113,10 @@ EXPOSE 3000
 # Point the gateway at the bundled frontend
 ENV CONGA_GATEWAY_STATIC_DIR=/app/web/dist
 
+# The gateway binds 127.0.0.1 by default (it runs the agent's bash tool).
+# Inside the container the port is only reachable via an explicit -p, so the
+# container network — not the gateway — is the boundary here.
+ENV CONGA_GATEWAY_HOST=0.0.0.0
+
 ENTRYPOINT ["conga-gateway"]
 CMD []

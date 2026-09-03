@@ -59,18 +59,16 @@ async fn rename_session(id: String, name: String) -> Result<(), String> {
 
 /// Cross-session full-text search (FTS5 sidecar at `~/.conga/index.db`).
 /// Same engine as the gateway's REST route (conga_host::session_api):
-/// incremental high-water reindex check + query, on a blocking thread.
+/// incremental high-water reindex check + query, awaited directly.
 #[tauri::command]
 async fn search_sessions(
     query: String,
 ) -> Result<Vec<conga_host::session_index::SessionHit>, String> {
     let root = session_store_root();
     let db = conga::storage::config_dir().join("index.db");
-    tokio::task::spawn_blocking(move || {
-        session_api::search_sessions(&root, &db, &query, 20).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("engine task join failed: {e}"))?
+    session_api::search_sessions(&root, &db, &query, 20)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Delete the session's on-disk data wholesale (event log + meta sidecar).

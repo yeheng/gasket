@@ -23,6 +23,50 @@ pub(crate) fn sandbox_enabled(env: &std::collections::HashMap<String, String>) -
     env.get("CONGA_SANDBOX").map(String::as_str) == Some("1")
 }
 
+/// Verify Seatbelt can actually apply a RESTRICTIVE profile on this machine.
+///
+/// Apple has been locking `sandbox-exec` down: on recent macOS any profile
+/// containing a `deny` rule is refused with `sandbox_apply: Operation not
+/// permitted` (exit 71), while a pure-allow profile still applies. Wrapping
+/// commands in a sandbox that silently cannot confine is worse than no
+/// sandbox — the operator believes they are protected — so probe the real
+/// capability once and let the caller refuse to run.
+///
+/// The probe is generic (it asks "can this machine deny at all?", not "is
+/// this particular profile valid?") so the verdict can be cached for the
+/// process; per-profile rejections still surface as a failing command.
+/// Cached because it spawns a process.
+#[cfg(target_os = "macos")]
+pub(crate) fn seatbelt_usable() -> Result<(), String> {
+    static PROBE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    PROBE
+        .get_or_init(|| {
+            // /usr/bin/true (not /bin/true — that path does not exist on macOS)
+            // with all stdio nulled: it performs no file writes, so on a machine
+            // where Seatbelt works the deny rule is simply never triggered.
+            match std::process::Command::new("sandbox-exec")
+                .arg("-p")
+                .arg("(version 1)(allow default)(deny file-write*)")
+                .arg("/usr/bin/true")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                Ok(s) if s.success() => Ok(()),
+                Ok(s) => Err(format!(
+                    "macOS refused to apply the sandbox profile (sandbox-exec exited {}); \
+                 this system cannot confine the bash tool, so CONGA_SANDBOX=1 is unavailable",
+                    s.code().unwrap_or(-1)
+                )),
+                Err(e) => Err(format!(
+                    "sandbox self-check could not run sandbox-exec: {e}"
+                )),
+            }
+        })
+        .clone()
+}
+
 /// Apply filesystem confinement to `cmd`. MUST be called before cwd/env are
 /// set on `cmd` (the macOS branch rewrites program+args wholesale).
 /// Err = fail-closed: the caller must refuse to run the command.
@@ -32,6 +76,9 @@ pub(crate) fn confine(
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        // Capability check first: a platform that cannot deny at all must be
+        // reported as "sandbox unavailable", not as a failed command.
+        seatbelt_usable()?;
         let cwd_c = cwd
             .canonicalize()
             .map_err(|e| format!("sandbox: cwd not accessible: {e}"))?;
@@ -168,6 +215,38 @@ mod tests {
             p.contains("(allow file-write* (subpath \"/tmp/dir\"))"),
             "{p}"
         );
+    }
+
+    /// The probe must agree with reality: run the same deny-rule profile
+    /// directly and assert `seatbelt_usable()` reached the same verdict.
+    /// This is the test that catches the platform regression — on a macOS
+    /// where Seatbelt still works it asserts Ok; on one where `sandbox-exec`
+    /// has been neutered it asserts Err. Self-consistent either way, so it
+    /// never goes red purely because the host OS changed.
+    #[test]
+    fn seatbelt_usable_matches_direct_sandbox_exec() {
+        let direct = std::process::Command::new("sandbox-exec")
+            .arg("-p")
+            .arg("(version 1)(allow default)(deny file-write*)")
+            .arg("/usr/bin/true")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let expected_ok = matches!(direct, Ok(s) if s.success());
+        assert_eq!(
+            seatbelt_usable().is_ok(),
+            expected_ok,
+            "probe disagrees with a direct sandbox-exec invocation: {:?}",
+            direct
+        );
+        if !expected_ok {
+            // Documented degradation, not a code defect: surface it loudly.
+            eprintln!(
+                "NOTE: this macOS refuses restrictive Seatbelt profiles; \
+                 CONGA_SANDBOX=1 is unavailable here."
+            );
+        }
     }
 
     #[test]

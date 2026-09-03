@@ -38,7 +38,7 @@ cp conga/.env.example conga/.env
 #     CONGA_LLM_MODEL=deepseek-chat
 #     CONGA_LLM_API=openai        # 或 anthropic
 
-# 3) 启动后端网关(监听 0.0.0.0:3000,并托管前端)
+# 3) 启动后端网关(监听 127.0.0.1:3000,并托管前端)
 cd conga && cargo run --release --bin conga-gateway
 
 # 4) 另开终端,启动 Web 前端(浏览器开发模式,端口 1420)
@@ -107,6 +107,10 @@ ChatHeader 的齿轮按钮(**Model Settings**)可以不碰 `.env` 直接配置 L
 
 配置了 `CONGA_TOOL_PROXY`(或桌面版代理)时,该防护整体跳过——出站走向由代理决定。
 
+> **边界假设(排错时有用)**:防护的手段是「先解析一次、任一地址非公网即拒绝,再用 `resolve_to_addrs` 把连接钉死在校验过的地址上」。它约束的是 conga 自己的解析。如果链路上存在**透明代理**(不设任何 `*_PROXY` 环境变量也会拦截的那种),请求会被代理接管并用代理自己的 DNS 重新解析,上述钉死就失效了,此时 `fetch` 可能拿到代理返回的 `502 upstream connect failed` 而并非目标响应。这是部署环境属性而非代码缺陷;若你的网络里存在透明代理,请不要把 SSRF guard 当作唯一防线。
+>
+> 附带影响:依赖「本机回环直连」的测试(如 `pinned_client_connects_to_pinned_address_not_dns`)在此类网络下会失败。
+
 ---
 
 ## 4. 运行后端
@@ -118,7 +122,9 @@ cd conga
 cargo run --release --bin conga-gateway
 ```
 
-- 默认监听 `0.0.0.0:3000`(`CONGA_GATEWAY_PORT` 可改)。
+- 默认监听 `127.0.0.1:3000`(`CONGA_GATEWAY_HOST` / `CONGA_GATEWAY_PORT` 可改)。
+
+> **只监听回环是有意的**:网关驱动的是带 `bash` 工具的完整 agent,任何能连上端口的人都能以你的身份执行代码。默认绑定回环意味着只有本机可访问;需要局域网 / 容器访问时用 `CONGA_GATEWAY_HOST=0.0.0.0` 显式放开(此时启动会打一条 warning)。Docker 镜像已内置 `CONGA_GATEWAY_HOST=0.0.0.0`,因为容器内由 `-p` 决定暴露范围。
 
 **鉴权(必读)**:网关驱动的是一个带 `bash` 工具的完整 agent,任何能连上端口的人都能以你的身份执行代码。因此 `/ws` 与全部 `/api/*` 都要求携带网关 token(`Authorization: Bearer <token>` 或 `?token=<token>`,浏览器 WebSocket 无法带 header 故两者皆可);静态资源(SP 页面本身)豁免。token 解析顺序:
 
@@ -378,7 +384,11 @@ CONGA_EXTERNAL_TOOLS=rg,jq
 
 ### 9.6 bash 沙箱(CONGA_SANDBOX)
 
-设置 `CONGA_SANDBOX=1` 后,`bash` 工具的命令在操作系统级文件系统沙箱中执行:macOS 使用 `sandbox-exec`(Seatbelt,系统自带);Linux 使用 Landlock,要求以 `--features sandbox-landlock` 构建否则 `CONGA_SANDBOX=1` fail-closed 并附带 rebuild 提示。写操作仅允许在当前工作目录、`TMPDIR` 与 `/var/tmp` 内,其余路径只读。未设置时行为完全不变。沙箱是 fail-closed 的:如果隔离无法施加(如 Windows、或不支持 Landlock 的内核),命令会被直接拒绝并返回错误,而不是降级放行。
+设置 `CONGA_SANDBOX=1` 后,`bash` 工具的命令在操作系统级文件系统沙箱中执行:macOS 使用 `sandbox-exec`(Seatbelt,系统自带);Linux 使用 Landlock,要求以 `--features sandbox-landlock` 构建否则 `CONGA_SANDBOX=1` fail-closed 并附带 rebuild 提示。写操作仅允许在当前工作目录、`TMPDIR` 与 `/var/tmp` 内,其余路径只读。未设置时(默认)行为完全不变。
+
+**沙箱是 fail-closed 的**:如果隔离无法施加,命令会被直接拒绝并返回错误,而不是降级放行。macOS 上首次使用时会自检 `sandbox-exec` 是否真的能应用含 `deny` 规则的 profile——Apple 已在新版 macOS 上削弱该命令:纯 `allow` 的 profile 仍生效,但任何 `deny` 规则会被 `sandbox_apply: Operation not permitted` 拒绝(退出码 71)。自检失败时工具报错指出「沙箱不可用」,而不是让命令带着失效的沙箱继续执行。
+
+**能力边界(重要)**:沙箱只约束**文件写入**。网络出口、任意文件读取、进程 exec 均不受限制——`cat ~/.ssh/id_rsa` 后外传这类「读 + 外传」链路在 `CONGA_SANDBOX=1` 下依然通畅。因此它应被当作防误伤的护栏(挡住 `rm -rf`、挡住写到项目目录之外),而不是对抗恶意代码的边界;真正需要隔离时请使用容器或虚拟机。
 
 ### 9.7 Skills(可选)
 
@@ -430,7 +440,9 @@ Write commit titles as `type(scope): summary`, lowercase, imperative mood...
 
 ### 网关服务器
 
+| `CONGA_GATEWAY_HOST` | `127.0.0.1` | 监听地址。默认只绑回环——网关能执行 shell,放开到 `0.0.0.0` 等于把本机 shell 暴露给整个网络(Docker 镜像内置此值) |
 | `CONGA_GATEWAY_PORT` | `3000` | 监听端口 |
+| `CONGA_GATEWAY_CORS_ORIGINS` | `http://localhost:1420,http://127.0.0.1:1420` | 追加允许的跨域来源(逗号分隔)。生产环境前端由网关同源托管,不需要跨域;默认放行的仅为 Vite 开发服务器 |
 | `CONGA_GATEWAY_STATIC_DIR` | `../web/dist` | 前端静态资源目录 |
 | `CONGA_GATEWAY_MODE` | `auto-edit` | 审批模式 `suggest`/`auto-edit`/`full-auto` |
 | `CONGA_GATEWAY_TOKEN` | 自动生成 | 网关鉴权 token;未设置时首次启动生成 `~/.conga/gateway_token`(0600)。`/ws` 与 `/api/*` 必须携带(Bearer header 或 `?token=`) |

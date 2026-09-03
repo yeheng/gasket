@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 
 use conga::AgentEvent;
 
+use conga_host::assembly::lock_registry;
 use conga_host::event_map::event_to_ws;
 use conga_host::wire::OutgoingEvent;
 
@@ -420,15 +421,24 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>, session_id: String) 
                                                     let _ = cancel_tx.send(true);
                                                 }
                                                 "approval_response" => {
-                                                    if let Ok(resp) = serde_json::from_str::<
+                                                    match serde_json::from_str::<
                                                         ApprovalResponse,
                                                     >(&t)
                                                     {
-                                                        registry.lock().unwrap().respond(
-                                                            &resp.request_id,
-                                                            resp.approved,
-                                                            resp.remember,
-                                                        );
+                                                        Ok(resp) => {
+                                                            lock_registry(&registry).respond(
+                                                                &resp.request_id,
+                                                                resp.approved,
+                                                                resp.remember,
+                                                            );
+                                                        }
+                                                        // Not silently droppable: a malformed
+                                                        // response leaves the tool call parked
+                                                        // on an approval that never arrives.
+                                                        Err(e) => warn!(
+                                                            "session {session_id}: malformed \
+                                                             approval_response ignored: {e}"
+                                                        ),
                                                     }
                                                 }
                                                 "message" => {
@@ -449,8 +459,16 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>, session_id: String) 
                                                         );
                                                     }
                                                 }
-                                                _ => {}
+                                                other => warn!(
+                                                    "session {session_id}: unknown msg type \
+                                                     during turn: {other}"
+                                                ),
                                             }
+                                        } else {
+                                            warn!(
+                                                "session {session_id}: unparseable text frame \
+                                                 ignored"
+                                            );
                                         }
                                     }
                                     Some(Ok(Message::Ping(data))) => {
@@ -479,7 +497,7 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>, session_id: String) 
                 }; // turn dropped
 
                 // Turn boundary: clear in-flight approvals regardless of outcome.
-                registry.lock().unwrap().clear_pending();
+                lock_registry(&registry).clear_pending();
 
                 if !closing {
                     // done/error are queued AFTER every event the turn emitted
@@ -511,13 +529,20 @@ async fn handle_ws(socket: WebSocket, state: Arc<AppState>, session_id: String) 
                 info!("session {session_id}: cancel outside turn");
             }
             "approval_response" => {
-                // 迟到的审批响应（回合已结束，registry 已 clear）：静默忽略。
-                if let Ok(resp) = serde_json::from_str::<ApprovalResponse>(&msg) {
-                    registry.lock().unwrap().respond(
-                        &resp.request_id,
-                        resp.approved,
-                        resp.remember,
-                    );
+                // 迟到的审批响应（回合已结束，registry 已 clear）：respond 对未知
+                // request_id 是 no-op。畸形帧必须记日志——静默丢弃会让"审批卡住"
+                // 这类问题无法诊断。
+                match serde_json::from_str::<ApprovalResponse>(&msg) {
+                    Ok(resp) => {
+                        lock_registry(&registry).respond(
+                            &resp.request_id,
+                            resp.approved,
+                            resp.remember,
+                        );
+                    }
+                    Err(e) => {
+                        warn!("session {session_id}: malformed approval_response ignored: {e}")
+                    }
                 }
             }
             other => {
