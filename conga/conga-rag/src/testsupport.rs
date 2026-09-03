@@ -55,3 +55,29 @@ pub async fn spawn_mock_embeddings(fail_first: u32) -> (String, Arc<AtomicU32>) 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (format!("http://{addr}/v1"), requests)
 }
+
+/// Error-path double: every request answers `status` with `body`. Use to
+/// assert the client surfaces server error details verbatim.
+pub async fn spawn_mock_embeddings_error(
+    status: u16,
+    body: &'static str,
+) -> (String, Arc<AtomicU32>) {
+    let requests = Arc::new(AtomicU32::new(0));
+    let req_clone = requests.clone();
+    let status = StatusCode::from_u16(status).unwrap();
+
+    let app = Router::new().route(
+        "/v1/embeddings",
+        post(move || {
+            let req_clone = req_clone.clone();
+            async move {
+                req_clone.fetch_add(1, Ordering::SeqCst);
+                (status, body).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/v1"), requests)
+}

@@ -86,6 +86,16 @@ fn print_stats(json: bool, path: &std::path::Path, s: &pipeline::IngestStats) {
 
 #[tokio::main]
 async fn main() {
+    // Logs go to stderr: stdout is reserved for output (incl. --json NDJSON).
+    // Default level info; RUST_LOG overrides (tracing_subscriber::fmt::init
+    // would wrongly target stdout).
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "error".into()),
+        )
+        .init();
     // config.toml base layer: file first, .env/env override. Must run before
     // RagConfig::load() reads CONGA_RAG_* / CONGA_LLM_* fallbacks.
     if let Err(e) = conga::config_file::apply() {

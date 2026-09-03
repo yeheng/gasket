@@ -63,6 +63,7 @@ pub async fn run_ingest(
         let dir = DirSource::new(name, src_cfg)?;
         let files = dir.scan()?;
         stats.scanned += files.len();
+        tracing::info!(source = %name, files = files.len(), "扫描完成");
         let existing: HashMap<PathBuf, DocRow> = store
             .docs_for_source(name)
             .await?
@@ -134,6 +135,12 @@ pub async fn run_ingest(
             .iter()
             .flat_map(|p| p.chunks.iter().map(|c| c.content.clone()))
             .collect();
+        tracing::info!(
+            docs = pending.len(),
+            chunks = flat.len(),
+            batch = resolved.batch,
+            "开始嵌入"
+        );
         let vectors = client
             .embed_batch(&flat)
             .await

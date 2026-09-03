@@ -7,8 +7,12 @@ use crate::config::ResolvedEmbedding;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {
-    #[error("embeddings API HTTP {status}")]
-    Http { status: u16, retryable: bool },
+    #[error("embeddings API HTTP {status}: {detail}")]
+    Http {
+        status: u16,
+        retryable: bool,
+        detail: String,
+    },
     #[error("embedding 响应条数不符:期望 {want},实得 {got}")]
     Count { want: usize, got: usize },
     #[error("embedding 维度不一致:首批 {first},第 {idx} 条为 {got}")]
@@ -52,10 +56,14 @@ pub struct EmbeddingsClient {
 }
 
 fn default_retry() -> RetryPolicy {
+    // Rate limits (429) on embedding endpoints are per-minute quota windows
+    // (e.g. Ark AccountRateLimitExceeded), so 429s need patience measured in
+    // tens of seconds, not sub-second bursts: 1+2+4+8+16+30+30 ≈ 91s worst
+    // case before giving up. Tests inject their own fast policy.
     RetryPolicy {
-        max_retries: 2,
-        initial_delay_ms: 500,
-        max_delay_ms: 8000,
+        max_retries: 7,
+        initial_delay_ms: 1000,
+        max_delay_ms: 30000,
         jitter: true,
     }
 }
@@ -95,7 +103,20 @@ impl EmbeddingsClient {
     /// Embed texts in batches of `self.batch`, sequentially.
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         let mut out = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(self.batch) {
+        let total = texts.len().div_ceil(self.batch);
+        let started = std::time::Instant::now();
+        for (i, chunk) in texts.chunks(self.batch).enumerate() {
+            // Per-batch progress only for multi-batch runs: single-batch calls
+            // are ad-hoc queries where the line would be noise.
+            if total > 1 {
+                tracing::info!(
+                    batch = i + 1,
+                    total,
+                    items = chunk.len(),
+                    elapsed_s = format!("{:.1}", started.elapsed().as_secs_f32()),
+                    "embedding 批次"
+                );
+            }
             out.extend(self.request_with_retry(chunk).await?);
         }
         Ok(out)
@@ -126,6 +147,13 @@ impl EmbeddingsClient {
 
     async fn one_request(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         let url = format!("{}/embeddings", self.base_url.trim_end_matches('/'));
+        tracing::debug!(
+            url = %url,
+            model = %self.model,
+            items = texts.len(),
+            chars = texts.iter().map(|t| t.chars().count()).sum::<usize>(),
+            "POST embeddings"
+        );
         let resp = self
             .client
             .post(&url)
@@ -136,9 +164,13 @@ impl EmbeddingsClient {
             .map_err(EmbedError::Network)?;
         let status = resp.status();
         if !status.is_success() {
+            // Surface the server's error body (e.g. "input limit exceeded:
+            // max 10, got 64") instead of swallowing it behind a bare status.
+            let body = resp.text().await.unwrap_or_default();
             return Err(EmbedError::Http {
                 status: status.as_u16(),
                 retryable: status.as_u16() == 429 || status.is_server_error(),
+                detail: truncate_chars(body.trim(), 400),
             });
         }
         let body: EmbResponse = resp.json().await.map_err(EmbedError::Network)?;
@@ -171,4 +203,16 @@ fn rand_jitter(base: u64) -> u64 {
         .map(|d| d.subsec_nanos() as u64)
         .unwrap_or(0);
     base / 4 + nanos % (base / 4 + 1)
+}
+
+/// Char-boundary-safe truncation for error bodies (str::truncate would panic
+/// mid-char and bodies can be arbitrary JSON).
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max).collect();
+        out.push('…');
+        out
+    }
 }

@@ -58,3 +58,28 @@ async fn non_retryable_error_propagates_fast() {
     assert!(err.is_retryable() || err.to_string().contains("429"));
     assert!(requests.load(std::sync::atomic::Ordering::SeqCst) >= 2);
 }
+
+#[tokio::test]
+async fn http_error_body_is_surfaced() {
+    // A 400 must fail fast (no retry) and carry the server's detail message
+    // (e.g. Ark's "input limit exceeded") instead of a bare status code.
+    let (base, requests) = conga_rag::testsupport::spawn_mock_embeddings_error(
+        400,
+        r#"{"error":{"code":"InvalidParameter","message":"Embeddings API input limit exceeded: max 10, got 64"}}"#,
+    )
+    .await;
+    let client = EmbeddingsClient::with_retry(&cfg(), &base, fast_retry());
+    let err = client.embed_batch(&["one".to_string()]).await.unwrap_err();
+    assert!(!err.is_retryable(), "400 must not be retried");
+    let msg = err.to_string();
+    assert!(msg.contains("400"), "status missing from: {msg}");
+    assert!(
+        msg.contains("input limit exceeded"),
+        "server detail missing from: {msg}"
+    );
+    assert_eq!(
+        requests.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "400 must not be retried"
+    );
+}
