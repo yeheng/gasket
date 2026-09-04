@@ -1,10 +1,14 @@
-//! RAG retrieval tool over the personal conga-rag index.
+//! RAG tools over the personal conga-rag index.
 //!
-//! Reads the same config as the `conga-rag` CLI (`$CONGA_RAG_CONFIG` →
-//! ./rag.toml → ~/.conga/rag.toml) and searches the vector store built by
-//! `conga-rag ingest`. Read-only — it never writes the store, so it is safe
-//! to expose in every permission mode. Hit paths are printed absolute so the
-//! agent can follow up with the `read` tool (检索 → 精读闭环).
+//! `rag_search` (read-only) retrieves from the vector store built by
+//! `conga-rag ingest`; `rag_remember` appends (or overwrites by title) a
+//! memory note under the built-in `notes` source and incrementally indexes
+//! it. Files on disk are the source of truth; the store is derived. Hit
+//! paths are printed absolute so the agent can follow up with the `read`
+//! tool (检索 → 精读闭环).
+//!
+//! Both tools read the same config as the `conga-rag` CLI
+//! (`$CONGA_RAG_CONFIG` → ./rag.toml → ~/.conga/rag.toml).
 
 use std::sync::Arc;
 
@@ -16,6 +20,41 @@ const MAX_K: usize = 20;
 /// Cap per hit. Chunks are ~1.2k chars by default; this only guards against
 /// pathological chunks blowing up the context.
 const MAX_HIT_CHARS: usize = 1600;
+
+/// `rag_remember`: append (or overwrite by title) a memory note under the
+/// built-in `notes` source, then incrementally index it.
+const MAX_TITLE_CHARS: usize = 80;
+const MAX_CONTENT_CHARS: usize = 8_000;
+const MAX_SLUG_CHARS: usize = 60;
+
+/// CJK-safe filename slug: alphanumeric (incl. CJK) kept, everything else
+/// collapses to '-'. Empty after trim → caller falls back to "note".
+fn slugify(title: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in title.trim().chars() {
+        if c.is_alphanumeric() {
+            if dash && !out.is_empty() {
+                out.push('-');
+            }
+            dash = false;
+            out.push(c);
+        } else {
+            dash = true;
+        }
+    }
+    out.chars().take(MAX_SLUG_CHARS).collect()
+}
+
+/// Memory notes root: `<builtin_base>/notes`, shared with conga-rag's
+/// built-in `notes` source. When built-ins are explicitly disabled
+/// (CONGA_RAG_BUILTIN_BASE="") the write path still lands under the real
+/// config dir so files never scatter.
+fn notes_dir() -> std::path::PathBuf {
+    conga_rag::config::builtin_base()
+        .unwrap_or_else(conga::storage::config_dir)
+        .join("notes")
+}
 
 pub fn register(api: &mut dyn conga::ExtensionApi) {
     api.register_tool(ToolDefinition {
@@ -74,6 +113,99 @@ pub fn register(api: &mut dyn conga::ExtensionApi) {
                     ));
                 }
                 Ok(ToolResult::text(format_hits(&cfg, &hits)))
+            })
+        }),
+    });
+    api.register_tool(ToolDefinition {
+        name: "rag_remember".into(),
+        label: "RAG Remember".into(),
+        description: "把跨会话有用的知识/偏好/事实写入长期记忆(同 title 覆盖旧记忆)。适用:用户说\"记住这个\",或你判断该知识未来会话仍需要。不适用:易变状态、一次性任务细节(不要记)。写入后可用 rag_search 检索。".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "title":   { "type": "string", "description": "记忆标题(主键,同题覆盖)" },
+                "content": { "type": "string", "description": "自包含的知识陈述,脱离当前对话也能读懂" },
+                "tags":    { "type": "array", "items": { "type": "string" }, "description": "可选标签" }
+            },
+            "required": ["title", "content"]
+        }),
+        risk: RiskLevel::Medium,
+        execute: Arc::new(move |ctx| {
+            Box::pin(async move {
+                if ctx.aborted() {
+                    return Err(ToolError::Message("aborted".into()));
+                }
+                let title = ctx.args["title"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let content = ctx.args["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let tags: Vec<String> = ctx
+                    .args
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|t| t.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if title.is_empty() || title.chars().count() > MAX_TITLE_CHARS {
+                    return Err(ToolError::Message(format!(
+                        "title 不能为空且不超过 {MAX_TITLE_CHARS} 字符"
+                    )));
+                }
+                if content.is_empty() || content.chars().count() > MAX_CONTENT_CHARS {
+                    return Err(ToolError::Message(format!(
+                        "content 不能为空且不超过 {MAX_CONTENT_CHARS} 字符"
+                    )));
+                }
+
+                // Config must resolve before any disk write: a missing
+                // rag.toml fails loud with zero filesystem side effects.
+                let (_cfg_path, mut cfg) = conga_rag::config::RagConfig::load()
+                    .map_err(|e| ToolError::Message(format!("加载 RAG 配置失败:{e}")))?;
+                let dir = notes_dir();
+                std::fs::create_dir_all(&dir).map_err(|e| ToolError::Message(e.to_string()))?;
+                let slug = {
+                    let s = slugify(&title);
+                    if s.is_empty() { "note".into() } else { s }
+                };
+                let path = dir.join(format!("{slug}.md"));
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+                    .to_string();
+                let markdown = conga_host::memory::entry_markdown(
+                    &title,
+                    &tags,
+                    &now,
+                    &ctx.ctx.session_id,
+                    &content,
+                );
+                std::fs::write(&path, markdown).map_err(|e| {
+                    ToolError::Message(format!("写入失败 {}: {e}", path.display()))
+                })?;
+                // The notes dir may have just been created; make sure this
+                // ingest run sees the built-in source (idempotent).
+                cfg.inject_builtins();
+                info!("rag_remember: title='{}' -> {}", title, path.display());
+                match conga_rag::pipeline::run_ingest(&cfg, Some("notes"), false).await {
+                    Ok(_) => Ok(ToolResult::text(format!(
+                        "已记住:{title}\n文件:{}\n(同 title 再次写入会覆盖;用 rag_search 检索)",
+                        path.display()
+                    ))),
+                    Err(e) => Ok(ToolResult::error(format!(
+                        "文件已写入 {} 但索引失败:{e}(下次 ingest 会自动补偿)",
+                        path.display()
+                    ))),
+                }
             })
         }),
     });
@@ -159,12 +291,16 @@ mod tests {
     }
 
     fn registered_tool() -> ToolDefinition {
+        registered_tool_named("rag_search")
+    }
+
+    fn registered_tool_named(name: &str) -> ToolDefinition {
         let mut api = ExtensionApiImpl::new();
         register(&mut api);
         api.tools
             .into_iter()
-            .find(|t| t.name == "rag_search")
-            .expect("rag_search registered")
+            .find(|t| t.name == name)
+            .unwrap_or_else(|| panic!("{name} registered"))
     }
 
     fn text_of(res: ToolResult) -> String {
@@ -316,5 +452,37 @@ path = {:?}
         // Short input passes through untouched.
         let short = "短".repeat(10);
         assert_eq!(cap_chars(&short, MAX_HIT_CHARS), short);
+    }
+
+    // --- rag_remember ---
+
+    #[test]
+    fn register_exposes_rag_remember_with_medium_risk() {
+        let tool = registered_tool_named("rag_remember");
+        // 写文件的工具必须与 write 同级:AutoEdit 放行,Suggest/Plan 需确认。
+        assert!(matches!(tool.risk, RiskLevel::Medium));
+        assert_eq!(tool.parameters["required"][0], "title");
+        assert_eq!(tool.parameters["required"][1], "content");
+    }
+
+    #[test]
+    fn slugify_keeps_cjk_and_collapses_separators() {
+        assert_eq!(slugify("  架构 分层!设计 "), "架构-分层-设计");
+        assert_eq!(slugify("A/B\\C:D"), "A-B-C-D");
+        assert!(slugify("!!!").is_empty());
+    }
+
+    #[tokio::test]
+    async fn remember_rejects_blank_and_oversize_args() {
+        let tool = registered_tool_named("rag_remember");
+        for bad in [
+            serde_json::json!({ "title": "  ", "content": "x" }),
+            serde_json::json!({ "title": "t", "content": "" }),
+            serde_json::json!({ "title": "t", "content": "中".repeat(MAX_CONTENT_CHARS + 1) }),
+            serde_json::json!({ "title": "字".repeat(MAX_TITLE_CHARS + 1), "content": "x" }),
+        ] {
+            let err = (tool.execute)(make_ctx(bad.clone())).await;
+            assert!(err.is_err(), "must reject: {bad}");
+        }
     }
 }
