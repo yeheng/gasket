@@ -489,7 +489,7 @@ where
 }
 
 /// Default per-tool state directory:
-/// `<config_dir>/tool_state/<session_id>/<tool_name>/`.
+/// `<config_dir>/sessions/<session_id>/tool_state/<tool_name>/`.
 ///
 /// The session id is validated before interpolation: an id that could
 /// escape the root (`../`, separators, empty) gets no state dir at all
@@ -503,8 +503,9 @@ fn tool_state_dir(context: &AgentContext, tool_name: &str) -> Option<std::path::
     }
     Some(
         crate::storage::config_dir()
-            .join("tool_state")
+            .join("sessions")
             .join(&context.session_id)
+            .join("tool_state")
             .join(tool_name),
     )
 }
@@ -2471,13 +2472,14 @@ mod tests {
                 "session id {bad:?} must be rejected"
             );
         }
-        // A valid id stays under <config_dir>/tool_state.
+        // A valid id stays under <config_dir>/sessions/<sid>/tool_state.
         let dir = tool_state_dir(&mk("s-1_ok"), "t").unwrap();
         assert_eq!(
             dir,
             crate::storage::config_dir()
-                .join("tool_state")
+                .join("sessions")
                 .join("s-1_ok")
+                .join("tool_state")
                 .join("t")
         );
     }

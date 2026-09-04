@@ -100,7 +100,7 @@ pub fn register(api: &mut dyn ExtensionApi) {
 `todo` was the original extension demo but has since moved to the built-in
 tool set (`conga-host/src/tools/todo.rs`); the `state_dir` pattern it uses
 applies to extension tools too. State lives under `ToolContext.state_dir`
-(`~/.conga/tool_state/<session_id>/<tool_name>/`), not in a shared map.
+(`~/.conga/sessions/<session_id>/tool_state/<tool_name>/`), not in a shared map.
 
 ---
 

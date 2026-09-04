@@ -10,6 +10,7 @@ fn cfg() -> ResolvedEmbedding {
         api_key: "k".into(),
         model: "mock".into(),
         batch: 2,
+        min_interval_ms: 0,
     }
 }
 
@@ -34,6 +35,31 @@ async fn batches_are_split_by_config() {
         requests.load(std::sync::atomic::Ordering::SeqCst),
         3,
         "5 texts / batch 2 → 3 requests"
+    );
+}
+
+#[tokio::test]
+async fn min_interval_paces_consecutive_batches() {
+    // 5 texts / batch 2 → 3 requests with 2 gaps of 120ms: pacing must
+    // space them while leaving the request count and results untouched.
+    let (base, requests) = spawn_mock_embeddings(0).await;
+    let mut c = cfg();
+    c.min_interval_ms = 120;
+    let client = EmbeddingsClient::with_retry(&c, &base, fast_retry());
+    let texts: Vec<String> = (0..5).map(|i| format!("doc text {i}")).collect();
+    let started = std::time::Instant::now();
+    let out = client.embed_batch(&texts).await.unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(out.len(), 5);
+    assert_eq!(
+        requests.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "pacing must not change the request count"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(2 * 120),
+        "two inter-request gaps must be honored, elapsed {:?}",
+        elapsed
     );
 }
 

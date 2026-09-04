@@ -2,7 +2,7 @@
 //!
 //! `rag_search` (read-only) retrieves from the vector store built by
 //! `conga-rag ingest`; `rag_remember` appends (or overwrites by title) a
-//! memory note under the built-in `notes` source and incrementally indexes
+//! memory note under the built-in `memory` source and incrementally indexes
 //! it. Files on disk are the source of truth; the store is derived. Hit
 //! paths are printed absolute so the agent can follow up with the `read`
 //! tool (检索 → 精读闭环).
@@ -46,21 +46,22 @@ fn slugify(title: &str) -> String {
     out.chars().take(MAX_SLUG_CHARS).collect()
 }
 
-/// Memory notes root: `<builtin_base>/notes`, shared with conga-rag's
-/// built-in `notes` source. When built-ins are explicitly disabled
+/// Memory notes root: `<builtin_base>/memory`, shared with conga-rag's
+/// built-in `memory` source (and the prompt-appended memory catalog —
+/// same frontmatter format). When built-ins are explicitly disabled
 /// (CONGA_RAG_BUILTIN_BASE="") the write path still lands under the real
 /// config dir so files never scatter.
-fn notes_dir() -> std::path::PathBuf {
+fn memory_dir() -> std::path::PathBuf {
     conga_rag::config::builtin_base()
         .unwrap_or_else(conga::storage::config_dir)
-        .join("notes")
+        .join("memory")
 }
 
 pub fn register(api: &mut dyn conga::ExtensionApi) {
     api.register_tool(ToolDefinition {
         name: "rag_search".into(),
         label: "RAG Search".into(),
-        description: "语义检索个人知识库(用户笔记/文档 + agent 长期记忆 notes + 蒸馏教训 memory,由 `conga-rag ingest` 或 `rag_remember` 维护)。适用:查找个人笔记、过往总结、项目文档、长期记忆。不适用:找代码文件(用 grep)、联网信息(用 web_search)。返回相关片段与源文件路径;需要全文时用 read 工具读取源文件。source 可选值含 notes/memory。".into(),
+        description: "语义检索个人知识库(用户笔记/文档 + agent 长期记忆与蒸馏教训 memory,由 `conga-rag ingest` 或 `rag_remember` 维护)。适用:查找个人笔记、过往总结、项目文档、长期记忆。不适用:找代码文件(用 grep)、联网信息(用 web_search)。返回相关片段与源文件路径;需要全文时用 read 工具读取源文件。source 可选值含 notes/memory。".into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -170,7 +171,7 @@ pub fn register(api: &mut dyn conga::ExtensionApi) {
                 // rag.toml fails loud with zero filesystem side effects.
                 let (_cfg_path, mut cfg) = conga_rag::config::RagConfig::load()
                     .map_err(|e| ToolError::Message(format!("加载 RAG 配置失败:{e}")))?;
-                let dir = notes_dir();
+                let dir = memory_dir();
                 std::fs::create_dir_all(&dir).map_err(|e| ToolError::Message(e.to_string()))?;
                 let slug = {
                     let s = slugify(&title);
@@ -192,11 +193,11 @@ pub fn register(api: &mut dyn conga::ExtensionApi) {
                 std::fs::write(&path, markdown).map_err(|e| {
                     ToolError::Message(format!("写入失败 {}: {e}", path.display()))
                 })?;
-                // The notes dir may have just been created; make sure this
+                // The memory dir may have just been created; make sure this
                 // ingest run sees the built-in source (idempotent).
                 cfg.inject_builtins();
                 info!("rag_remember: title='{}' -> {}", title, path.display());
-                match conga_rag::pipeline::run_ingest(&cfg, Some("notes"), false).await {
+                match conga_rag::pipeline::run_ingest(&cfg, Some("memory"), false).await {
                     Ok(_) => Ok(ToolResult::text(format!(
                         "已记住:{title}\n文件:{}\n(同 title 再次写入会覆盖;用 rag_search 检索)",
                         path.display()
@@ -502,7 +503,7 @@ path = {:?}
         let base = tempfile::tempdir().unwrap(); // CONGA_RAG_BUILTIN_BASE
         let dbdir = tempfile::tempdir().unwrap();
         let dummy = tempfile::tempdir().unwrap(); // 占位 user source
-        std::fs::create_dir_all(base.path().join("notes")).unwrap();
+        std::fs::create_dir_all(base.path().join("memory")).unwrap();
         let (emb, _req) = conga_rag::testsupport::spawn_mock_embeddings(0).await;
         let cfg_path = dbdir.path().join("rag.toml");
         std::fs::write(
@@ -538,7 +539,7 @@ path = {:?}
         .expect("first remember ok");
         assert!(text_of(r).contains("已记住"));
         assert!(
-            base.path().join("notes/架构决策.md").exists(),
+            base.path().join("memory/架构决策.md").exists(),
             "frontmatter 文件落盘"
         );
 
@@ -554,14 +555,14 @@ path = {:?}
             let store = conga_rag::store::Store::open(&cfg.store_path())
                 .await
                 .unwrap();
-            let docs = store.docs_for_source("notes").await.unwrap();
+            let docs = store.docs_for_source("memory").await.unwrap();
             assert_eq!(docs.len(), 1, "同 title 覆盖,不是追加");
             store.close().await.unwrap();
         }
 
         let search = registered_tool_named("rag_search");
         let res = (search.execute)(make_ctx(
-            serde_json::json!({ "query": "quux", "source": "notes" }),
+            serde_json::json!({ "query": "quux", "source": "memory" }),
         ))
         .await
         .expect("search ok");
@@ -580,7 +581,7 @@ path = {:?}
         let base = tempfile::tempdir().unwrap();
         let dummy = tempfile::tempdir().unwrap();
         let (emb, _req) = conga_rag::testsupport::spawn_mock_embeddings(0).await;
-        std::fs::create_dir_all(base.path().join("notes")).unwrap();
+        std::fs::create_dir_all(base.path().join("memory")).unwrap();
         let cfg_path = base.path().join("rag.toml");
         std::fs::write(
             &cfg_path,
@@ -619,6 +620,6 @@ path = {:?}
             text.contains("已写入") && text.contains("索引失败"),
             "部分成功如实上报: {text}"
         );
-        assert!(base.path().join("notes/p.md").exists(), "文件确实落盘");
+        assert!(base.path().join("memory/p.md").exists(), "文件确实落盘");
     }
 }

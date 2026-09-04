@@ -50,6 +50,10 @@ pub struct EmbeddingConfig {
     pub api_key: Option<String>,
     pub model: Option<String>,
     pub batch: usize,
+    /// Minimum pause between consecutive embedding requests (0 = off).
+    /// Guards per-minute quotas (e.g. Ark 429) when a large ingest fires
+    /// many back-to-back batches.
+    pub min_interval_ms: u64,
 }
 
 impl Default for EmbeddingConfig {
@@ -59,6 +63,7 @@ impl Default for EmbeddingConfig {
             api_key: None,
             model: None,
             batch: 64,
+            min_interval_ms: 0,
         }
     }
 }
@@ -104,6 +109,7 @@ pub struct ResolvedEmbedding {
     pub api_key: String,
     pub model: String,
     pub batch: usize,
+    pub min_interval_ms: u64,
 }
 
 impl RagConfig {
@@ -171,6 +177,11 @@ impl RagConfig {
             self.embedding.batch = v
                 .parse()
                 .map_err(|_| anyhow::anyhow!("CONGA_RAG_EMBED_BATCH 值无法解析为 usize: {v:?}"))?;
+        }
+        if let Some(v) = s("CONGA_RAG_EMBED_MIN_INTERVAL_MS") {
+            self.embedding.min_interval_ms = v.parse().map_err(|_| {
+                anyhow::anyhow!("CONGA_RAG_EMBED_MIN_INTERVAL_MS 值无法解析为 u64: {v:?}")
+            })?;
         }
         if let Some(v) = s("CONGA_RAG_STORE_PATH") {
             self.store.path = Some(PathBuf::from(v));
@@ -250,6 +261,7 @@ impl RagConfig {
             api_key,
             model,
             batch: self.embedding.batch,
+            min_interval_ms: self.embedding.min_interval_ms,
         })
     }
 
@@ -267,10 +279,12 @@ impl RagConfig {
         self
     }
 
-    /// Built-in memory sources: `notes` (rag_remember output) and `memory`
-    /// (evolve lessons). Injected when the dir exists and the user's
-    /// rag.toml has not claimed the name. Called by `load_with` and again
-    /// by `rag_remember` after it creates the notes dir (idempotent).
+    /// Built-in memory sources: `memory` (rag_remember output + evolve
+    /// lessons, one shared library) and `notes` (legacy rag_remember
+    /// output, kept indexed so pre-move files stay searchable). Injected
+    /// when the dir exists and the user's rag.toml has not claimed the
+    /// name. Called by `load_with` and again by `rag_remember` after it
+    /// creates the memory dir (idempotent).
     pub fn inject_builtins(&mut self) {
         if let Some(base) = builtin_base() {
             self.inject_builtins_in(&base);
@@ -369,6 +383,7 @@ overlap_chars = 50
         let env = |k: &str| match k {
             "CONGA_RAG_EMBED_MODEL" => Ok("env-model".into()),
             "CONGA_RAG_EMBED_BATCH" => Ok("3".into()),
+            "CONGA_RAG_EMBED_MIN_INTERVAL_MS" => Ok("1500".into()),
             "CONGA_LLM_BASE_URL" => Ok("https://fb.example.com/v1".into()),
             "CONGA_LLM_KEY" => Ok("fb-key".into()),
             _ => Err(std::env::VarError::NotPresent),
@@ -378,6 +393,7 @@ overlap_chars = 50
         let r = cfg.resolve_embedding_with(&env).unwrap();
         assert_eq!(r.model, "env-model");
         assert_eq!(r.batch, 3);
+        assert_eq!(r.min_interval_ms, 1500);
     }
 
     #[test]

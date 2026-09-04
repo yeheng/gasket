@@ -51,6 +51,10 @@ pub struct EmbeddingsClient {
     api_key: String,
     model: String,
     batch: usize,
+    /// Pause between consecutive batch requests (0 = off). Batches are
+    /// already the provider's max size; this throttles the request rate so
+    /// per-minute quotas (429) are not tripped by back-to-back bursts.
+    min_interval_ms: u64,
     client: reqwest::Client,
     retry: RetryPolicy,
 }
@@ -83,6 +87,7 @@ impl EmbeddingsClient {
             api_key: cfg.api_key.clone(),
             model: cfg.model.clone(),
             batch: cfg.batch.max(1),
+            min_interval_ms: cfg.min_interval_ms,
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(60))
                 .build()
@@ -100,12 +105,19 @@ impl EmbeddingsClient {
             .unwrap())
     }
 
-    /// Embed texts in batches of `self.batch`, sequentially.
+    /// Embed texts in batches of `self.batch`, sequentially, pacing
+    /// consecutive requests `min_interval_ms` apart when configured.
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
         let mut out = Vec::with_capacity(texts.len());
         let total = texts.len().div_ceil(self.batch);
         let started = std::time::Instant::now();
         for (i, chunk) in texts.chunks(self.batch).enumerate() {
+            // Throttle before every request except the first: one ingest
+            // fires ceil(chunks/batch) requests back-to-back, which is what
+            // trips per-minute quotas on providers like Ark.
+            if i > 0 && self.min_interval_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.min_interval_ms)).await;
+            }
             // Per-batch progress only for multi-batch runs: single-batch calls
             // are ad-hoc queries where the line would be noise.
             if total > 1 {

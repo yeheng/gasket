@@ -6,8 +6,7 @@
 //!   {session_id}/
 //!     events.jsonl     # append-only, one SessionEvent per line
 //!     messages.jsonl   # legacy: append-only, one AgentMessage per line
-//! tool_state/
-//!   {session_id}/{tool_name}/  # per-plugin private state
+//!     tool_state/{tool_name}/  # per-plugin private state
 //! ```
 //!
 //! ## Format contract
@@ -673,13 +672,15 @@ impl EventStorage {
         validate_session_id(session_id)?;
         match tokio::fs::remove_dir_all(self.session_dir(session_id)).await {
             Ok(()) => {
-                // Spill files and per-tool state live outside the session dir; a
-                // deleted session must not leave them accumulating on disk.
-                // Best-effort: their absence is not an error.
-                let tool_state = crate::storage::config_dir()
+                // Legacy layouts kept per-tool state (and spill files) at
+                // `<config_dir>/tool_state/<session_id>/`, outside the session
+                // dir; a deleted session must not leave those behind. Best
+                // effort: their absence is not an error. Current state lives
+                // inside the session dir and dies with the remove above.
+                let legacy_tool_state = crate::storage::config_dir()
                     .join("tool_state")
                     .join(session_id);
-                let _ = tokio::fs::remove_dir_all(&tool_state).await;
+                let _ = tokio::fs::remove_dir_all(&legacy_tool_state).await;
                 Ok(true)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),

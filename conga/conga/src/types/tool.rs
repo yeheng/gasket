@@ -78,8 +78,8 @@ impl ToolCallCtx {
 }
 
 /// Context passed into a tool. `state_dir` is this plugin's **private** state
-/// directory (`~/.conga/tool_state/{session_id}/{tool_name}/`); the tool
-/// reads/writes its own files there.
+/// directory (`~/.conga/sessions/{session_id}/tool_state/{tool_name}/`); the
+/// tool reads/writes its own files there.
 #[derive(Clone)]
 pub struct ToolContext {
     pub cwd: PathBuf,

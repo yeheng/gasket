@@ -30,6 +30,12 @@ exclude = ["**/target/**", "**/.git/**"]
 # api_key = "your-api-key"
 model = "text-embedding-v3"
 batch = 64                         # docs per embedding request, must be > 0
+# min_interval_ms = 0              # pause between consecutive embedding
+#                                  # requests (0 = off). Providers with
+#                                  # per-minute quotas (e.g. Ark, where batch
+#                                  # is capped at 10 and a big ingest fires
+#                                  # many back-to-back requests → 429) want
+#                                  # this: batch=10 + 2000ms ≈ 30 req/min.
 
 # ── Chunking (optional, defaults shown) ─────────────────────────────────────
 [chunking]
@@ -45,6 +51,7 @@ overlap_chars = 200
 top_k = 6                          # context chunks per `conga-rag ask`
 
 # ── Built-in sources (auto-injected, no config needed) ─────────────────────
-# ~/.conga/notes (agent 长期记忆,rag_remember 写入)与 ~/.conga/memory
-# (evolve 蒸馏教训)在目录存在且名字未被占用时自动注入,无需在此声明。
+# ~/.conga/memory(agent 长期记忆,rag_remember 写入;evolve 蒸馏教训同库)
+# 在目录存在且名字未被占用时自动注入,无需在此声明。~/.conga/notes 为
+# 旧版 rag_remember 输出,存在时同样注入以保持可检索(兼容)。
 # CONGA_RAG_BUILTIN_BASE 可覆盖根目录(空串=禁用,高级用法)。

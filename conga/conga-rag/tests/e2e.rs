@@ -22,6 +22,7 @@ fn write_cfg(dir: &std::path::Path, db: &std::path::Path, base_url: &str) -> Rag
             api_key: Some("k".into()),
             model: Some("mock".into()),
             batch: 4,
+            min_interval_ms: 0,
         },
         ..Default::default()
     }

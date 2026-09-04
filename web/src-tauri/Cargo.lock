@@ -1052,6 +1052,7 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "conga 2.0.0",
+ "conga-rag",
  "dom_query 0.28.0",
  "dotenvy",
  "futures-util",

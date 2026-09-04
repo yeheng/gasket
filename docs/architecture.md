@@ -269,7 +269,7 @@ forwarder 任务: AgentEvent → event_to_ws() → JSON → 推回 WS
 | `spawn_subagents` | `tools/subagent.rs` | 并行子 agent 编排(maxItems 5,见 §11) | Medium |
 
 工具名冲突:装配层(`assembly.rs::dedup_tool_names`)按"首个注册胜出"(built-in → ext → external → MCP → append)去重并告警——循环按名字首匹解析,未上报的冲突会静默调错工具。
-工具执行闭包签名(`ToolFn`):`Arc<dyn Fn(ToolCallCtx) -> Future<Output=Result<ToolResult,ToolError>>>`。`ToolContext.state_dir`(`~/.conga/tool_state/<session>/<tool>/`)是每个工具的**私有**状态目录;`ToolCallCtx.aborted()` 用于长循环里协作式中止。
+工具执行闭包签名(`ToolFn`):`Arc<dyn Fn(ToolCallCtx) -> Future<Output=Result<ToolResult,ToolError>>>`。`ToolContext.state_dir`(`~/.conga/sessions/<session>/tool_state/<tool>/`)是每个工具的**私有**状态目录;`ToolCallCtx.aborted()` 用于长循环里协作式中止。
 
 ### 5.3 LLM Provider(`providers/`)
 
