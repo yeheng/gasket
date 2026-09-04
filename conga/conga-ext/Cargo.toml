@@ -14,12 +14,14 @@ reqwest = { workspace = true, features = ["json"] }
 tracing = { workspace = true }
 urlencoding = "2.1"
 dom_query = "0.28"
-portable-pty = { version = "0.8", optional = true }
+portable-pty = { version = "0.9", optional = true }
+conga-rag = { path = "../conga-rag", optional = true }
 parking_lot = { workspace = true }
 tokio = { workspace = true }
 
 [features]
 terminal = ["dep:portable-pty"]
+rag = ["dep:conga-rag"]
 
 [dev-dependencies]
 tokio = { workspace = true }

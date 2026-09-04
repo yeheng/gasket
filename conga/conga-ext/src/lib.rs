@@ -4,6 +4,8 @@
 
 pub mod hello;
 pub mod permission_gate;
+#[cfg(feature = "rag")]
+pub mod rag;
 pub mod search;
 
 #[cfg(feature = "terminal")]
@@ -16,6 +18,8 @@ use conga::ExtensionApi;
 /// [`register_all`] behind `--features ext`.
 pub fn prod_register(api: &mut dyn conga::ExtensionApi) {
     search::register(api);
+    #[cfg(feature = "rag")]
+    rag::register(api);
     #[cfg(feature = "terminal")]
     terminal::register(api);
 }
@@ -37,13 +41,15 @@ mod tests {
         let mut api = conga::ExtensionApiImpl::new();
         prod_register(&mut api);
         let names: Vec<_> = api.tools.iter().map(|t| t.name.clone()).collect();
-        // `--all-features` (CI) turns the terminal feature on; without it the
-        // module is compiled out entirely.
-        let expected: Vec<&str> = if cfg!(feature = "terminal") {
-            vec!["web_search", "terminal"]
-        } else {
-            vec!["web_search"]
-        };
+        // `--all-features` (CI) turns the terminal/rag features on; without
+        // them the modules are compiled out entirely.
+        let mut expected: Vec<&str> = vec!["web_search"];
+        if cfg!(feature = "rag") {
+            expected.push("rag_search");
+        }
+        if cfg!(feature = "terminal") {
+            expected.push("terminal");
+        }
         assert_eq!(names, expected);
     }
 

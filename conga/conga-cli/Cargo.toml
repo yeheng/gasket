@@ -20,4 +20,4 @@ serde_json = { workspace = true }
 default = []
 # Link optional in-process extensions (hello / todo / permission_gate),
 # plus the terminal PTY tool (forwarded feature).
-ext = ["dep:conga-ext", "conga-ext?/terminal"]
+ext = ["dep:conga-ext", "conga-ext?/terminal", "conga-ext?/rag"]

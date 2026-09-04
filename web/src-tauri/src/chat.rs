@@ -299,9 +299,9 @@ async fn build_session(
         })
     };
 
-    // Production extensions from conga-ext (currently web_search only) —
-    // the non-demo composition root. Its HTTP client honors the runtime
-    // tool proxy (conga::set_tool_proxy).
+    // Production extensions from conga-ext (web_search / rag_search, and
+    // terminal) — the non-demo composition root. Their HTTP clients honor
+    // the runtime tool proxy (conga::set_tool_proxy).
     let search_tools = {
         let mut api = conga::ExtensionApiImpl::new();
         conga_ext::prod_register(&mut api);
