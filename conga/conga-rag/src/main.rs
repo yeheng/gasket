@@ -87,14 +87,23 @@ fn print_stats(json: bool, path: &std::path::Path, s: &pipeline::IngestStats) {
 #[tokio::main]
 async fn main() {
     // Logs go to stderr: stdout is reserved for output (incl. --json NDJSON).
-    // Default level info; RUST_LOG overrides (tracing_subscriber::fmt::init
-    // would wrongly target stdout).
+    // Default: info progress logs. qdrant_edge is held at error: its 0.8 init
+    // APIs (init_feature_flags, MULTI_MMAP_SUPPORT_CHECK_RESULT) are not
+    // publicly exported, so every store open logs unactionable "not
+    // initialized" warnings; real errors still pass (and surface as Err
+    // results via the store API). The suppression is appended to a
+    // user-provided RUST_LOG too — set RUST_LOG=...qdrant_edge=debug to
+    // explicitly override.
+    let filter = match std::env::var("RUST_LOG") {
+        Ok(v) if !v.is_empty() && !v.contains("qdrant_edge") => {
+            format!("{v},qdrant_edge=error")
+        }
+        Ok(v) if !v.is_empty() => v,
+        _ => "info,qdrant_edge=error".to_string(),
+    };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "error".into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
         .init();
     // config.toml base layer: file first, .env/env override. Must run before
     // RagConfig::load() reads CONGA_RAG_* / CONGA_LLM_* fallbacks.
