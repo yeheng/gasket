@@ -51,7 +51,7 @@ pub async fn run_ingest(
     }
     let resolved = cfg.resolve_embedding()?;
     let client = EmbeddingsClient::new(&resolved);
-    let mut store = Store::open(&db_path).await?;
+    let store = Store::open(&db_path).await?;
     let mut pending: Vec<Pending> = Vec::new();
 
     for (name, src_cfg) in &cfg.sources {

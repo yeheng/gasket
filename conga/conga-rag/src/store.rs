@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use anyhow::Context;
 use qdrant_edge::external::serde_json::json;
@@ -37,11 +38,28 @@ pub struct SourceStat {
     pub chunks: i64,
 }
 
+/// Process-wide live stores keyed by db path. qdrant-edge holds an
+/// exclusive WAL lock per shard dir for the lifetime of the shard
+/// instance, so two `Store`s on the same path cannot coexist — the second
+/// open fails with `Can't init WAL: WouldBlock`. In-process callers
+/// (rag_search / rag_remember / the evolve hook each open the store per
+/// call) share one instance per path through this registry.
+static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<StoreShared>>>> = OnceLock::new();
+/// Serializes first-instance creation so concurrent first-opens don't
+/// race on the edge WAL lock.
+static OPEN_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Cheap handle over the shared per-path instance.
 pub struct Store {
+    inner: Arc<StoreShared>,
+}
+
+struct StoreShared {
     pool: SqlitePool,
     /// Vector index; `None` until `ensure_vec` creates it (the embedding
-    /// dimension is only known at first ingest).
-    shard: Option<EdgeShard>,
+    /// dimension is only known at first ingest). Behind an async mutex
+    /// because `ensure_vec` installs it exclusively.
+    shard: tokio::sync::Mutex<Option<EdgeShard>>,
     /// Db file path — the edge shard directory is derived from it.
     db_path: PathBuf,
 }
@@ -109,7 +127,33 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS meta(
      content TEXT NOT NULL);";
 
 impl Store {
+    /// Open (or attach to) the store for `path`. Concurrent callers in the
+    /// process share one instance — see [`REGISTRY`].
     pub async fn open(path: &Path) -> anyhow::Result<Store> {
+        let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(shared) = registry.lock().unwrap().get(path).and_then(Weak::upgrade) {
+            return Ok(Store { inner: shared });
+        }
+        // Held across creation: two first-opens would race on the
+        // exclusive edge WAL and one would fail with WouldBlock.
+        let _gate = OPEN_GATE.lock().await;
+        // Re-check after waiting: another opener may have won the race.
+        registry
+            .lock()
+            .unwrap()
+            .retain(|_, w| w.upgrade().is_some());
+        if let Some(shared) = registry.lock().unwrap().get(path).and_then(Weak::upgrade) {
+            return Ok(Store { inner: shared });
+        }
+        let store = Store::open_exclusive(path).await?;
+        registry
+            .lock()
+            .unwrap()
+            .insert(path.to_path_buf(), Arc::downgrade(&store.inner));
+        Ok(store)
+    }
+
+    async fn open_exclusive(path: &Path) -> anyhow::Result<Store> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建库目录失败 {}", parent.display()))?;
@@ -118,10 +162,15 @@ impl Store {
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .foreign_keys(true);
-        // One connection: the store is used by a single sequential pipeline
-        // (ingest or search), so there is nothing to gain from a pool and
-        // no SQLITE_BUSY contention to tolerate.
+            .foreign_keys(true)
+            // WAL allows a single writer; wait instead of failing fast
+            // when another pool/txn briefly holds the write lock (mirrors
+            // conga-host session_index).
+            .busy_timeout(std::time::Duration::from_secs(5));
+        // One connection per shared instance: the store is used by a
+        // single sequential pipeline (ingest or search), so there is
+        // nothing to gain from more and no intra-pool contention to
+        // tolerate.
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(opts)
@@ -142,17 +191,23 @@ impl Store {
             None
         };
         Ok(Store {
-            pool,
-            shard,
-            db_path: path.to_path_buf(),
+            inner: Arc::new(StoreShared {
+                pool,
+                shard: tokio::sync::Mutex::new(shard),
+                db_path: path.to_path_buf(),
+            }),
         })
     }
 
-    /// Close the SQLite connection synchronously. SQLite checkpoints and
-    /// removes the `-wal` sidecar on the last clean close, so callers that
-    /// inspect or delete store files afterwards see their final state.
+    /// Drop this handle; when it is the last one in the process, close
+    /// the SQLite pool synchronously (checkpoint + remove `-wal`) and
+    /// release the edge WAL lock. Concurrent handles keep the shared
+    /// instance alive — their work continues unaffected.
     pub async fn close(self) -> anyhow::Result<()> {
-        self.pool.close().await;
+        if let Ok(shared) = Arc::try_unwrap(self.inner) {
+            shared.pool.close().await;
+            // `shared` (and the EdgeShard with the WAL lock) drops here.
+        }
         Ok(())
     }
 
@@ -160,7 +215,7 @@ impl Store {
         Ok(
             sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ?1")
                 .bind(key)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&self.inner.pool)
                 .await?,
         )
     }
@@ -172,7 +227,7 @@ impl Store {
         )
         .bind(key)
         .bind(value)
-        .execute(&self.pool)
+        .execute(&self.inner.pool)
         .await?;
         Ok(())
     }
@@ -185,7 +240,7 @@ impl Store {
 
     /// Create the vector shard on first ingest; idempotent afterwards.
     /// Errors when the requested fingerprint differs from the stored one.
-    pub async fn ensure_vec(&mut self, dim: usize, model: &str) -> anyhow::Result<()> {
+    pub async fn ensure_vec(&self, dim: usize, model: &str) -> anyhow::Result<()> {
         let stored = self.fingerprint().await;
         let dim = match &stored {
             Some((m, d)) => {
@@ -197,10 +252,13 @@ impl Store {
             }
             None => dim,
         };
-        if self.shard.is_some() {
+        // Slot lock, not a pre-check: two concurrent first-ingests must
+        // not both create the shard.
+        let mut slot = self.inner.shard.lock().await;
+        if slot.is_some() {
             return Ok(()); // idempotent
         }
-        let dir = edge_dir(&self.db_path);
+        let dir = edge_dir(&self.inner.db_path);
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("创建向量索引目录失败 {}", dir.display()))?;
         let config = EdgeConfig::builder()
@@ -216,13 +274,14 @@ impl Store {
             self.meta_set("embedding_model", model).await?;
             self.meta_set("embedding_dim", &dim.to_string()).await?;
         }
-        self.shard = Some(shard);
+        *slot = Some(shard);
         Ok(())
     }
 
     /// Vector (point) count; 0 when no shard exists yet.
     pub async fn chunk_count(&self) -> anyhow::Result<i64> {
-        match &self.shard {
+        let slot = self.inner.shard.lock().await;
+        match &*slot {
             None => Ok(0),
             Some(shard) => Ok(shard.count(CountRequest::new())? as i64),
         }
@@ -232,7 +291,7 @@ impl Store {
         let rows: Vec<(String, i64, String)> =
             sqlx::query_as("SELECT path, mtime, content_hash FROM documents WHERE source = ?1")
                 .bind(source)
-                .fetch_all(&self.pool)
+                .fetch_all(&self.inner.pool)
                 .await?;
         Ok(rows
             .into_iter()
@@ -249,7 +308,7 @@ impl Store {
             .bind(mtime)
             .bind(source)
             .bind(path.to_string_lossy())
-            .execute(&self.pool)
+            .execute(&self.inner.pool)
             .await?;
         Ok(())
     }
@@ -270,7 +329,7 @@ impl Store {
         hash: &str,
         chunks: &[(usize, String, Vec<f32>)],
     ) -> anyhow::Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.inner.pool.begin().await?;
         let p = path.to_string_lossy();
         sqlx::query("DELETE FROM documents WHERE source = ?1 AND path = ?2")
             .bind(source)
@@ -306,7 +365,8 @@ impl Store {
         if chunks.is_empty() {
             return Ok(());
         }
-        let Some(shard) = &self.shard else {
+        let slot = self.inner.shard.lock().await;
+        let Some(shard) = &*slot else {
             // The pipeline always calls ensure_vec before upserting.
             anyhow::bail!("向量索引未初始化:请先运行 conga-rag ingest");
         };
@@ -339,21 +399,22 @@ impl Store {
         let rows: Vec<(i64, String)> =
             sqlx::query_as("SELECT id, path FROM documents WHERE source = ?1")
                 .bind(source)
-                .fetch_all(&self.pool)
+                .fetch_all(&self.inner.pool)
                 .await?;
         let to_remove: Vec<String> = rows
             .iter()
             .filter(|(_, path)| !live.iter().any(|p| p.to_string_lossy() == *path))
             .map(|(_, path)| path.clone())
             .collect();
-        if let Some(shard) = &self.shard {
+        let slot = self.inner.shard.lock().await;
+        if let Some(shard) = &*slot {
             for path in &to_remove {
                 shard.update(UpdateOperation::PointOperation(
                     PointOperations::DeletePointsByFilter(doc_filter(source, path)),
                 ))?;
             }
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.inner.pool.begin().await?;
         for path in &to_remove {
             sqlx::query("DELETE FROM documents WHERE source = ?1 AND path = ?2")
                 .bind(source)
@@ -374,7 +435,8 @@ impl Store {
         k: usize,
         source: Option<&str>,
     ) -> anyhow::Result<Vec<Hit>> {
-        let Some(shard) = &self.shard else {
+        let slot = self.inner.shard.lock().await;
+        let Some(shard) = &*slot else {
             anyhow::bail!("索引为空:请先运行 conga-rag ingest");
         };
         let mut builder = SearchRequestBuilder::new(
@@ -409,7 +471,7 @@ impl Store {
              WHERE c.rowid IN (SELECT value FROM json_each(?1))",
         )
         .bind(ids)
-        .fetch_all(&self.pool)
+        .fetch_all(&self.inner.pool)
         .await?;
         let by_id: HashMap<i64, (String, String, i64, String)> = rows
             .into_iter()
@@ -442,7 +504,7 @@ impl Store {
              FROM documents d LEFT JOIN chunks c ON c.doc_id = d.id
              GROUP BY d.source ORDER BY d.source",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&self.inner.pool)
         .await?;
         Ok(rows
             .into_iter()
@@ -479,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_vec_is_idempotent_and_locks_fingerprint() {
-        let (_d, mut s) = store().await;
+        let (_d, s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.ensure_vec(4, "m1").await.unwrap(); // idempotent
         assert_eq!(s.fingerprint().await.unwrap(), ("m1".to_string(), 4));
@@ -493,7 +555,7 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_and_knn_roundtrip() {
-        let (_d, mut s) = store().await;
+        let (_d, s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "src",
@@ -550,7 +612,7 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_replaces_previous_chunks() {
-        let (_d, mut s) = store().await;
+        let (_d, s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "src",
@@ -581,7 +643,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_missing_deletes_only_absent() {
-        let (_d, mut s) = store().await;
+        let (_d, s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "src",
@@ -623,7 +685,7 @@ mod tests {
     async fn orphaned_points_drop_out_of_knn() {
         // Simulate a crash between the SQLite commit and the edge write:
         // a point whose chunk row is gone must not surface in results.
-        let (_d, mut s) = store().await;
+        let (_d, s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "src",
@@ -634,19 +696,23 @@ mod tests {
         )
         .await
         .unwrap();
-        let shard = s.shard.as_ref().unwrap();
-        shard
-            .update(UpdateOperation::PointOperation(
-                PointOperations::UpsertPoints(PointInsertOperations::PointsList(vec![
-                    PointStruct::new(
-                        999_999u64,
-                        dim4([0.9, 0.1, 0.0, 0.0]),
-                        json!({"source": "src", "path": "/n/ghost"}),
-                    )
-                    .into(),
-                ])),
-            ))
-            .unwrap();
+        {
+            let slot = s.inner.shard.lock().await;
+            let shard = slot.as_ref().unwrap();
+            shard
+                .update(UpdateOperation::PointOperation(
+                    PointOperations::UpsertPoints(PointInsertOperations::PointsList(vec![
+                        PointStruct::new(
+                            999_999u64,
+                            dim4([0.9, 0.1, 0.0, 0.0]),
+                            json!({"source": "src", "path": "/n/ghost"}),
+                        )
+                        .into(),
+                    ])),
+                ))
+                .unwrap();
+            // Guard must drop here: chunk_count/knn lock the same mutex.
+        }
         assert_eq!(s.chunk_count().await.unwrap(), 2, "orphan is counted");
         let hits = s.knn(&dim4([1.0, 0.0, 0.0, 0.0]), 10, None).await.unwrap();
         assert_eq!(hits.len(), 1, "orphan never surfaces in knn");
@@ -655,7 +721,7 @@ mod tests {
 
     #[tokio::test]
     async fn stats_groups_by_source() {
-        let (_d, mut s) = store().await;
+        let (_d, s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "a",
@@ -686,7 +752,7 @@ mod tests {
 
     #[tokio::test]
     async fn touch_mtime_updates_row() {
-        let (_d, mut s) = store().await;
+        let (_d, s) = store().await;
         s.ensure_vec(4, "m1").await.unwrap();
         s.upsert_doc(
             "s",

@@ -53,4 +53,42 @@ mod tests {
         assert_eq!(hits[0].path, "m.md", "Hit.path 是源根相对路径");
         assert!(hits[0].content.contains("match"));
     }
+
+    /// Regression: rag_search opens the store per call while rag_remember /
+    /// evolve ingest opens it again — in the app these overlap on tokio
+    /// threads. Store::open must tolerate a concurrent writer instead of
+    /// failing fast with SQLITE_BUSY.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_search_and_ingest_on_same_store_do_not_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let dbdir = tempfile::tempdir().unwrap();
+        let (base, _req) = crate::testsupport::spawn_mock_embeddings(0).await;
+        let cfg =
+            crate::pipeline::tests::cfg_with_store(dir.path(), &dbdir.path().join("t.db"), &base);
+        std::fs::write(dir.path().join("seed.md"), "seed match").unwrap();
+        crate::pipeline::run_ingest(&cfg, None, false)
+            .await
+            .unwrap();
+
+        std::fs::write(dir.path().join("new.md"), "new match target").unwrap();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let c = cfg.clone();
+            handles.push(tokio::spawn(async move {
+                run_search(&c, "match", 2, None).await
+            }));
+        }
+        let c = cfg.clone();
+        let ingest =
+            tokio::spawn(async move { crate::pipeline::run_ingest(&c, None, false).await });
+        for h in handles {
+            h.await
+                .unwrap()
+                .expect("search must not fail under concurrency");
+        }
+        ingest
+            .await
+            .unwrap()
+            .expect("ingest must not fail under concurrency");
+    }
 }

@@ -908,7 +908,7 @@ path = {:?}
         assert_eq!(out.added_insights.len(), 1);
 
         let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
-        let mut store = conga_rag::store::Store::open(&cfg.store_path())
+        let store = conga_rag::store::Store::open(&cfg.store_path())
             .await
             .unwrap();
         let docs = store.docs_for_source("memory").await.unwrap();
