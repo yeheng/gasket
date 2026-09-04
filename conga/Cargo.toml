@@ -57,7 +57,10 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Logging & Tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# default-features = false keeps `tracing-log` out of the unified build;
+# enabling it makes `fmt().init()` claim the global `log` logger, which
+# breaks tauri-plugin-log in the desktop app (see web/src-tauri/src/lib.rs).
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "std", "env-filter"] }
 
 # Error handling
 thiserror = "2"
