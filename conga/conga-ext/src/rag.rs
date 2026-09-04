@@ -60,7 +60,7 @@ pub fn register(api: &mut dyn conga::ExtensionApi) {
     api.register_tool(ToolDefinition {
         name: "rag_search".into(),
         label: "RAG Search".into(),
-        description: "语义检索个人知识库(笔记/文档,由 `conga-rag ingest` 建立索引)。适用:查找个人笔记、过往总结、项目文档的内容。不适用:找代码文件(用 grep)、联网信息(用 web_search)。返回相关片段与源文件路径;需要全文时用 read 工具读取源文件。".into(),
+        description: "语义检索个人知识库(用户笔记/文档 + agent 长期记忆 notes + 蒸馏教训 memory,由 `conga-rag ingest` 或 `rag_remember` 维护)。适用:查找个人笔记、过往总结、项目文档、长期记忆。不适用:找代码文件(用 grep)、联网信息(用 web_search)。返回相关片段与源文件路径;需要全文时用 read 工具读取源文件。source 可选值含 notes/memory。".into(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -358,6 +358,7 @@ path = {:?}
         )
         .unwrap();
         std::env::set_var("CONGA_RAG_CONFIG", &cfg_path);
+        std::env::set_var("CONGA_RAG_BUILTIN_BASE", "");
 
         let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
         conga_rag::pipeline::run_ingest(&cfg, None, false)
@@ -369,6 +370,7 @@ path = {:?}
             .await
             .expect("tool succeeds");
         std::env::remove_var("CONGA_RAG_CONFIG");
+        std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
 
         let text = text_of(res);
         assert!(text.contains("找到"), "{text}");
@@ -411,10 +413,12 @@ path = {:?}
         )
         .unwrap();
         std::env::set_var("CONGA_RAG_CONFIG", &cfg_path);
+        std::env::set_var("CONGA_RAG_BUILTIN_BASE", "");
 
         let tool = registered_tool();
         let res = (tool.execute)(make_ctx(serde_json::json!({ "query": "x" }))).await;
         std::env::remove_var("CONGA_RAG_CONFIG");
+        std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
 
         let err = res.expect_err("store missing must fail");
         assert!(err.to_string().contains("conga-rag ingest"), "{err}");
@@ -425,10 +429,12 @@ path = {:?}
         let _g = env_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CONGA_RAG_CONFIG", tmp.path().join("no-such-rag.toml"));
+        std::env::set_var("CONGA_RAG_BUILTIN_BASE", "");
 
         let tool = registered_tool();
         let res = (tool.execute)(make_ctx(serde_json::json!({ "query": "x" }))).await;
         std::env::remove_var("CONGA_RAG_CONFIG");
+        std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
 
         let err = res.expect_err("config missing must fail");
         assert!(err.to_string().contains("CONGA_RAG_CONFIG"), "{err}");
@@ -484,5 +490,128 @@ path = {:?}
             let err = (tool.execute)(make_ctx(bad.clone())).await;
             assert!(err.is_err(), "must reject: {bad}");
         }
+    }
+
+    fn remember_args(title: &str, content: &str) -> serde_json::Value {
+        serde_json::json!({ "title": title, "content": content, "tags": ["t"] })
+    }
+
+    #[tokio::test]
+    async fn remember_then_search_round_trip_and_overwrite() {
+        let _g = env_lock().await;
+        let base = tempfile::tempdir().unwrap(); // CONGA_RAG_BUILTIN_BASE
+        let dbdir = tempfile::tempdir().unwrap();
+        let dummy = tempfile::tempdir().unwrap(); // 占位 user source
+        std::fs::create_dir_all(base.path().join("notes")).unwrap();
+        let (emb, _req) = conga_rag::testsupport::spawn_mock_embeddings(0).await;
+        let cfg_path = dbdir.path().join("rag.toml");
+        std::fs::write(
+            &cfg_path,
+            format!(
+                r#"[sources.dummy]
+type = "dir"
+path = {:?}
+
+[embedding]
+base_url = {:?}
+api_key = "k"
+model = "mock"
+
+[store]
+path = {:?}
+"#,
+                dummy.path(),
+                emb,
+                dbdir.path().join("t.db")
+            ),
+        )
+        .unwrap();
+        std::env::set_var("CONGA_RAG_CONFIG", &cfg_path);
+        std::env::set_var("CONGA_RAG_BUILTIN_BASE", base.path());
+
+        let remember = registered_tool_named("rag_remember");
+        let r = (remember.execute)(make_ctx(remember_args(
+            "架构决策",
+            "网关走单进程 embedded 模式 xyzzy",
+        )))
+        .await
+        .expect("first remember ok");
+        assert!(text_of(r).contains("已记住"));
+        assert!(
+            base.path().join("notes/架构决策.md").exists(),
+            "frontmatter 文件落盘"
+        );
+
+        // 同 title 覆盖:单文档、内容更新
+        (remember.execute)(make_ctx(remember_args("架构决策", "改主意了,网关拆双进程 quux")))
+            .await
+            .unwrap();
+        {
+            let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
+            let mut store = conga_rag::store::Store::open(&cfg.store_path()).await.unwrap();
+            let docs = store.docs_for_source("notes").await.unwrap();
+            assert_eq!(docs.len(), 1, "同 title 覆盖,不是追加");
+            store.close().await.unwrap();
+        }
+
+        let search = registered_tool_named("rag_search");
+        let res = (search.execute)(make_ctx(serde_json::json!({ "query": "quux", "source": "notes" })))
+            .await
+            .expect("search ok");
+        std::env::remove_var("CONGA_RAG_CONFIG");
+        std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
+        let text = text_of(res);
+        assert!(
+            text.contains("quux") && !text.contains("xyzzy"),
+            "检索到的是覆盖后内容: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remember_reports_partial_success_when_ingest_fails() {
+        let _g = env_lock().await;
+        let base = tempfile::tempdir().unwrap();
+        let dummy = tempfile::tempdir().unwrap();
+        let (emb, _req) = conga_rag::testsupport::spawn_mock_embeddings(0).await;
+        std::fs::create_dir_all(base.path().join("notes")).unwrap();
+        let cfg_path = base.path().join("rag.toml");
+        std::fs::write(
+            &cfg_path,
+            format!(
+                r#"[sources.dummy]
+type = "dir"
+path = {:?}
+
+[embedding]
+base_url = {:?}
+api_key = "k"
+model = "mock"
+
+[store]
+path = {:?}
+"#,
+                dummy.path(),
+                emb,
+                base.path().join("t.db")
+            ),
+        )
+        .unwrap();
+        // 让 store 无法打开:path 是目录
+        std::fs::create_dir_all(base.path().join("t.db")).unwrap();
+        std::env::set_var("CONGA_RAG_CONFIG", &cfg_path);
+        std::env::set_var("CONGA_RAG_BUILTIN_BASE", base.path());
+
+        let remember = registered_tool_named("rag_remember");
+        let res = (remember.execute)(make_ctx(remember_args("p", "c")))
+            .await
+            .expect("tool returns Ok");
+        std::env::remove_var("CONGA_RAG_CONFIG");
+        std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
+        let text = text_of(res);
+        assert!(
+            text.contains("已写入") && text.contains("索引失败"),
+            "部分成功如实上报: {text}"
+        );
+        assert!(base.path().join("notes/p.md").exists(), "文件确实落盘");
     }
 }
