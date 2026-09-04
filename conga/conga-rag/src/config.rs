@@ -1,7 +1,7 @@
 //! Config: TOML file discovery + `CONGA_RAG_*` env overrides.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -126,6 +126,7 @@ impl RagConfig {
             .map_err(|e| anyhow::anyhow!("配置解析失败 {}: {e}", path.display()))?;
         cfg.apply_env(env)?;
         cfg.expand_tilde();
+        cfg.inject_builtins();
         cfg.validate()?;
         Ok((path, cfg))
     }
@@ -264,6 +265,44 @@ impl RagConfig {
     pub fn with_store_path(mut self, path: PathBuf) -> Self {
         self.store.path = Some(path);
         self
+    }
+
+    /// Built-in memory sources: `notes` (rag_remember output) and `memory`
+    /// (evolve lessons). Injected when the dir exists and the user's
+    /// rag.toml has not claimed the name. Called by `load_with` and again
+    /// by `rag_remember` after it creates the notes dir (idempotent).
+    pub fn inject_builtins(&mut self) {
+        if let Some(base) = builtin_base() {
+            self.inject_builtins_in(&base);
+        }
+    }
+
+    /// Testable core: explicit base, no env.
+    pub fn inject_builtins_in(&mut self, base: &Path) {
+        for name in ["notes", "memory"] {
+            let dir = base.join(name);
+            if dir.is_dir() && !self.sources.contains_key(name) {
+                self.sources.insert(
+                    name.to_string(),
+                    SourceConfig {
+                        path: dir,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// Root hosting the built-in `notes`/`memory` sources. Default is conga's
+/// config dir (`~/.conga`, legacy `~/.gasket` fallback applies);
+/// `CONGA_RAG_BUILTIN_BASE` overrides (advanced installs, hermetic tests).
+/// Empty string = explicitly disabled → `None`.
+pub fn builtin_base() -> Option<PathBuf> {
+    match std::env::var("CONGA_RAG_BUILTIN_BASE") {
+        Ok(b) if b.trim().is_empty() => None,
+        Ok(b) => Some(PathBuf::from(b)),
+        Err(_) => Some(conga::storage::config_dir()),
     }
 }
 
@@ -411,5 +450,55 @@ overlap_chars = 50
         cfg.validate().expect("example must be a valid config");
         assert!(cfg.sources.contains_key("docs"));
         assert!(cfg.sources.contains_key("code"));
+    }
+
+    // --- built-in source injection ---
+
+    /// Hermetic core: explicit base, no env. Mirrors append_memory_in pattern.
+    fn mk_cfg_with_source(name: &str, path: &std::path::Path) -> RagConfig {
+        let mut cfg = RagConfig::default();
+        cfg.sources.insert(
+            name.into(),
+            SourceConfig {
+                path: path.into(),
+                ..Default::default()
+            },
+        );
+        cfg
+    }
+
+    #[test]
+    fn inject_builtins_adds_only_existing_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("notes")).unwrap();
+        // memory/ 不存在 → 不注入
+        let mut cfg = mk_cfg_with_source("docs", &tmp.path().join("docs"));
+        cfg.inject_builtins_in(tmp.path());
+        assert!(cfg.sources.contains_key("notes"));
+        assert!(!cfg.sources.contains_key("memory"));
+        assert_eq!(cfg.sources["notes"].path, tmp.path().join("notes"));
+        assert_eq!(cfg.sources["notes"].kind, "dir");
+    }
+
+    #[test]
+    fn inject_builtins_respects_name_ownership() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("notes")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("memory")).unwrap();
+        let user_notes = tmp.path().join("my-notes");
+        let mut cfg = mk_cfg_with_source("notes", &user_notes);
+        cfg.inject_builtins_in(tmp.path());
+        assert_eq!(cfg.sources["notes"].path, user_notes, "用户占名优先");
+        assert!(cfg.sources.contains_key("memory"), "未占用名照常注入");
+    }
+
+    #[test]
+    fn inject_builtins_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("notes")).unwrap();
+        let mut cfg = RagConfig::default();
+        cfg.inject_builtins_in(tmp.path());
+        cfg.inject_builtins_in(tmp.path());
+        assert_eq!(cfg.sources.len(), 1);
     }
 }

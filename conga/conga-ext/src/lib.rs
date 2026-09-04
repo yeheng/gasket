@@ -46,6 +46,7 @@ mod tests {
         let mut expected: Vec<&str> = vec!["web_search"];
         if cfg!(feature = "rag") {
             expected.push("rag_search");
+            expected.push("rag_remember");
         }
         if cfg!(feature = "terminal") {
             expected.push("terminal");
