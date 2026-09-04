@@ -21,7 +21,7 @@ tokio = { workspace = true }
 
 [features]
 terminal = ["dep:portable-pty"]
-rag = ["dep:conga-rag"]
+rag = ["dep:conga-rag", "conga-host/rag"]
 
 [dev-dependencies]
 tokio = { workspace = true }

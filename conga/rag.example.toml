@@ -43,3 +43,8 @@ overlap_chars = 200
 # ── Retrieval (optional, defaults shown) ────────────────────────────────────
 [ask]
 top_k = 6                          # context chunks per `conga-rag ask`
+
+# ── Built-in sources (auto-injected, no config needed) ─────────────────────
+# ~/.conga/notes (agent 长期记忆,rag_remember 写入)与 ~/.conga/memory
+# (evolve 蒸馏教训)在目录存在且名字未被占用时自动注入,无需在此声明。
+# CONGA_RAG_BUILTIN_BASE 可覆盖根目录(空串=禁用,高级用法)。

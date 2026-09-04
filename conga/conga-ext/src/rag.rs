@@ -543,21 +543,28 @@ path = {:?}
         );
 
         // 同 title 覆盖:单文档、内容更新
-        (remember.execute)(make_ctx(remember_args("架构决策", "改主意了,网关拆双进程 quux")))
-            .await
-            .unwrap();
+        (remember.execute)(make_ctx(remember_args(
+            "架构决策",
+            "改主意了,网关拆双进程 quux",
+        )))
+        .await
+        .unwrap();
         {
             let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
-            let mut store = conga_rag::store::Store::open(&cfg.store_path()).await.unwrap();
+            let mut store = conga_rag::store::Store::open(&cfg.store_path())
+                .await
+                .unwrap();
             let docs = store.docs_for_source("notes").await.unwrap();
             assert_eq!(docs.len(), 1, "同 title 覆盖,不是追加");
             store.close().await.unwrap();
         }
 
         let search = registered_tool_named("rag_search");
-        let res = (search.execute)(make_ctx(serde_json::json!({ "query": "quux", "source": "notes" })))
-            .await
-            .expect("search ok");
+        let res = (search.execute)(make_ctx(
+            serde_json::json!({ "query": "quux", "source": "notes" }),
+        ))
+        .await
+        .expect("search ok");
         std::env::remove_var("CONGA_RAG_CONFIG");
         std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
         let text = text_of(res);

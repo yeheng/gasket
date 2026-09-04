@@ -860,9 +860,7 @@ model = "mock"
 [store]
 path = {:?}
 "#,
-                dummy,
-                emb,
-                store
+                dummy, emb, store
             ),
         )
         .unwrap();
@@ -893,7 +891,9 @@ path = {:?}
         // 预建 store(hook 对不存在的 store 只跳过,不引导)
         {
             let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
-            conga_rag::pipeline::run_ingest(&cfg, None, false).await.unwrap();
+            conga_rag::pipeline::run_ingest(&cfg, None, false)
+                .await
+                .unwrap();
         }
 
         let prop = one_insight_proposal();
@@ -908,7 +908,9 @@ path = {:?}
         assert_eq!(out.added_insights.len(), 1);
 
         let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
-        let mut store = conga_rag::store::Store::open(&cfg.store_path()).await.unwrap();
+        let mut store = conga_rag::store::Store::open(&cfg.store_path())
+            .await
+            .unwrap();
         let docs = store.docs_for_source("memory").await.unwrap();
         store.close().await.unwrap();
         std::env::remove_var("CONGA_RAG_CONFIG");
@@ -934,6 +936,10 @@ path = {:?}
         .await;
         std::env::remove_var("CONGA_RAG_CONFIG");
         std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
-        assert_eq!(out.added_insights.len(), 1, "fail-soft:索引失败不影响 evolve");
+        assert_eq!(
+            out.added_insights.len(),
+            1,
+            "fail-soft:索引失败不影响 evolve"
+        );
     }
 }
