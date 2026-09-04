@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 conga = { workspace = true }
+conga-rag = { path = "../conga-rag", optional = true }
 dotenvy = { workspace = true }
 thiserror = { workspace = true }
 parking_lot = { workspace = true }
@@ -37,6 +38,7 @@ landlock = { version = "0.4", optional = true }
 
 [features]
 session-index = ["dep:sqlx", "dep:anyhow"]
+rag = ["dep:conga-rag"]
 # Opt-in Linux sandbox backend; macOS (sandbox-exec) needs no dependency.
 sandbox-landlock = ["dep:landlock"]
 

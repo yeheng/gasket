@@ -361,7 +361,34 @@ pub async fn apply_proposals(
             Err(e) => out.skipped.push(format!("{name}: write failed: {e}")),
         }
     }
+
+    // 4. Best-effort reindex of the `memory` source (conga-rag feature).
+    #[cfg(feature = "rag")]
+    index_memory_fail_soft(memory_root).await;
     out
+}
+
+/// Fail-soft refresh of the built-in `memory` source after evolve writes.
+/// Files are the source of truth — an index lag self-heals on the next
+/// `conga-rag ingest` or `rag_remember`. Skipped silently when RAG is
+/// unconfigured or the store was never built: evolve must not bootstrap a
+/// vector store as a side effect.
+#[cfg(feature = "rag")]
+async fn index_memory_fail_soft(memory_root: &Path) {
+    let Ok((_p, cfg)) = conga_rag::config::RagConfig::load() else {
+        return;
+    };
+    if !memory_root.is_dir() || !cfg.store_path().exists() {
+        return;
+    }
+    match conga_rag::pipeline::run_ingest(&cfg, Some("memory"), false).await {
+        Ok(stats) => tracing::info!(
+            added = stats.added,
+            updated = stats.updated,
+            "evolve: memory 源已刷新"
+        ),
+        Err(e) => tracing::warn!("evolve: memory 索引刷新失败(下次 ingest 补偿): {e}"),
+    }
 }
 
 /// Default extraction-input budget (chars of rendered transcript).
@@ -793,5 +820,120 @@ mod tests {
 
     fn load_test(root: &Path) -> Vec<crate::memory::MemoryEntry> {
         crate::memory::load_entries(root)
+    }
+
+    // --- feature rag: memory source reindex ---
+
+    /// CONGA_RAG_CONFIG / CONGA_RAG_BUILTIN_BASE are process-global; the
+    /// rag-feature tests serialize on this lock (async variant of the
+    /// conga-ext ENV_LOCK pattern).
+    #[cfg(feature = "rag")]
+    async fn rag_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
+    #[cfg(feature = "rag")]
+    fn mini_rag_config(
+        base: &std::path::Path,
+        store: &std::path::Path,
+        emb: &str,
+    ) -> std::path::PathBuf {
+        let dummy = base.join("dummy");
+        std::fs::create_dir_all(&dummy).unwrap();
+        std::fs::write(dummy.join("seed.md"), "seed content").unwrap();
+        let p = base.join("rag.toml");
+        std::fs::write(
+            &p,
+            format!(
+                r#"[sources.dummy]
+type = "dir"
+path = {:?}
+
+[embedding]
+base_url = {:?}
+api_key = "k"
+model = "mock"
+
+[store]
+path = {:?}
+"#,
+                dummy,
+                emb,
+                store
+            ),
+        )
+        .unwrap();
+        p
+    }
+
+    #[cfg(feature = "rag")]
+    fn one_insight_proposal() -> EvolveProposal {
+        serde_json::from_str(
+            r#"{"insights":[{"title":"rust-cyclic-dep","tags":["rust"],"content":"check members first"}]}"#,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "rag")]
+    async fn evolve_writes_then_reindexes_memory_source() {
+        let _g = rag_env_lock().await;
+        let base = tempfile::tempdir().unwrap();
+        let memory_root = base.path().join("memory");
+        std::fs::create_dir_all(&memory_root).unwrap();
+        std::fs::create_dir_all(base.path().join("notes")).unwrap(); // 空目录,0 文件
+        let (emb, _req) = conga_rag::testsupport::spawn_mock_embeddings(0).await;
+        let store_path = base.path().join("t.db");
+        let cfg_path = mini_rag_config(base.path(), &store_path, &emb);
+        std::env::set_var("CONGA_RAG_CONFIG", &cfg_path);
+        std::env::set_var("CONGA_RAG_BUILTIN_BASE", base.path());
+        // 预建 store(hook 对不存在的 store 只跳过,不引导)
+        {
+            let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
+            conga_rag::pipeline::run_ingest(&cfg, None, false).await.unwrap();
+        }
+
+        let prop = one_insight_proposal();
+        let out = apply_proposals(
+            &prop,
+            &memory_root,
+            &base.path().join("skills"),
+            "s1",
+            &policy_always(true),
+        )
+        .await;
+        assert_eq!(out.added_insights.len(), 1);
+
+        let (_p, cfg) = conga_rag::config::RagConfig::load().unwrap();
+        let mut store = conga_rag::store::Store::open(&cfg.store_path()).await.unwrap();
+        let docs = store.docs_for_source("memory").await.unwrap();
+        store.close().await.unwrap();
+        std::env::remove_var("CONGA_RAG_CONFIG");
+        std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
+        assert!(!docs.is_empty(), "蒸馏产物已入索引: {docs:?}");
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "rag")]
+    async fn evolve_survives_index_failure() {
+        let _g = rag_env_lock().await;
+        // rag 配置指向不存在的路径 → hook 静默跳过,evolve 照常成功
+        std::env::set_var("CONGA_RAG_CONFIG", "/nonexistent/rag.toml");
+        std::env::set_var("CONGA_RAG_BUILTIN_BASE", "");
+        let base = tempfile::tempdir().unwrap();
+        let out = apply_proposals(
+            &one_insight_proposal(),
+            &base.path().join("memory"),
+            &base.path().join("skills"),
+            "s1",
+            &policy_always(true),
+        )
+        .await;
+        std::env::remove_var("CONGA_RAG_CONFIG");
+        std::env::remove_var("CONGA_RAG_BUILTIN_BASE");
+        assert_eq!(out.added_insights.len(), 1, "fail-soft:索引失败不影响 evolve");
     }
 }
