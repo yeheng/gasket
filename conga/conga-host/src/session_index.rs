@@ -37,7 +37,7 @@ pub async fn init_db(db_path: &Path) -> anyhow::Result<SqlitePool> {
         std::fs::create_dir_all(parent)?;
     }
     let opts = SqliteConnectOptions::new()
-        .filename(db_path.to_path_buf())
+        .filename(db_path)
         .create_if_missing(true)
         // Concurrent desktop searches open their own pools; a transient
         // SQLITE_BUSY waits instead of erroring out.
