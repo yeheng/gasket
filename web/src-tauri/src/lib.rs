@@ -191,18 +191,11 @@ pub fn run() {
             get_env_settings,
             set_env_settings,
         ])
-        .setup(|app| {
+        .setup(|_app| {
             if let Ok(Some(config)) = get_app_config() {
                 if let Err(e) = apply_proxy_from_config(&config) {
                     log::warn!("skipping invalid stored proxy: {e}");
                 }
-            }
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
             }
             Ok(())
         })

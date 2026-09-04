@@ -115,7 +115,7 @@ impl Store {
                 .with_context(|| format!("创建库目录失败 {}", parent.display()))?;
         }
         let opts = SqliteConnectOptions::new()
-            .filename(path.to_path_buf())
+            .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true);
